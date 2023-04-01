@@ -5,13 +5,11 @@ import logging
 import time
 from typing import Any, cast
 from urllib.parse import urljoin
+from hashlib import md5
 
 from aiohttp import ClientSession
 from homeassistant.components.application_credentials import AuthImplementation
-
 from homeassistant.helpers import config_entry_oauth2_flow
-
-from hashlib import md5
 
 _LOGGER = logging.getLogger(__name__)
 

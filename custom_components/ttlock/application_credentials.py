@@ -4,10 +4,10 @@ from homeassistant.components.application_credentials import (
     AuthorizationServer,
     ClientCredential,
 )
-from homeassistant.components.ttlock.api import TTLockAuthImplementation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_entry_oauth2_flow
 
+from .api import TTLockAuthImplementation
 from .const import OAUTH2_TOKEN
 
 

@@ -4,18 +4,17 @@ from datetime import timedelta
 
 import logging
 from typing import Any
-
 import aiohttp
 
-from homeassistant.components.lock import LockEntity
-from homeassistant.components.ttlock.api import ApiLock, LockState, TTLockApi
-from homeassistant.components.ttlock.entity import TTLockEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_BATTERY_LEVEL, VOLUME
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.components.lock import LockEntity
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import PlatformNotReady
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .api import ApiLock, LockState
+from .entity import TTLockEntity
 
 from .const import DOMAIN
 

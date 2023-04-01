@@ -2,8 +2,8 @@
 import logging
 from typing import Any
 import voluptuous as vol
-from homeassistant.data_entry_flow import FlowResult
 
+from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import config_entry_oauth2_flow
 
 from .const import DOMAIN
