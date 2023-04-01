@@ -1,6 +1,7 @@
 """Config flow for TTLock."""
 import logging
 from typing import Any
+
 import voluptuous as vol
 
 from homeassistant.data_entry_flow import FlowResult
@@ -11,7 +12,7 @@ from .const import DOMAIN
 
 class TTLockAuthFlowHandler(
     config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=DOMAIN
-):
+):  # type: ignore[call-arg]
     """Config flow to handle TTLock OAuth2 authentication."""
 
     DOMAIN = DOMAIN

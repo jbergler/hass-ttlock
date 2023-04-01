@@ -1,13 +1,14 @@
 """API for TTLock bound to Home Assistant OAuth."""
 from abc import ABC, abstractmethod
 from enum import IntEnum
+from hashlib import md5
 import logging
 import time
 from typing import Any, cast
 from urllib.parse import urljoin
-from hashlib import md5
 
 from aiohttp import ClientSession
+
 from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.helpers import config_entry_oauth2_flow
 
@@ -15,42 +16,58 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class BaseApiObject(ABC):
+    """Abstract base class for TTLockApi objects."""
+
     def __init__(self, api: "TTLockApi", data: dict[str, Any]) -> None:
+        """Initialize an object form the API."""
         self._api = api
         self._data = data
         _LOGGER.debug(f"{self.__class__.__name__} created with {data}")
 
     def as_dict(self) -> dict:
+        """Serialize for diagnostics."""
         return vars(self)
+
+    @abstractmethod
+    async def update(self) -> bool:
+        """Poll the API to update ones state."""
+        pass
 
     @property
     @abstractmethod
     def id(self) -> int:
+        """The API ID for this device."""
         pass
 
     @property
     @abstractmethod
     def name(self) -> str:
+        """The configured name for this device."""
         pass
 
     @property
     @abstractmethod
     def mac(self) -> str:
+        """The MAC address of the device."""
         pass
 
     @property
     @abstractmethod
     def model(self) -> str:
+        """The model of the device."""
         pass
 
 
 class LockState(IntEnum):
+    """Locked/unlocked state of a lock."""
+
     locked = 0
     unlocked = 1
     unknown = 2
 
 
 def int_to_bool(value: int) -> bool | None:
+    """Transform an on/off int value for HA."""
     if value == 1:
         return True
     elif value == 2:
@@ -65,6 +82,7 @@ class ApiLock(BaseApiObject):
     _state: LockState = LockState.unknown
 
     async def update(self) -> bool:
+        """Fetch the latest info and state for this lock."""
         data = await self._api.get("lock/detail", lockId=self.id)
         if "lockId" not in data:
             _LOGGER.error(f"Received bad data for {self} {data=}")
@@ -100,7 +118,7 @@ class ApiLock(BaseApiObject):
 
     @property
     def battery_level(self) -> int:
-        """The battery level of the lock (0-100)"""
+        """The battery level of the lock (0-100)."""
         return self._data["electricQuantity"]
 
     @property
@@ -110,25 +128,31 @@ class ApiLock(BaseApiObject):
 
     @property
     def sound_enabled(self) -> bool | None:
+        """Is the lock configured to make noise?."""
         return int_to_bool(self._data.get("lockSound", 2))
 
     @property
     def volume(self) -> int | None:
+        """Current volume setting (0-5, 0 means off."""
         return self._data.get("soundVolume")
 
     @property
     def model(self) -> str:
+        """The model of the lock."""
         return self._data["modelNum"] or self._data["lockName"]
 
     @property
     def version(self) -> str:
+        """The firmware version currently reported by the lock."""
         return self._data["firmwareRevision"]
 
     @property
     def state(self) -> LockState:
+        """State of the lock (locked/unlocked)."""
         return self._state
 
     async def lock(self) -> bool:
+        """Try to lock the lock."""
         res = await self._api.get("lock/lock", lockId=self.id)
 
         if "errcode" in res and res["errcode"] != 0:
@@ -139,6 +163,7 @@ class ApiLock(BaseApiObject):
             return True
 
     async def unlock(self) -> bool:
+        """Try to unlock the lock."""
         res = await self._api.get("lock/unlock", lockId=self.id)
 
         if "errcode" in res and res["errcode"] != 0:
@@ -196,6 +221,8 @@ class TTLockApi:
         return kwargs
 
     async def get(self, path: str, **kwargs: Any):
+        """Make GET request to the API with kwargs as query params."""
+
         url = urljoin(self.BASE, path)
         _LOGGER.debug(f"Sending request to {url} with args={kwargs}")
         resp = await self._web_session.get(

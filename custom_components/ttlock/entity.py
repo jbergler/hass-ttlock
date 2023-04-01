@@ -25,7 +25,7 @@ class TTLockEntity(Entity, Generic[T], ABC):
         """Initialize the entity."""
         super().__init__()
         self._session = session
-        self.device = device
+        self.device: T = device
         self.update_from_data()
 
     def as_dict(self) -> dict:
@@ -37,9 +37,11 @@ class TTLockEntity(Entity, Generic[T], ABC):
 
     @abstractmethod
     def update_from_data(self) -> None:
+        """Update the entity state based on the device's latest data."""
         pass
 
     async def async_update(self) -> None:
+        """Poll for the latest data and update the entity state."""
         _LOGGER.debug(f"async_update called on {self}")
         await self.device.update()
         self.update_from_data()
@@ -81,6 +83,7 @@ class TTLockEntity(Entity, Generic[T], ABC):
 
     @property
     def extra_device_info(self) -> dict[str, Any]:
+        """Device type specific attributes to return in DeviceInfo."""
         return {}
 
     @callback

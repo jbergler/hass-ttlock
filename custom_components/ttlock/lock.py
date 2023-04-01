@@ -1,23 +1,22 @@
 """Support for BMW car locks with BMW ConnectedDrive."""
 from __future__ import annotations
-from datetime import timedelta
 
+from datetime import timedelta
 import logging
 from typing import Any
+
 import aiohttp
 
+from homeassistant.components.lock import LockEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_BATTERY_LEVEL, VOLUME
-from homeassistant.components.lock import LockEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import PlatformNotReady
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import ApiLock, LockState
-from .entity import TTLockEntity
-
 from .const import DOMAIN, TT_API, TT_LOCKS
-
+from .entity import TTLockEntity
 
 SCAN_INTERVAL = timedelta(seconds=60)
 
@@ -54,6 +53,7 @@ class TTLock(TTLockEntity[ApiLock], LockEntity):
 
     @property
     def extra_device_info(self) -> dict[str, Any]:
+        """Lock specific device info."""
         return {
             "sw_version": self.device.version,
         }
