@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 
 from .api import TTLockApi
-from .const import DOMAIN
+from .const import DOMAIN, TT_API, TT_LOCKS
 
 PLATFORMS: list[Platform] = [Platform.LOCK]
 
@@ -22,9 +22,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     session = config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation)
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = TTLockApi(
-        aiohttp_client.async_get_clientsession(hass), session
-    )
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        TT_API: TTLockApi(aiohttp_client.async_get_clientsession(hass), session),
+        TT_LOCKS: [],
+    }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

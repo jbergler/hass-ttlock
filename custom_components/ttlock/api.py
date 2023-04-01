@@ -20,6 +20,9 @@ class BaseApiObject(ABC):
         self._data = data
         _LOGGER.debug(f"{self.__class__.__name__} created with {data}")
 
+    def as_dict(self) -> dict:
+        return vars(self)
+
     @property
     @abstractmethod
     def id(self) -> int:

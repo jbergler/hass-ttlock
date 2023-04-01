@@ -16,7 +16,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .api import ApiLock, LockState
 from .entity import TTLockEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, TT_API, TT_LOCKS
 
 
 SCAN_INTERVAL = timedelta(seconds=60)
@@ -30,8 +30,8 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the MyBMW lock from config entry."""
-    api = hass.data[DOMAIN][config_entry.entry_id]
+    """Set up all the locks for the config entry."""
+    api = hass.data[DOMAIN][config_entry.entry_id][TT_API]
 
     entities: list[TTLock] = []
     try:
@@ -42,6 +42,7 @@ async def async_setup_entry(
             entities.append(TTLock(api, lock))
 
         async_add_entities(entities, update_before_add=True)
+        hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS] = entities
     except aiohttp.ClientError as ex:
         raise PlatformNotReady from ex
 

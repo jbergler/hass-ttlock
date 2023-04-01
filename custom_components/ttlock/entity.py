@@ -28,6 +28,13 @@ class TTLockEntity(Entity, Generic[T], ABC):
         self.device = device
         self.update_from_data()
 
+    def as_dict(self) -> dict:
+        """Serialize for diagnostics."""
+        return {
+            "entity_id": self.entity_id,
+            "device": self.device.as_dict(),
+        }
+
     @abstractmethod
     def update_from_data(self) -> None:
         pass
