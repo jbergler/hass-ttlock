@@ -3,7 +3,7 @@ name: Lint
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [develop]
 
 jobs:
   pre-commit:
