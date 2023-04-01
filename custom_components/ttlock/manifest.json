@@ -1,0 +1,17 @@
+{
+  "domain": "ttlock",
+  "name": "TTLock",
+  "codeowners": [
+    "@jbergler"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "application_credentials"
+  ],
+  "documentation": "https://www.home-assistant.io/integrations/ttlock",
+  "homekit": {},
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "ssdp": [],
+  "zeroconf": []
+}
