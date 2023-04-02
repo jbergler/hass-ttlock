@@ -22,7 +22,6 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
-          ignore: "brands"
 
   validate_hassfest:
     name: "Hassfest"
