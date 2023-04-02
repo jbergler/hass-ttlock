@@ -6,13 +6,18 @@ Home Assistant integration for TTLock based locks.
 
 - Locking and unlocking
 - Loading status on startup
+- Refreshing status hourly
 
 ## Limitations (will be fixed over time)
 
 - Almost everything else
-- Notably, state is currently not being refreshed automatically so the locked/unlocked status of the lock will not update.
 
 # Usage
+
+## Requirements
+1. A TTLock based smart lock
+1. A Gateway (if your lock doesn't have integrated wifi)
+   - These can be purchased from the vendor of your lock or direct from [Aliexpress](https://s.click.aliexpress.com/e/_DEPpClx)
 
 ## Creating an OAuth APP
 
