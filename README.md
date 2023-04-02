@@ -2,11 +2,17 @@
 
 Home Assistant integration for TTLock based locks.
 
-## Currently supported
+## Currently supported features
 
 - Locking and unlocking
 - Loading status on startup
 - Refreshing status hourly
+
+## Known working locks
+
+> If this integration is working for you, please leave a comment [here](https://github.com/jbergler/hass-ttlock/issues/1)
+
+- [E-Lok 9 series](https://www.e-lok.com/9-series)
 
 ## Limitations (will be fixed over time)
 
