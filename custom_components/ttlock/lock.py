@@ -18,7 +18,7 @@ from .api import ApiLock, LockState
 from .const import DOMAIN, TT_API, TT_LOCKS
 from .entity import TTLockEntity
 
-SCAN_INTERVAL = timedelta(seconds=60)
+SCAN_INTERVAL = timedelta(hours=1)
 
 DOOR_LOCK_STATE = "door_lock_state"
 _LOGGER = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ async def async_setup_entry(
         raise PlatformNotReady from ex
 
 
-class TTLock(TTLockEntity[ApiLock], LockEntity):
+class TTLock(LockEntity, TTLockEntity[ApiLock]):
     """The entity object for a lock."""
 
     _attr_code_format = None
