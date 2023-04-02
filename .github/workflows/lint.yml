@@ -23,3 +23,9 @@ jobs:
         with:
           category: "integration"
           ignore: "brands"
+
+  validate_hassfest:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v3"
+      - uses: "home-assistant/actions/hassfest@master"
