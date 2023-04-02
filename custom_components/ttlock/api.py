@@ -31,31 +31,26 @@ class BaseApiObject(ABC):
     @abstractmethod
     async def update(self) -> bool:
         """Poll the API to update ones state."""
-        pass
 
     @property
     @abstractmethod
     def id(self) -> int:
         """The API ID for this device."""
-        pass
 
     @property
     @abstractmethod
     def name(self) -> str:
         """The configured name for this device."""
-        pass
 
     @property
     @abstractmethod
     def mac(self) -> str:
         """The MAC address of the device."""
-        pass
 
     @property
     @abstractmethod
     def model(self) -> str:
         """The model of the device."""
-        pass
 
 
 class LockState(IntEnum):
