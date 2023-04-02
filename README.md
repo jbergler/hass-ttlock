@@ -15,6 +15,7 @@ Home Assistant integration for TTLock based locks.
 # Usage
 
 ## Requirements
+
 1. A TTLock based smart lock
 1. A Gateway (if your lock doesn't have integrated wifi)
    - These can be purchased from the vendor of your lock or direct from [Aliexpress](https://s.click.aliexpress.com/e/_DEPpClx)
