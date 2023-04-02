@@ -38,7 +38,6 @@ class TTLockEntity(Entity, Generic[T], ABC):
     @abstractmethod
     def update_from_data(self) -> None:
         """Update the entity state based on the device's latest data."""
-        pass
 
     async def async_update(self) -> None:
         """Poll for the latest data and update the entity state."""
