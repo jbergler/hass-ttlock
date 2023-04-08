@@ -48,3 +48,10 @@ class TTLockAuthFlowHandler(
             ),
             errors=errors,
         )
+
+
+# config_entry_flow.register_webhook_flow(
+#     DOMAIN,
+#     "TTLock Webhook",
+#     {"docs_url": "https://github.com/jbergler/hass-ttlock/"},
+# )

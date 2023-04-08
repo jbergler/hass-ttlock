@@ -5,10 +5,11 @@ import logging
 from typing import Any, Generic, TypeVar
 
 from homeassistant.core import callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, Entity
 
 from .api import BaseApiObject, TTLockApi
-from .const import DOMAIN
+from .const import DOMAIN, SIGNAL_NEW_DATA
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ T = TypeVar("T", bound=BaseApiObject)
 class TTLockEntity(Entity, Generic[T], ABC):
     """Generic TTLock entity (base class)."""
 
-    _attr_should_poll = True
+    _attr_should_poll = False
 
     def __init__(self, session: TTLockApi, device: T) -> None:
         """Initialize the entity."""
@@ -44,19 +45,16 @@ class TTLockEntity(Entity, Generic[T], ABC):
         await self.device.update()
         self.update_from_data()
 
-    # async def async_added_to_hass(self):
-    #     """Register callbacks."""
-    #     self.async_on_remove(
-    #         async_dispatcher_connect(
-    #             self.hass, SIGNAL_UPDATE_ENTITIES, self._update_callback
-    #         )
-    #     )
+    async def async_added_to_hass(self):
+        """Register callbacks."""
+        self.async_on_remove(
+            async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._update_callback)
+        )
 
-    # @callback
-    # def _update_callback(self, id):
-    #     """Update data."""
-    #     if id == self.device.id:
-    #         self.async_entity_update()
+    @callback
+    def _update_callback(self, data):
+        """Update data."""
+        _LOGGER.debug(f"{self.entity_id} received signal {data}")
 
     @property
     def name(self):
