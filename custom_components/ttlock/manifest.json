@@ -1,9 +1,10 @@
 {
   "domain": "ttlock",
   "name": "TTLock",
+  "after_dependencies": ["cloud"],
   "codeowners": ["@jbergler"],
   "config_flow": true,
-  "dependencies": ["application_credentials"],
+  "dependencies": ["application_credentials", "webhook"],
   "documentation": "https://github.com/jbergler/hass-ttlock",
   "homekit": {},
   "iot_class": "cloud_polling",
