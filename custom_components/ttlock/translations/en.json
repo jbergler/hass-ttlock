@@ -13,6 +13,14 @@
       "default": "Successfully authenticated"
     },
     "step": {
+      "auth": {
+        "title": "Login to TTLock",
+        "description": "Please provide the login details that you used to log into the TTLock app when setting up your locks",
+        "data": {
+          "password": "Password",
+          "username": "Username"
+        }
+      },
       "pick_implementation": {
         "title": "Pick Authentication Method"
       }

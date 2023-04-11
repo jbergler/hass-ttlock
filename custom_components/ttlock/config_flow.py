@@ -4,6 +4,7 @@ from typing import Any
 
 import voluptuous as vol
 
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import config_entry_oauth2_flow
 
@@ -30,7 +31,7 @@ class TTLockAuthFlowHandler(
         errors = {}
         if user_input is not None:
             session = await self.flow_impl.login(
-                user_input["username"], user_input["password"]
+                user_input[CONF_USERNAME], user_input[CONF_PASSWORD]
             )
             if "errmsg" in session:
                 errors["base"] = session["errmsg"]
@@ -42,16 +43,9 @@ class TTLockAuthFlowHandler(
             step_id="auth",
             data_schema=vol.Schema(
                 {
-                    vol.Required("username"): str,
-                    vol.Required("password"): str,
+                    vol.Required(CONF_USERNAME): str,
+                    vol.Required(CONF_PASSWORD): str,
                 }
             ),
             errors=errors,
         )
-
-
-# config_entry_flow.register_webhook_flow(
-#     DOMAIN,
-#     "TTLock Webhook",
-#     {"docs_url": "https://github.com/jbergler/hass-ttlock/"},
-# )
