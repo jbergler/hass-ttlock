@@ -16,6 +16,7 @@ TO_REDACT = {
     "adminPwd",
     "deletePwd",
     "noKeyPwd",
+    "webhook_url",
 }
 
 
