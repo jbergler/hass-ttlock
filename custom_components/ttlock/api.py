@@ -104,22 +104,22 @@ class ApiLock(BaseApiObject):
     @property
     def name(self) -> str:
         """The display name of the lock."""
-        return self._data.get("lockAlias")
+        return self._data.get("lockAlias", "Unknown")
 
     @property
     def mac(self) -> str:
         """The mac address of the lock."""
-        return self._data.get("lockMac")
+        return self._data.get("lockMac", "00:00:00:00:00:00")
 
     @property
     def battery_level(self) -> int:
         """The battery level of the lock (0-100)."""
-        return self._data.get("electricQuantity")
+        return self._data.get("electricQuantity", -1)
 
     @property
     def has_gateway(self) -> bool:
         """If the lock is bound to a gateway."""
-        return self._data.get("hasGateway") == 1
+        return self._data.get("hasGateway", 0) == 1
 
     @property
     def sound_enabled(self) -> bool | None:
@@ -134,12 +134,12 @@ class ApiLock(BaseApiObject):
     @property
     def model(self) -> str:
         """The model of the lock."""
-        return self._data.get("modelNum") or self._data.get("lockName")
+        return self._data.get("modelNum") or self.name
 
     @property
     def version(self) -> str:
         """The firmware version currently reported by the lock."""
-        return self._data.get("firmwareRevision")
+        return self._data.get("firmwareRevision", "0.0.0")
 
     @property
     def state(self) -> LockState:
