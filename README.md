@@ -34,7 +34,8 @@ Home Assistant integration for TTLock based locks.
 1. Install the extension via HACS
    - You will need to add add custom repository 'jbergler/hass-ttlock' of type 'integration'
 1. Setup the integration via Home Assistant UI
-1. Once the integration is working, go to System > Logs and find the ttlock webhook url
+1. Once the integration is working you should receive a notification with the webhook url
+   - This will go away when the webhook receives data
 1. Go back to the url from the first step and set the 'Callback URL' for your application
 
 ## Reporting issues
