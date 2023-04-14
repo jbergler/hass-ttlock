@@ -41,11 +41,10 @@ Home Assistant integration for TTLock based locks.
 
 ## Reporting issues
 
-Please enable debug logging with the following config and share all logs matching 'ttlock'
+When reporting issues, please attach the diagnostic information and consider enabling debug logging to provide extra information.
 
-```
-logger:
-  default: info
-  logs:
-    homeassistant.components.ttlock: debug
-```
+## Say thanks
+
+If you found this helpful and you'd like to say thanks you can do so via buy me a coffee. Thanks!
+
+<a href="https://www.buymeacoffee.com/jbergler" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png"></a>
