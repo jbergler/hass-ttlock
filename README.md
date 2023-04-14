@@ -14,6 +14,7 @@ Home Assistant integration for TTLock based locks.
 
 - [Cielsa Dawn Fingerprint Digital Doorknob](https://www.amazon.com/dp/B09B557YZK)
 - [E-Lok 9 series](https://www.e-lok.com/9-series)
+- [YRHAND locks](https://yrhandlock.com)
 
 ## Limitations (will be fixed over time)
 
