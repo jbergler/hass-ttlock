@@ -1,6 +1,5 @@
 """The TTLock integration."""
 from __future__ import annotations
-from datetime import datetime
 
 import json
 import logging
@@ -26,8 +25,8 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .api import TTLockApi
 from .const import (
-    CONF_WEBHOOK_URL,
     CONF_WEBHOOK_STATUS,
+    CONF_WEBHOOK_URL,
     DOMAIN,
     SIGNAL_NEW_DATA,
     TT_API,
