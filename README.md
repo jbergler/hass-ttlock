@@ -47,4 +47,4 @@ When reporting issues, please attach the diagnostic information and consider ena
 
 If you found this helpful and you'd like to say thanks you can do so via buy me a coffee. Thanks!
 
-<a href="https://www.buymeacoffee.com/jbergler" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png"></a>
+<a href="https://www.buymeacoffee.com/jbergler" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" height="60" width="217"></a>
