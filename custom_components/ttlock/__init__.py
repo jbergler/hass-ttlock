@@ -7,7 +7,7 @@ import secrets
 
 from aiohttp.web import Request
 
-from homeassistant.components import cloud, webhook
+from homeassistant.components import cloud, persistent_notification, webhook
 from homeassistant.components.webhook import (
     async_register as webhook_register,
     async_unregister as webhook_unregister,
@@ -24,7 +24,14 @@ from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .api import TTLockApi
-from .const import CONF_WEBHOOK_URL, DOMAIN, SIGNAL_NEW_DATA, TT_API, TT_LOCKS
+from .const import (
+    CONF_WEBHOOK_STATUS,
+    CONF_WEBHOOK_URL,
+    DOMAIN,
+    SIGNAL_NEW_DATA,
+    TT_API,
+    TT_LOCKS,
+)
 
 PLATFORMS: list[Platform] = [Platform.LOCK]
 
@@ -105,6 +112,9 @@ class WebhookHandler:
                 self.hass, self.entry.data[CONF_WEBHOOK_ID]
             )
 
+        if CONF_WEBHOOK_STATUS not in self.entry.data:
+            self.async_show_setup_message(webhook_url)
+
         _LOGGER.info(f"Webhook {webhook_url}")
 
         # Ensure the webhook is not registered already
@@ -127,12 +137,14 @@ class WebhookHandler:
     ) -> None:
         """Handle webhook callback."""
         # {'lockId': ['7252408'], 'notifyType': ['1'], 'records': ['[{"lockId":7252408,"electricQuantity":93,"serverDate":1680810180029,"recordTypeFromLock":17,"recordType":7,"success":1,"lockMac":"16:72:4C:CC:01:C4","keyboardPwd":"<digits>","lockDate":1680810186000,"username":"Jonas"}]'], 'admin': ['jonas@lemon.nz'], 'lockMac': ['16:72:4C:CC:01:C4']}
+        success = False
         try:
             data = await request.post()
             if data:
-                for v in data.getall("records", []):
-                    for record in json.loads(v):
+                for record_raw in data.getall("records", []):
+                    for record in json.loads(record_raw):
                         async_dispatcher_send(hass, SIGNAL_NEW_DATA, record)
+                        success = True
             else:
                 _LOGGER.debug(f"handle_webhook, empty payload: {await request.text()}")
         except ValueError:
@@ -140,6 +152,21 @@ class WebhookHandler:
 
         _LOGGER.debug("Got webhook data: %s", data)
 
+        if success and CONF_WEBHOOK_STATUS not in self.entry.data:
+            self.async_dismiss_setup_message()
+
     async def unregister_webhook(self, event: Event | None = None) -> None:
         """Remove the webhook (before stop)."""
         webhook_unregister(self.hass, self.entry.data[CONF_WEBHOOK_ID])
+
+    def async_show_setup_message(self, uri: str) -> None:
+        """Display persistent notification with setup information."""
+        persistent_notification.async_create(
+            self.hass, f"Webhook url: {uri}", "TTLock Setup", self.entry.entry_id
+        )
+
+    def async_dismiss_setup_message(self) -> None:
+        """Dismiss persistent notification."""
+        data = {**self.entry.data, CONF_WEBHOOK_STATUS: True}
+        self.hass.config_entries.async_update_entry(self.entry, data=data)
+        persistent_notification.async_dismiss(self.hass, self.entry.entry_id)
