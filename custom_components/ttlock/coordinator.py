@@ -14,7 +14,7 @@ from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import TTLockApi
-from .const import DOMAIN, SIGNAL_NEW_DATA, TT_API
+from .const import DOMAIN, SIGNAL_NEW_DATA, TT_API, TT_LOCKS
 from .models import State, WebhookEvent
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,6 +32,7 @@ class LockState:
     firmware_version: str | None = None
     locked: bool | None = None
     action_pending: bool = False
+    last_user: str | None = None
 
 
 @contextmanager
@@ -45,6 +46,14 @@ def lock_action(controller: LockUpdateCoordinator):
     finally:
         controller.data.action_pending = False
         controller.async_update_listeners()
+
+
+def lock_coordinators(hass: HomeAssistant, entry: ConfigEntry):
+    """Help with entity setup."""
+    coordinators: list[LockUpdateCoordinator] = hass.data[DOMAIN][entry.entry_id][
+        TT_LOCKS
+    ]
+    yield from coordinators
 
 
 class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
@@ -105,6 +114,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 new_data.locked = True
             elif state.locked == State.unlocked:
                 new_data.locked = False
+
+            new_data.last_user = event.user
 
         self.async_set_updated_data(new_data)
 
