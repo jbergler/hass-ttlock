@@ -5,18 +5,14 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-import aiohttp
-
 from homeassistant.components.lock import LockEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_BATTERY_LEVEL, VOLUME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import PlatformNotReady
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import ApiLock, LockState
-from .const import DOMAIN, TT_API, TT_LOCKS
-from .entity import TTLockEntity
+from .const import DOMAIN, TT_LOCKS
+from .coordinator import LockUpdateCoordinator
 
 SCAN_INTERVAL = timedelta(hours=1)
 
@@ -26,30 +22,65 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up all the locks for the config entry."""
-    api = hass.data[DOMAIN][config_entry.entry_id][TT_API]
+    # api = hass.data[DOMAIN][config_entry.entry_id][TT_API]
 
-    entities: list[TTLock] = []
-    try:
-        locks = await api.get_locks()
+    entities: list[Lock] = []
 
-        for lock in locks:
-            _LOGGER.debug("Found lock %s" % (lock.name))
-            entities.append(TTLock(api, lock))
+    coordinators: list[LockUpdateCoordinator] = hass.data[DOMAIN][entry.entry_id][
+        TT_LOCKS
+    ]
+    for coordinator in coordinators:
+        _LOGGER.debug("Setting up LockEntity for %s", coordinator.lock_id)
+        entities.append(Lock(coordinator))
 
-        async_add_entities(entities, update_before_add=True)
-        hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS] = entities
-    except aiohttp.ClientError as ex:
-        raise PlatformNotReady from ex
+    async_add_entities(entities)
 
 
-class TTLock(LockEntity, TTLockEntity[ApiLock]):
+class Lock(CoordinatorEntity[LockUpdateCoordinator], LockEntity):
     """The entity object for a lock."""
 
+    coordinator: LockUpdateCoordinator
+
     _attr_code_format = None
+
+    def __init__(
+        self,
+        coordinator: LockUpdateCoordinator,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._attr_device_info = coordinator.device_info
+        self._attr_unique_id = f"{coordinator.unique_id}-lock"
+        self._update_from_coordinator()
+
+        # self.entity_description = description
+
+    def _update_from_coordinator(self) -> None:
+        """Fetch state from the device."""
+        self._attr_name = self.coordinator.data.name
+
+        self._attr_is_locked = self.coordinator.data.locked
+        self._attr_is_locking = (
+            self.coordinator.data.action_pending and not self.coordinator.data.locked
+        )
+        self._attr_is_unlocking = (
+            self.coordinator.data.action_pending and self.coordinator.data.locked
+        )
+
+        # self._attr_extra_state_attributes = {
+        #     ATTR_BATTERY_LEVEL: self.device.battery_level,
+        #     VOLUME: self.device.volume if self.device.sound_enabled else 0,
+        # }
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self._update_from_coordinator()
+        self.async_write_ha_state()
 
     RECORD_TYPE_UNLOCK = [
         1,  # unlock by app
@@ -103,44 +134,28 @@ class TTLock(LockEntity, TTLockEntity[ApiLock]):
             "sw_version": self.device.version,
         }
 
-    def update_from_data(self) -> None:
-        """Update the entity state from the latest data."""
-        if self.device.state is None or self.device.state is LockState.unknown:
-            self._attr_is_locked = None
-        else:
-            self._attr_is_locked = self.device.state == LockState.locked
+    # def update_from_webhook(self, data: dict):
+    #     """Process the webhook event to update lock state."""
+    #     if data.get("success") == 1:
+    #         # Only process lock state if the event indicated a successful operation
+    #         event = data.get("recordType", -1)
+    #         if event in self.RECORD_TYPE_UNLOCK:
+    #             self._attr_is_locked = False
+    #         elif event in self.RECORD_TYPE_LOCK:
+    #             self._attr_is_locked = True
 
-        self._attr_extra_state_attributes = {
-            ATTR_BATTERY_LEVEL: self.device.battery_level,
-            VOLUME: self.device.volume if self.device.sound_enabled else 0,
-        }
-
-    def update_from_webhook(self, data: dict):
-        """Process the webhook event to update lock state."""
-        if data.get("success") == 1:
-            # Only process lock state if the event indicated a successful operation
-            event = data.get("recordType", -1)
-            if event in self.RECORD_TYPE_UNLOCK:
-                self._attr_is_locked = False
-            elif event in self.RECORD_TYPE_LOCK:
-                self._attr_is_locked = True
-
-    @callback
-    def _update_callback(self, data: dict):
-        """Update data."""
-        if self.device.id == data.get("lockId"):
-            _LOGGER.debug(f"{data} is for this device ({self.entity_id})")
-            self.update_from_webhook(data)
-            self.async_write_ha_state()
+    # @callback
+    # def _update_callback(self, data: dict):
+    #     """Update data."""
+    #     if self.device.id == data.get("lockId"):
+    #         _LOGGER.debug(f"{data} is for this device ({self.entity_id})")
+    #         self.update_from_webhook(data)
+    #         self.async_write_ha_state()
 
     async def async_lock(self, **kwargs: Any) -> None:
-        """Lock the car."""
-        _LOGGER.debug("%s: locking", self.device.name)
-        if await self.device.lock():
-            self.async_write_ha_state()
+        """Try to lock the lock."""
+        await self.coordinator.lock()
 
     async def async_unlock(self, **kwargs: Any) -> None:
-        """Unlock the car."""
-        _LOGGER.debug("%s: unlocking", self.device.name)
-        if await self.device.unlock():
-            self.schedule_update_ha_state()
+        """Try to unlock the lock."""
+        await self.coordinator.unlock()

@@ -30,8 +30,8 @@ async def async_get_config_entry_diagnostics(
         {
             "config_entry": config_entry.as_dict(),
             "locks": [
-                lock.as_dict()
-                for lock in hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS]
+                coordinator.as_dict()
+                for coordinator in hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS]
             ],
         },
         TO_REDACT,

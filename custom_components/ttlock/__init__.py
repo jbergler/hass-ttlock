@@ -1,6 +1,7 @@
 """The TTLock integration."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
@@ -32,6 +33,8 @@ from .const import (
     TT_API,
     TT_LOCKS,
 )
+from .coordinator import LockUpdateCoordinator
+from .models import WebhookEvent
 
 PLATFORMS: list[Platform] = [Platform.LOCK]
 
@@ -47,11 +50,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     session = config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation)
+    client = TTLockApi(aiohttp_client.async_get_clientsession(hass), session)
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        TT_API: TTLockApi(aiohttp_client.async_get_clientsession(hass), session),
-        TT_LOCKS: [],
-    }
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {TT_API: client}
+
+    locks = [
+        LockUpdateCoordinator(hass, entry, lock_id)
+        for lock_id in await client.get_locks()
+    ]
+    await asyncio.gather(
+        *[coordinator.async_config_entry_first_refresh() for coordinator in locks]
+    )
+    hass.data[DOMAIN][entry.entry_id][TT_LOCKS] = locks
 
     await WebhookHandler(hass, entry).setup()
 
@@ -115,7 +125,7 @@ class WebhookHandler:
         if CONF_WEBHOOK_STATUS not in self.entry.data:
             self.async_show_setup_message(webhook_url)
 
-        _LOGGER.info(f"Webhook {webhook_url}")
+        _LOGGER.info("Webhook registered at %s", webhook_url)
 
         # Ensure the webhook is not registered already
         webhook_unregister(self.hass, self.entry.data[CONF_WEBHOOK_ID])
@@ -136,21 +146,23 @@ class WebhookHandler:
         self, hass: HomeAssistant, webhook_id: str, request: Request
     ) -> None:
         """Handle webhook callback."""
-        # {'lockId': ['7252408'], 'notifyType': ['1'], 'records': ['[{"lockId":7252408,"electricQuantity":93,"serverDate":1680810180029,"recordTypeFromLock":17,"recordType":7,"success":1,"lockMac":"16:72:4C:CC:01:C4","keyboardPwd":"<digits>","lockDate":1680810186000,"username":"Jonas"}]'], 'admin': ['jonas@lemon.nz'], 'lockMac': ['16:72:4C:CC:01:C4']}
+
         success = False
         try:
-            data = await request.post()
-            if data:
-                for record_raw in data.getall("records", []):
-                    for record in json.loads(record_raw):
-                        async_dispatcher_send(hass, SIGNAL_NEW_DATA, record)
+            # {'lockId': ['7252408'], 'notifyType': ['1'], 'records': ['[{"lockId":7252408,"electricQuantity":93,"serverDate":1680810180029,"recordTypeFromLock":17,"recordType":7,"success":1,"lockMac":"16:72:4C:CC:01:C4","keyboardPwd":"<digits>","lockDate":1680810186000,"username":"Jonas"}]'], 'admin': ['jonas@lemon.nz'], 'lockMac': ['16:72:4C:CC:01:C4']}
+            if data := await request.post():
+                _LOGGER.debug("Got webhook data: %s", data)
+                for raw_records in data.getall("records", []):
+                    for record in json.loads(raw_records):
+                        async_dispatcher_send(
+                            hass, SIGNAL_NEW_DATA, WebhookEvent.parse_obj(record)
+                        )
                         success = True
             else:
-                _LOGGER.debug(f"handle_webhook, empty payload: {await request.text()}")
-        except ValueError:
+                _LOGGER.debug("handle_webhook, empty payload: %s", await request.text())
+        except ValueError as ex:
+            _LOGGER.exception("Exception parsing webhook data: %s", ex)
             return
-
-        _LOGGER.debug("Got webhook data: %s", data)
 
         if success and CONF_WEBHOOK_STATUS not in self.entry.data:
             self.async_dismiss_setup_message()
