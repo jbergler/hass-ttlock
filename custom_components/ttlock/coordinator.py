@@ -33,6 +33,7 @@ class LockState:
     locked: bool | None = None
     action_pending: bool = False
     last_user: str | None = None
+    last_reason: str | None = None
 
 
 @contextmanager
@@ -115,7 +116,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             elif state.locked == State.unlocked:
                 new_data.locked = False
 
-            new_data.last_user = event.user
+            if state.locked is not None:
+                new_data.last_user = event.user
+                new_data.last_reason = event.event.description
 
         self.async_set_updated_data(new_data)
 
