@@ -57,7 +57,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self.lock_id = lock_id
 
         super().__init__(
-            hass, _LOGGER, name=DOMAIN, update_interval=timedelta(seconds=60)
+            hass, _LOGGER, name=DOMAIN, update_interval=timedelta(minutes=15)
         )
 
         async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._process_webhook_data)
