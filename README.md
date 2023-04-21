@@ -12,8 +12,10 @@ Home Assistant integration for TTLock based locks.
 
 > If this integration is working for you, please leave a comment [here](https://github.com/jbergler/hass-ttlock/issues/1)
 
+- [Catchface Smart Lock](https://s.click.aliexpress.com/e/_DFtl1Wd)
 - [Cielsa Dawn Fingerprint Digital Doorknob](https://www.amazon.com/dp/B09B557YZK)
 - [E-Lok 9 series](https://www.e-lok.com/9-series)
+- [TOTOWISER locks](https://www.amazon.com.au/gp/product/B08TQKW3JC)
 - [YRHAND locks](https://yrhandlock.com)
 
 ## Limitations (will be fixed over time)
