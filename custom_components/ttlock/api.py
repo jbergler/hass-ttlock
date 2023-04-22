@@ -10,7 +10,7 @@ from aiohttp import ClientSession
 from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.helpers import config_entry_oauth2_flow
 
-from .models import Lock, LockState
+from .models import Lock, LockState, PassageModeConfig
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -96,6 +96,11 @@ class TTLockApi:
         """Get the state of a lock."""
         res = await self.get("lock/queryOpenState", lockId=lock_id)
         return LockState.parse_obj(res)
+
+    async def get_lock_passage_mode_config(self, lock_id: int) -> PassageModeConfig:
+        """Get the passage mode configuration of a lock."""
+        res = await self.get("lock/getPassageModeConfig", lockId=lock_id)
+        return PassageModeConfig.parse_obj(res)
 
     async def lock(self, lock_id: int) -> bool:
         """Try to lock the lock."""

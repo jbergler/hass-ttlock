@@ -1,10 +1,11 @@
 """Provides the TTLock LockUpdateCoordinator."""
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -15,7 +16,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import TTLockApi
 from .const import DOMAIN, SIGNAL_NEW_DATA, TT_API, TT_LOCKS
-from .models import State, WebhookEvent
+from .models import PassageModeConfig, State, WebhookEvent
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,6 +35,33 @@ class LockState:
     action_pending: bool = False
     last_user: str | None = None
     last_reason: str | None = None
+
+    auto_lock_seconds: int = -1
+    passage_mode_config: PassageModeConfig | None = None
+
+    def auto_lock_delay(self, timestamp: int) -> int | None:
+        """Return the auto-lock delay in seconds, or None if auto-lock is currently disabled."""
+        if self.auto_lock_seconds <= 0:
+            return None
+
+        if self.passage_mode_config and self.passage_mode_config.enabled:
+            current_date = datetime.fromtimestamp(timestamp)
+            current_day = current_date.isoweekday()
+
+            if current_day in self.passage_mode_config.week_days:
+                if self.passage_mode_config.all_day:
+                    # All day, today -> no auto-lock
+                    return None
+
+                current_minute = current_date.hour * 60 + current_date.minute
+                if (
+                    self.passage_mode_config.start_minute
+                    <= current_minute
+                    <= self.passage_mode_config.end_minute
+                ):
+                    # In passage mode, today -> no auto-lock
+                    return None
+        return self.auto_lock_seconds
 
 
 @contextmanager
@@ -92,6 +120,11 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 state = await self.api.get_lock_state(self.lock_id)
                 new_data.locked = state.locked == State.locked
 
+            new_data.auto_lock_seconds = details.autoLockTime
+            new_data.passage_mode_config = await self.api.get_lock_passage_mode_config(
+                self.lock_id
+            )
+
             return new_data
         except Exception as err:
             raise UpdateFailed(err) from err
@@ -115,12 +148,34 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 new_data.locked = True
             elif state.locked == State.unlocked:
                 new_data.locked = False
+                self._handle_auto_lock(event.lock_ts, event.server_ts)
 
             if state.locked is not None:
                 new_data.last_user = event.user
                 new_data.last_reason = event.event.description
 
         self.async_set_updated_data(new_data)
+
+    def _handle_auto_lock(self, lock_ts: int, server_ts: int):
+        """Handle auto-locking the lock."""
+        auto_lock_delay = self.data.auto_lock_delay(lock_ts)
+
+        if auto_lock_delay is None:
+            _LOGGER.debug("Auto-lock is disabled")
+            return
+
+        async def _auto_locked(seconds: int, offset: int = 0):
+            if seconds > 0 and (seconds - offset) > 0:
+                await asyncio.sleep(seconds - offset)
+
+            new_data = deepcopy(self.data)
+            new_data.locked = True
+            new_data.last_reason = "Auto Lock"
+
+            _LOGGER.debug("Assuming lock auto locked after %s seconds", auto_lock_delay)
+            self.async_set_updated_data(new_data)
+
+        self.hass.create_task(_auto_locked(auto_lock_delay, server_ts - lock_ts))
 
     @property
     def unique_id(self) -> str:
