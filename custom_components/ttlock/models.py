@@ -13,6 +13,10 @@ class OnOff(Enum):
     on = 1
     off = 2
 
+    def __bool__(self) -> bool:
+        """Overload truthyness to 'on'."""
+        return self == OnOff.on
+
 
 class OpenDirection(Enum):
     """Tri-state for door open direction."""
@@ -60,6 +64,17 @@ class LockState(BaseModel):
     """Lock state."""
 
     locked: State | None = Field(..., alias="state")
+
+
+class PassageModeConfig(BaseModel):
+    """The passage mode configuration of the lock."""
+
+    enabled: OnOff = Field(..., alias="passageMode")
+    start_minute: int = Field(..., alias="startDate")
+    end_minute: int = Field(..., alias="endDate")
+    all_day: OnOff = Field(..., alias="isAllDay")
+    week_days: list[int] = Field(..., alias="weekDays")  # monday = 1, sunday = 7
+    auto_unlock: OnOff = Field(..., alias="autoUnlock")
 
 
 class Action(Enum):
