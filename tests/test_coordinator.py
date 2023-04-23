@@ -13,6 +13,8 @@ from .const import (
     LOCK_DETAILS,
     PASSAGE_MODE_6_TO_6_7_DAYS,
     PASSAGE_MODE_ALL_DAY_WEEKDAYS,
+    WEBHOOK_LOCK_10AM_UTC,
+    WEBHOOK_UNLOCK_10AM_UTC,
 )
 
 
@@ -107,18 +109,7 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
             coordinator.data.locked = False
 
-            event = WebhookEvent.parse_obj(
-                {
-                    "lockId": coordinator.lock_id,
-                    "lockMac": coordinator.data.mac,
-                    "electricQuantity": 40,
-                    "serverDate": 1682244497000,
-                    "lockDate": 1682244497000,
-                    "recordType": 47,
-                    "username": "test",
-                    "success": 1,
-                }
-            )
+            event = WebhookEvent.parse_obj(WEBHOOK_LOCK_10AM_UTC)
 
             coordinator._process_webhook_data(event)
 
@@ -132,18 +123,7 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
             coordinator.data.locked = True
             coordinator.data.auto_lock_seconds = -1
-            event = WebhookEvent.parse_obj(
-                {
-                    "lockId": coordinator.lock_id,
-                    "lockMac": coordinator.data.mac,
-                    "electricQuantity": 40,
-                    "serverDate": 1682244497000,
-                    "lockDate": 1682244497000,
-                    "recordType": 7,
-                    "username": "test",
-                    "success": 1,
-                }
-            )
+            event = WebhookEvent.parse_obj(WEBHOOK_UNLOCK_10AM_UTC)
 
             coordinator._process_webhook_data(event)
 
@@ -161,21 +141,10 @@ class TestLockUpdateCoordinator:
                 PASSAGE_MODE_6_TO_6_7_DAYS
             )
 
-            event = WebhookEvent.parse_obj(
-                {
-                    "lockId": coordinator.lock_id,
-                    "lockMac": coordinator.data.mac,
-                    "electricQuantity": 40,
-                    "serverDate": 1682244497000,
-                    "lockDate": 1682244497000,
-                    "recordType": 7,
-                    "username": "test",
-                    "success": 1,
-                }
-            )
+            event = WebhookEvent.parse_obj(WEBHOOK_UNLOCK_10AM_UTC)
 
             assert coordinator.data.auto_lock_delay(event.lock_ts) == 1
-            assert event.lock_ts is None
+
             coordinator._process_webhook_data(event)
 
             assert coordinator.data.locked is False

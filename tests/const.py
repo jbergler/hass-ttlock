@@ -63,6 +63,16 @@ PASSAGE_MODE_ALL_DAY_WEEKDAYS = {
     "passageMode": 1,
 }
 
+WEBHOOK_LOCK_10AM_UTC = {
+    "lockId": LOCK_DETAILS["lockId"],
+    "lockMac": LOCK_DETAILS["lockMac"],
+    "electricQuantity": 40,
+    "serverDate": 1682244497000,
+    "lockDate": 1682244497000,
+    "recordType": 47,
+    "username": "test",
+    "success": 1,
+}
 
 WEBHOOK_UNLOCK_10AM_UTC = {
     "lockId": LOCK_DETAILS["lockId"],
