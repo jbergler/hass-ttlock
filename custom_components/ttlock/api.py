@@ -2,6 +2,7 @@
 import asyncio
 from hashlib import md5
 import logging
+from secrets import token_hex
 import time
 from typing import Any, cast
 from urllib.parse import urljoin
@@ -71,9 +72,10 @@ class TTLockApi:
 
     async def get(self, path: str, **kwargs: Any):
         """Make GET request to the API with kwargs as query params."""
+        id = token_hex(2)
 
         url = urljoin(self.BASE, path)
-        _LOGGER.debug("Sending request to %s with args=%s", url, kwargs)
+        _LOGGER.debug("[%s] Sending request to %s with args=%s", id, url, kwargs)
         resp = await self._web_session.get(
             url,
             params=self._add_auth(**kwargs),
@@ -82,15 +84,20 @@ class TTLockApi:
 
         if resp.status >= 400:
             body = await resp.text()
-            _LOGGER.debug("Request failed: status=%s, body=%s", resp.status, body)
+            _LOGGER.debug(
+                "[%s] Request failed: status=%s, body=%s", id, resp.status, body
+            )
         else:
             body = await resp.json()
-            _LOGGER.debug("Received response: status=%s: body=%s", resp.status, body)
+            _LOGGER.debug(
+                "[%s] Received response: status=%s: body=%s", id, resp.status, body
+            )
 
         resp.raise_for_status()
 
         res = cast(dict, await resp.json())
         if res.get("errcode", 0) != 0:
+            _LOGGER.debug("[%s] API returned: %s", id, res)
             raise RequestFailed(f"API returned: {res}")
 
         return cast(dict, await resp.json())
