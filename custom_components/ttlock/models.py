@@ -6,6 +6,22 @@ from enum import Enum, auto
 
 from pydantic import BaseModel, Field
 
+from homeassistant.util.dt import as_local, utc_from_timestamp
+
+
+class EpochMs(datetime):
+    """Parse millisecond epoch into a local datetime."""
+
+    @classmethod
+    def __get_validators__(cls):
+        """Return validator."""
+        yield cls.validate
+
+    @classmethod
+    def validate(cls, v):
+        """Use homeassistant time helpers to parse epoch."""
+        return as_local(utc_from_timestamp(v / 1000))
+
 
 class OnOff(Enum):
     """Tri-state bool for fields that are on/off."""
@@ -188,8 +204,8 @@ class WebhookEvent(BaseModel):
     id: int = Field(..., alias="lockId")
     mac: str = Field(..., alias="lockMac")
     battery_level: int | None = Field(None, alias="electricQuantity")
-    server_ts: datetime = Field(..., alias="serverDate")
-    lock_ts: datetime = Field(..., alias="lockDate")
+    server_ts: EpochMs = Field(..., alias="serverDate")
+    lock_ts: EpochMs = Field(..., alias="lockDate")
     event: Event = Field(..., alias="recordType")
     user: str = Field(None, alias="username")
     success: bool
