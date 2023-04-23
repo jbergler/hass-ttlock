@@ -15,7 +15,7 @@ from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import TTLockApi
-from .const import DOMAIN, SIGNAL_NEW_DATA, TT_API, TT_LOCKS
+from .const import DOMAIN, SIGNAL_NEW_DATA, TT_LOCKS
 from .models import PassageModeConfig, State, WebhookEvent
 
 _LOGGER = logging.getLogger(__name__)
@@ -87,10 +87,9 @@ def lock_coordinators(hass: HomeAssistant, entry: ConfigEntry):
 class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     """Class to manage fetching Toon data from single endpoint."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, lock_id: int) -> None:
+    def __init__(self, hass: HomeAssistant, api: TTLockApi, lock_id: int) -> None:
         """Initialize the update co-ordinator for a single lock."""
-        self.config_entry = entry
-        self.api: TTLockApi = hass.data[DOMAIN][entry.entry_id][TT_API]
+        self.api = api
         self.lock_id = lock_id
 
         super().__init__(
