@@ -2,11 +2,14 @@
 
 Home Assistant integration for TTLock based locks.
 
-## Currently supported features
+## Overview
+
+This integration uses the TTLock Cloud to communicate with your lock. It supports the following features:
 
 - Locking and unlocking
-- Loading status on startup
-- Limited handling of real-time events
+- Discovery of locks on startup
+- Real-time updates via a webhook (no periodic polling which wastes battery)
+- Additional sensors for battery, last operator + reason
 
 ## Known working locks
 
@@ -17,10 +20,6 @@ Home Assistant integration for TTLock based locks.
 - [E-Lok 9 series](https://www.e-lok.com/9-series)
 - [TOTOWISER locks](https://www.amazon.com.au/gp/product/B08TQKW3JC)
 - [YRHAND locks](https://yrhandlock.com)
-
-## Limitations (will be fixed over time)
-
-- Almost everything else
 
 # Usage
 
@@ -34,10 +33,9 @@ Home Assistant integration for TTLock based locks.
 
 1. Go to https://open.ttlock.com/manager and create an account
 1. Register an application (this will take a few days to get approved)
-1. Install the extension via HACS
-   - You will need to add add custom repository 'jbergler/hass-ttlock' of type 'integration'
-1. Setup the integration via Home Assistant UI
-1. Once the integration is working you should receive a notification with the webhook url
+1. Install the extension [via HACS](https://my.home-assistant.io/redirect/hacs_repository/?owner=jbergler&repository=hass-ttlock&category=integration) and restart Home Assistant
+1. Setup the integration [via Home Assistant UI](https://my.home-assistant.io/redirect/config_flow_start/?domain=ttlock)
+1. Once the integration is working you should receive a system notification with the webhook url
    - This will go away when the webhook receives data
 1. Go back to the url from the first step and set the 'Callback URL' for your application
 
