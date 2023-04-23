@@ -1,13 +1,13 @@
 """Test ttlock setup process."""
 
 
-from datetime import timezone
+import asyncio
 
 import dateparser
 import pytest
 
 from custom_components.ttlock.coordinator import LockState, LockUpdateCoordinator
-from custom_components.ttlock.models import PassageModeConfig
+from custom_components.ttlock.models import PassageModeConfig, WebhookEvent
 
 from .const import (
     LOCK_DETAILS,
@@ -38,9 +38,9 @@ def lock_state(request):
 
 
 def ts(time: str = "now"):
-    ts = dateparser.parse(time)
+    return dateparser.parse(time)
     if ts:
-        ts.replace(tzinfo=timezone.utc)
+        ts.replace(tzinfo=None)
     return ts
 
 
@@ -97,3 +97,93 @@ class TestLockState:
                 PASSAGE_MODE_ALL_DAY_WEEKDAYS
             )
             assert lock_state.auto_lock_delay(ts(time)) is None
+
+
+class TestLockUpdateCoordinator:
+    class TestProcessWebhookData:
+        async def test_lock_works(
+            self, coordinator: LockUpdateCoordinator, sane_default_data
+        ):
+            await coordinator.async_refresh()
+            coordinator.data.locked = False
+
+            event = WebhookEvent.parse_obj(
+                {
+                    "lockId": coordinator.lock_id,
+                    "lockMac": coordinator.data.mac,
+                    "electricQuantity": 40,
+                    "serverDate": 1682244497000,
+                    "lockDate": 1682244497000,
+                    "recordType": 47,
+                    "username": "test",
+                    "success": 1,
+                }
+            )
+
+            coordinator._process_webhook_data(event)
+
+            assert coordinator.data.locked is True
+            assert coordinator.data.last_user == "test"
+            assert coordinator.data.last_reason == "lock by lock key"
+
+        async def test_unlock_works(
+            self, coordinator: LockUpdateCoordinator, sane_default_data
+        ):
+            await coordinator.async_refresh()
+            coordinator.data.locked = True
+            coordinator.data.auto_lock_seconds = -1
+            event = WebhookEvent.parse_obj(
+                {
+                    "lockId": coordinator.lock_id,
+                    "lockMac": coordinator.data.mac,
+                    "electricQuantity": 40,
+                    "serverDate": 1682244497000,
+                    "lockDate": 1682244497000,
+                    "recordType": 7,
+                    "username": "test",
+                    "success": 1,
+                }
+            )
+
+            coordinator._process_webhook_data(event)
+
+            assert coordinator.data.locked is False
+            assert coordinator.data.last_user == "test"
+            assert coordinator.data.last_reason == "unlock by IC card"
+
+        async def test_auto_lock_works(
+            self, hass, coordinator: LockUpdateCoordinator, sane_default_data
+        ):
+            await coordinator.async_refresh()
+            coordinator.data.locked = True
+            coordinator.data.auto_lock_seconds = 1
+            coordinator.data.passage_mode_config = PassageModeConfig.parse_obj(
+                PASSAGE_MODE_6_TO_6_7_DAYS
+            )
+
+            event = WebhookEvent.parse_obj(
+                {
+                    "lockId": coordinator.lock_id,
+                    "lockMac": coordinator.data.mac,
+                    "electricQuantity": 40,
+                    "serverDate": 1682244497000,
+                    "lockDate": 1682244497000,
+                    "recordType": 7,
+                    "username": "test",
+                    "success": 1,
+                }
+            )
+
+            assert coordinator.data.auto_lock_delay(event.lock_ts) == 1
+            assert event.lock_ts is None
+            coordinator._process_webhook_data(event)
+
+            assert coordinator.data.locked is False
+            assert coordinator.data.last_user == "test"
+            assert coordinator.data.last_reason == "unlock by IC card"
+
+            await asyncio.sleep(2)
+
+            assert coordinator.data.locked is True
+            assert coordinator.data.last_user == "test"
+            assert coordinator.data.last_reason == "Auto Lock"
