@@ -32,6 +32,7 @@ class State(Enum):
 
     locked = 0
     unlocked = 1
+    unknown = 2
 
 
 class Lock(BaseModel):
@@ -64,7 +65,7 @@ class Lock(BaseModel):
 class LockState(BaseModel):
     """Lock state."""
 
-    locked: State | None = Field(..., alias="state")
+    locked: State | None = Field(State.unknown, alias="state")
 
 
 class PassageModeConfig(BaseModel):
