@@ -56,7 +56,7 @@ class LockState:
                 if (
                     self.passage_mode_config.start_minute
                     <= current_minute
-                    <= self.passage_mode_config.end_minute
+                    < self.passage_mode_config.end_minute
                 ):
                     # In passage mode, today -> no auto-lock
                     return None

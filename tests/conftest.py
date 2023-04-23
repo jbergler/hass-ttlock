@@ -18,7 +18,7 @@ from homeassistant.components.application_credentials import (
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
-from .const import LOCK_DETAILS, LOCK_STATE_UNLOCKED, PASSAGE_MODE_7_DAYS
+from .const import LOCK_DETAILS, LOCK_STATE_UNLOCKED, PASSAGE_MODE_6_TO_6_7_DAYS
 
 pytest_plugins = "pytest_homeassistant_custom_component"
 
@@ -97,7 +97,7 @@ def sane_default_data():
 
     lock = Lock.parse_obj(LOCK_DETAILS)
     state = LockState.parse_obj(LOCK_STATE_UNLOCKED)
-    passage_mode_config = PassageModeConfig.parse_obj(PASSAGE_MODE_7_DAYS)
+    passage_mode_config = PassageModeConfig.parse_obj(PASSAGE_MODE_6_TO_6_7_DAYS)
 
     with patch(
         "custom_components.ttlock.api.TTLockApi.get_locks", return_value=[lock.id]
