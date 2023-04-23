@@ -1,4 +1,5 @@
 """API for TTLock bound to Home Assistant OAuth."""
+import asyncio
 from hashlib import md5
 import logging
 import time
@@ -13,6 +14,7 @@ from homeassistant.helpers import config_entry_oauth2_flow
 from .models import Lock, LockState, PassageModeConfig
 
 _LOGGER = logging.getLogger(__name__)
+GW_LOCK = asyncio.Lock()
 
 
 class TTLockAuthImplementation(
@@ -72,14 +74,19 @@ class TTLockApi:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
-        if resp.status >= 400 and _LOGGER.isEnabledFor(logging.DEBUG):
+        if resp.status >= 400:
             body = await resp.text()
             _LOGGER.debug("Request failed: status=%s, body=%s", resp.status, body)
         else:
             body = await resp.json()
-            _LOGGER.debug("Received response: %s", body)
+            _LOGGER.debug("Received response: status=%s: body=%s", resp.status, body)
 
         resp.raise_for_status()
+
+        res = cast(dict, await resp.json())
+        if res.get("errcode", 0) != 0:
+            raise RuntimeError("API returned: %s", res.get("errmsg", "Unknown error"))
+
         return cast(dict, await resp.json())
 
     async def get_locks(self) -> list[int]:
@@ -94,7 +101,8 @@ class TTLockApi:
 
     async def get_lock_state(self, lock_id: int) -> LockState:
         """Get the state of a lock."""
-        res = await self.get("lock/queryOpenState", lockId=lock_id)
+        async with GW_LOCK:
+            res = await self.get("lock/queryOpenState", lockId=lock_id)
         return LockState.parse_obj(res)
 
     async def get_lock_passage_mode_config(self, lock_id: int) -> PassageModeConfig:
@@ -104,7 +112,8 @@ class TTLockApi:
 
     async def lock(self, lock_id: int) -> bool:
         """Try to lock the lock."""
-        res = await self.get("lock/lock", lockId=lock_id)
+        async with GW_LOCK:
+            res = await self.get("lock/lock", lockId=lock_id)
 
         if "errcode" in res and res["errcode"] != 0:
             _LOGGER.error("Failed to lock %s: %s", lock_id, res["errmsg"])
@@ -114,7 +123,8 @@ class TTLockApi:
 
     async def unlock(self, lock_id: int) -> bool:
         """Try to unlock the lock."""
-        res = await self.get("lock/unlock", lockId=lock_id)
+        async with GW_LOCK:
+            res = await self.get("lock/unlock", lockId=lock_id)
 
         if "errcode" in res and res["errcode"] != 0:
             _LOGGER.error("Failed to unlock %s: %s", lock_id, res["errmsg"])
