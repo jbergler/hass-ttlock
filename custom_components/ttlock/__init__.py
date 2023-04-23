@@ -55,7 +55,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {TT_API: client}
 
     locks = [
-        LockUpdateCoordinator(hass, entry, lock_id)
+        LockUpdateCoordinator(hass, client, lock_id)
         for lock_id in await client.get_locks()
     ]
     await asyncio.gather(
