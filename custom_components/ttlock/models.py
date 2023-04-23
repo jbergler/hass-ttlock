@@ -69,12 +69,12 @@ class LockState(BaseModel):
 class PassageModeConfig(BaseModel):
     """The passage mode configuration of the lock."""
 
-    enabled: OnOff = Field(..., alias="passageMode")
-    start_minute: int = Field(..., alias="startDate")
-    end_minute: int = Field(..., alias="endDate")
-    all_day: OnOff = Field(..., alias="isAllDay")
-    week_days: list[int] = Field(..., alias="weekDays")  # monday = 1, sunday = 7
-    auto_unlock: OnOff = Field(..., alias="autoUnlock")
+    enabled: OnOff = Field(OnOff.unknown, alias="passageMode")
+    start_minute: int = Field(0, alias="startDate")
+    end_minute: int = Field(0, alias="endDate")
+    all_day: OnOff = Field(OnOff.unknown, alias="isAllDay")
+    week_days: list[int] = Field([], alias="weekDays")  # monday = 1, sunday = 7
+    auto_unlock: OnOff = Field(OnOff.unknown, alias="autoUnlock")
 
 
 class Action(Enum):
