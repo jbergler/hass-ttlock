@@ -39,13 +39,12 @@ class LockState:
     auto_lock_seconds: int = -1
     passage_mode_config: PassageModeConfig | None = None
 
-    def auto_lock_delay(self, timestamp: int) -> int | None:
+    def auto_lock_delay(self, current_date: datetime) -> int | None:
         """Return the auto-lock delay in seconds, or None if auto-lock is currently disabled."""
         if self.auto_lock_seconds <= 0:
             return None
 
         if self.passage_mode_config and self.passage_mode_config.enabled:
-            current_date = datetime.fromtimestamp(timestamp)
             current_day = current_date.isoweekday()
 
             if current_day in self.passage_mode_config.week_days:
@@ -156,15 +155,17 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
         self.async_set_updated_data(new_data)
 
-    def _handle_auto_lock(self, lock_ts: int, server_ts: int):
+    def _handle_auto_lock(self, lock_ts: datetime, server_ts: datetime):
         """Handle auto-locking the lock."""
+
         auto_lock_delay = self.data.auto_lock_delay(lock_ts)
+        computed_msg_delay = max(0, (server_ts - lock_ts).total_seconds())
 
         if auto_lock_delay is None:
             _LOGGER.debug("Auto-lock is disabled")
             return
 
-        async def _auto_locked(seconds: int, offset: int = 0):
+        async def _auto_locked(seconds: int, offset: float = 0):
             if seconds > 0 and (seconds - offset) > 0:
                 await asyncio.sleep(seconds - offset)
 
@@ -175,7 +176,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             _LOGGER.debug("Assuming lock auto locked after %s seconds", auto_lock_delay)
             self.async_set_updated_data(new_data)
 
-        self.hass.create_task(_auto_locked(auto_lock_delay, server_ts - lock_ts))
+        self.hass.create_task(_auto_locked(auto_lock_delay, computed_msg_delay))
 
     @property
     def unique_id(self) -> str:

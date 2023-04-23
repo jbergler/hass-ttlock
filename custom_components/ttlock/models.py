@@ -1,6 +1,7 @@
 """Models for parsing the TTLock API data."""
 
 from collections import namedtuple
+from datetime import datetime
 from enum import Enum, auto
 
 from pydantic import BaseModel, Field
@@ -186,8 +187,8 @@ class WebhookEvent(BaseModel):
     id: int = Field(..., alias="lockId")
     mac: str = Field(..., alias="lockMac")
     battery_level: int | None = Field(None, alias="electricQuantity")
-    server_ts: int = Field(..., alias="serverDate")
-    lock_ts: int = Field(..., alias="lockDate")
+    server_ts: datetime = Field(..., alias="serverDate")
+    lock_ts: datetime = Field(..., alias="lockDate")
     event: Event = Field(..., alias="recordType")
     user: str = Field(None, alias="username")
     success: bool
