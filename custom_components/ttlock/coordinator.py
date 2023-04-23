@@ -115,8 +115,11 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             new_data.firmware_version = details.firmwareRevision
 
             if new_data.locked is None:
-                state = await self.api.get_lock_state(self.lock_id)
-                new_data.locked = state.locked == State.locked
+                try:
+                    state = await self.api.get_lock_state(self.lock_id)
+                    new_data.locked = state.locked == State.locked
+                except Exception:
+                    pass
 
             new_data.auto_lock_seconds = details.autoLockTime
             new_data.passage_mode_config = await self.api.get_lock_passage_mode_config(
