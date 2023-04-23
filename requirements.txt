@@ -1,0 +1,3 @@
+pytest-homeassistant-custom-component
+hass_nabucasa # cloud component
+aiohttp_cors # http component

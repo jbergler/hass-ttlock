@@ -1,0 +1,55 @@
+name: Lint & Test
+
+on:
+  pull_request:
+  push:
+    branches: [develop]
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v3
+      - uses: pre-commit/action@v3.0.0
+
+  validate_hacs:
+    name: "HACS"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: "actions/checkout@v3"
+      - name: HACS Action
+        uses: "hacs/action@main"
+        with:
+          category: "integration"
+
+  validate_hassfest:
+    name: "Hassfest"
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v3"
+      - uses: "home-assistant/actions/hassfest@master"
+
+  test:
+    runs-on: "ubuntu-latest"
+    name: Tests
+    steps:
+      - name: Check out code from GitHub
+        uses: "actions/checkout@v3"
+      - name: Setup Python
+        uses: "actions/setup-python@v4"
+        with:
+          python-version: "3.10"
+      - name: Install requirements
+        run: python3 -m pip install -r requirements.txt
+      - name: Run tests
+        run: |
+          pytest \
+            -qq \
+            --timeout=9 \
+            --durations=10 \
+            -n auto \
+            --cov custom_components.ttlock \
+            -o console_output_style=count \
+            -p no:sugar \
+            tests
