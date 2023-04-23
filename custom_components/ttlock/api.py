@@ -17,6 +17,12 @@ _LOGGER = logging.getLogger(__name__)
 GW_LOCK = asyncio.Lock()
 
 
+class RequestFailed(Exception):
+    """Exception when TTLock API returns an error."""
+
+    pass
+
+
 class TTLockAuthImplementation(
     AuthImplementation,
 ):
@@ -85,7 +91,7 @@ class TTLockApi:
 
         res = cast(dict, await resp.json())
         if res.get("errcode", 0) != 0:
-            raise RuntimeError("API returned: %s", res.get("errmsg", "Unknown error"))
+            raise RequestFailed(f"API returned: {res}")
 
         return cast(dict, await resp.json())
 
