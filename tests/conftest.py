@@ -3,10 +3,13 @@
 from time import time
 from unittest.mock import patch
 
+from aiohttp import ClientSession
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.ttlock.api import TTLockApi
 from custom_components.ttlock.const import DOMAIN
+from custom_components.ttlock.coordinator import LockUpdateCoordinator
 from custom_components.ttlock.models import Lock, LockState, PassageModeConfig
 from homeassistant.components.application_credentials import (
     ClientCredential,
@@ -14,6 +17,8 @@ from homeassistant.components.application_credentials import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
+
+from .const import LOCK_DETAILS, LOCK_STATE_UNLOCKED, PASSAGE_MODE_7_DAYS
 
 pytest_plugins = "pytest_homeassistant_custom_component"
 
@@ -74,65 +79,25 @@ def component_setup(hass: HomeAssistant, config_entry: MockConfigEntry):
 
 
 @pytest.fixture
+async def api():
+    """TTLockApi instance for use in tests."""
+    session = ClientSession()
+    return TTLockApi(session, None)
+
+
+@pytest.fixture
+async def coordinator(hass, api):
+    """Co-ordinator instance for use in tests."""
+    return LockUpdateCoordinator(hass, api, 7252408)
+
+
+@pytest.fixture
 def sane_default_data():
     """Fixture for mocking sane default data from the API."""
 
-    lock = Lock.parse_obj(
-        {
-            "date": 1669690212000,
-            "lockAlias": "Front Door",
-            "lockSound": 2,
-            "modelNum": "SN9206_PV53",
-            "lockMac": "16:72:4C:CC:01:C4",
-            "privacyLock": 2,
-            "deletePwd": "",
-            "featureValue": "F44354CD5F3",
-            "adminPwd": "<REMOVED>",
-            "soundVolume": 5,
-            "hasGateway": 1,
-            "autoLockTime": 60,
-            "wirelessKeypadFeatureValue": "0",
-            "lockKey": "<REMOVED>",
-            "isFrozen": 2,
-            "lockName": "S31_c401cc",
-            "resetButton": 1,
-            "firmwareRevision": "6.0.6.210622",
-            "tamperAlert": 1,
-            "specialValue": 894227955,
-            "displayPasscode": 0,
-            "noKeyPwd": "<REMOVED>",
-            "passageMode": 1,
-            "passageModeAutoUnlock": 2,
-            "timezoneRawOffset": 46800000,
-            "lockId": 7252408,
-            "electricQuantity": 90,
-            "lockFlagPos": 0,
-            "lockUpdateDate": 1682201024000,
-            "keyboardPwdVersion": 4,
-            "aesKeyStr": "<REMOVED>",
-            "hardwareRevision": "1.6",
-            "openDirection": 0,
-            "lockVersion": {
-                "groupId": 10,
-                "protocolVersion": 3,
-                "protocolType": 5,
-                "orgId": 34,
-                "scene": 2,
-            },
-            "sensitivity": -1,
-        }
-    )
-    state = LockState.parse_obj({"state": 1})
-    passage_mode_config = PassageModeConfig.parse_obj(
-        {
-            "autoUnlock": 2,
-            "isAllDay": 2,
-            "endDate": 1200,
-            "weekDays": [1, 2, 3, 4, 5, 6, 7],
-            "passageMode": 1,
-            "startDate": 420,
-        }
-    )
+    lock = Lock.parse_obj(LOCK_DETAILS)
+    state = LockState.parse_obj(LOCK_STATE_UNLOCKED)
+    passage_mode_config = PassageModeConfig.parse_obj(PASSAGE_MODE_7_DAYS)
 
     with patch(
         "custom_components.ttlock.api.TTLockApi.get_locks", return_value=[lock.id]
