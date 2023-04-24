@@ -1,0 +1,29 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "A conta já está configurada",
+      "already_in_progress": "A configuração já está em curso",
+      "authorize_url_timeout": "Tempo limite do URL de autorização.",
+      "missing_configuration": "O componente não está configurado. Ver a documentação.",
+      "no_url_available": "Nenhum URL disponível. Para obter informações sobre este erro, [verifique a seção de ajuda]({docs_url})",
+      "oauth_error": "Dados de token inválidos recebidos.",
+      "user_rejected_authorize": "Vinculação de conta rejeitada: {error}"
+    },
+    "create_entry": {
+      "default": "Autenticado com sucesso"
+    },
+    "step": {
+      "auth": {
+        "title": "Login no TTLock",
+        "description": "Forneça os detalhes de login que usa para fazer login no aplicativo TTLock ao configurar seus bloqueios",
+        "data": {
+          "password": "Senha",
+          "username": "Nome de utilizador"
+        }
+      },
+      "pick_implementation": {
+        "title": "Escolha o método de autenticação"
+      }
+    }
+  }
+}
