@@ -59,19 +59,19 @@ class Lock(BaseModel):
     name: str = Field("Lock", alias="lockAlias")
     mac: str = Field(..., alias="lockMac")
     battery_level: int | None = Field(None, alias="electricQuantity")
-    featureValue: str
-    timezoneRawOffset: int
+    featureValue: str | None = None
+    timezoneRawOffset: int = 0
     model: str | None = Field(None, alias="modelNum")
-    hardwareRevision: str
-    firmwareRevision: str
-    autoLockTime: int
-    lockSound: OnOff
-    privacyLock: OnOff
-    tamperAlert: OnOff
-    resetButton: OnOff
-    openDirection: OpenDirection
-    passageMode: OnOff
-    passageModeAutoUnlock: int
+    hardwareRevision: str | None = None
+    firmwareRevision: str | None = None
+    autoLockTime: int = -1
+    lockSound: OnOff = OnOff.unknown
+    privacyLock: OnOff = OnOff.unknown
+    tamperAlert: OnOff = OnOff.unknown
+    resetButton: OnOff = OnOff.unknown
+    openDirection: OpenDirection = OpenDirection.unknown
+    passageMode: OnOff = OnOff.unknown
+    passageModeAutoUnlock: OnOff = OnOff.unknown
     date: int
 
     # sensitive fields
