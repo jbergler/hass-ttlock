@@ -105,7 +105,7 @@ class TTLockApi:
     async def get_locks(self) -> list[int]:
         """Enumerate all locks in the account."""
         res = await self.get("lock/list", pageNo=1, pageSize=1000)
-        return [lock["lockId"] for lock in res["list"]]
+        return [lock["lockId"] for lock in res["list"] if lock["hasGateway"] != 0]
 
     async def get_lock(self, lock_id: int) -> Lock:
         """Get a lock by ID."""
