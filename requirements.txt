@@ -1,4 +1,9 @@
 pytest-homeassistant-custom-component
-hass_nabucasa # cloud component
+# cloud component
+hass_nabucasa
+webrtcvad
+hassil
+home-assistant-intents
+mutagen
 aiohttp_cors # http component
 dateparser # tests
