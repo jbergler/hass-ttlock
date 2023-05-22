@@ -23,6 +23,8 @@ This integration uses the TTLock Cloud to communicate with your lock. It support
 - [Catchface Smart Lock](https://s.click.aliexpress.com/e/_DFtl1Wd)
 - [Cielsa Dawn Fingerprint Digital Doorknob](https://www.amazon.com/dp/B09B557YZK)
 - [E-Lok 9 series](https://www.e-lok.com/9-series)
+- [Raykube locks](https://raukube0001.aliexpress.com/store/1864009/search?SearchText=TT+Lock)
+- [Simpled locks](https://simpled.uk/)
 - [TOTOWISER locks](https://www.amazon.com.au/gp/product/B08TQKW3JC)
 - [YRHAND locks](https://yrhandlock.com)
 
