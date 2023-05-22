@@ -1,13 +1,15 @@
 """API for TTLock bound to Home Assistant OAuth."""
 import asyncio
+from collections.abc import Mapping
 from hashlib import md5
+import json
 import logging
 from secrets import token_hex
 import time
 from typing import Any, cast
 from urllib.parse import urljoin
 
-from aiohttp import ClientSession
+from aiohttp import ClientResponse, ClientSession
 
 from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.helpers import config_entry_oauth2_flow
@@ -70,9 +72,30 @@ class TTLockApi:
         kwargs["date"] = str(round(time.time() * 1000))
         return kwargs
 
-    async def get(self, path: str, **kwargs: Any):
+    async def _parse_resp(self, resp: ClientResponse, log_id: str) -> Mapping[str, Any]:
+        if resp.status >= 400:
+            body = await resp.text()
+            _LOGGER.debug(
+                "[%s] Request failed: status=%s, body=%s", log_id, resp.status, body
+            )
+        else:
+            body = await resp.json()
+            _LOGGER.debug(
+                "[%s] Received response: status=%s: body=%s", log_id, resp.status, body
+            )
+
+        resp.raise_for_status()
+
+        res = cast(dict, await resp.json())
+        if res.get("errcode", 0) != 0:
+            _LOGGER.debug("[%s] API returned: %s", log_id, res)
+            raise RequestFailed(f"API returned: {res}")
+
+        return cast(dict, await resp.json())
+
+    async def get(self, path: str, **kwargs: Any) -> Mapping[str, Any]:
         """Make GET request to the API with kwargs as query params."""
-        id = token_hex(2)
+        log_id = token_hex(2)
 
         url = urljoin(self.BASE, path)
         _LOGGER.debug("[%s] Sending request to %s with args=%s", id, url, kwargs)
@@ -81,26 +104,20 @@ class TTLockApi:
             params=self._add_auth(**kwargs),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
+        return await self._parse_resp(resp, log_id)
 
-        if resp.status >= 400:
-            body = await resp.text()
-            _LOGGER.debug(
-                "[%s] Request failed: status=%s, body=%s", id, resp.status, body
-            )
-        else:
-            body = await resp.json()
-            _LOGGER.debug(
-                "[%s] Received response: status=%s: body=%s", id, resp.status, body
-            )
+    async def post(self, path: str, **kwargs: Any) -> Mapping[str, Any]:
+        """Make GET request to the API with kwargs as query params."""
+        log_id = token_hex(2)
 
-        resp.raise_for_status()
-
-        res = cast(dict, await resp.json())
-        if res.get("errcode", 0) != 0:
-            _LOGGER.debug("[%s] API returned: %s", id, res)
-            raise RequestFailed(f"API returned: {res}")
-
-        return cast(dict, await resp.json())
+        url = urljoin(self.BASE, path)
+        _LOGGER.debug("[%s] Sending request to %s with args=%s", id, url, kwargs)
+        resp = await self._web_session.post(
+            url,
+            params=self._add_auth(),
+            data=kwargs,
+        )
+        return await self._parse_resp(resp, log_id)
 
     async def get_locks(self) -> list[int]:
         """Enumerate all locks in the account."""
@@ -138,6 +155,28 @@ class TTLockApi:
         """Try to unlock the lock."""
         async with GW_LOCK:
             res = await self.get("lock/unlock", lockId=lock_id)
+
+        if "errcode" in res and res["errcode"] != 0:
+            _LOGGER.error("Failed to unlock %s: %s", lock_id, res["errmsg"])
+            return False
+
+        return True
+
+    async def set_passage_mode(self, lock_id: int, config: PassageModeConfig) -> bool:
+        """Configure passage mode."""
+
+        async with GW_LOCK:
+            res = await self.post(
+                "lock/configPassageMode",
+                lockId=lock_id,
+                type=2,  # via gateway
+                passageMode=1 if config.enabled else 2,
+                autoUnlock=1 if config.auto_unlock else 2,
+                isAllDay=1 if config.all_day else 2,
+                startDate=config.start_minute,
+                endDate=config.end_minute,
+                weekDays=json.dumps(config.week_days),
+            )
 
         if "errcode" in res and res["errcode"] != 0:
             _LOGGER.error("Failed to unlock %s: %s", lock_id, res["errmsg"])
