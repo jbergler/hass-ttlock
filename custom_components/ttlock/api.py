@@ -1,5 +1,6 @@
 """API for TTLock bound to Home Assistant OAuth."""
 import asyncio
+from collections.abc import Mapping
 from hashlib import md5
 import json
 import logging
@@ -8,7 +9,7 @@ import time
 from typing import Any, cast
 from urllib.parse import urljoin
 
-from aiohttp import ClientSession
+from aiohttp import ClientResponse, ClientSession
 
 from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.helpers import config_entry_oauth2_flow
@@ -71,9 +72,30 @@ class TTLockApi:
         kwargs["date"] = str(round(time.time() * 1000))
         return kwargs
 
-    async def get(self, path: str, **kwargs: Any):
+    async def _parse_resp(self, resp: ClientResponse, log_id: str) -> Mapping[str, Any]:
+        if resp.status >= 400:
+            body = await resp.text()
+            _LOGGER.debug(
+                "[%s] Request failed: status=%s, body=%s", log_id, resp.status, body
+            )
+        else:
+            body = await resp.json()
+            _LOGGER.debug(
+                "[%s] Received response: status=%s: body=%s", log_id, resp.status, body
+            )
+
+        resp.raise_for_status()
+
+        res = cast(dict, await resp.json())
+        if res.get("errcode", 0) != 0:
+            _LOGGER.debug("[%s] API returned: %s", log_id, res)
+            raise RequestFailed(f"API returned: {res}")
+
+        return cast(dict, await resp.json())
+
+    async def get(self, path: str, **kwargs: Any) -> Mapping[str, Any]:
         """Make GET request to the API with kwargs as query params."""
-        id = token_hex(2)
+        log_id = token_hex(2)
 
         url = urljoin(self.BASE, path)
         _LOGGER.debug("[%s] Sending request to %s with args=%s", id, url, kwargs)
@@ -82,30 +104,11 @@ class TTLockApi:
             params=self._add_auth(**kwargs),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
+        return await self._parse_resp(resp, log_id)
 
-        if resp.status >= 400:
-            body = await resp.text()
-            _LOGGER.debug(
-                "[%s] Request failed: status=%s, body=%s", id, resp.status, body
-            )
-        else:
-            body = await resp.json()
-            _LOGGER.debug(
-                "[%s] Received response: status=%s: body=%s", id, resp.status, body
-            )
-
-        resp.raise_for_status()
-
-        res = cast(dict, await resp.json())
-        if res.get("errcode", 0) != 0:
-            _LOGGER.debug("[%s] API returned: %s", id, res)
-            raise RequestFailed(f"API returned: {res}")
-
-        return cast(dict, await resp.json())
-
-    async def post(self, path: str, **kwargs: Any):
+    async def post(self, path: str, **kwargs: Any) -> Mapping[str, Any]:
         """Make GET request to the API with kwargs as query params."""
-        id = token_hex(2)
+        log_id = token_hex(2)
 
         url = urljoin(self.BASE, path)
         _LOGGER.debug("[%s] Sending request to %s with args=%s", id, url, kwargs)
@@ -114,26 +117,7 @@ class TTLockApi:
             params=self._add_auth(),
             data=kwargs,
         )
-
-        if resp.status >= 400:
-            body = await resp.text()
-            _LOGGER.debug(
-                "[%s] Request failed: status=%s, body=%s", id, resp.status, body
-            )
-        else:
-            body = await resp.json()
-            _LOGGER.debug(
-                "[%s] Received response: status=%s: body=%s", id, resp.status, body
-            )
-
-        resp.raise_for_status()
-
-        res = cast(dict, await resp.json())
-        if res.get("errcode", 0) != 0:
-            _LOGGER.debug("[%s] API returned: %s", id, res)
-            raise RequestFailed(f"API returned: {res}")
-
-        return cast(dict, await resp.json())
+        return await self._parse_resp(resp, log_id)
 
     async def get_locks(self) -> list[int]:
         """Enumerate all locks in the account."""
