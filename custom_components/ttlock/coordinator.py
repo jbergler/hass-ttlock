@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt
 
 from .api import TTLockApi
 from .const import DOMAIN, SIGNAL_NEW_DATA, TT_LOCKS
@@ -39,7 +40,7 @@ class LockState:
     auto_lock_seconds: int = -1
     passage_mode_config: PassageModeConfig | None = None
 
-    def passage_mode_active(self, current_date: datetime = datetime.now()) -> bool:
+    def passage_mode_active(self, current_date: datetime = dt.now()) -> bool:
         """Check if passage mode is currently active."""
         if self.passage_mode_config and self.passage_mode_config.enabled:
             current_day = current_date.isoweekday()

@@ -35,5 +35,6 @@ class PassageMode(BaseLockEntity, BinarySensorEntity):
 
     def _update_from_coordinator(self) -> None:
         """Fetch state from the device."""
+        _LOGGER.info("we're here!!")
         self._attr_name = f"{self.coordinator.data.name} Passage Mode"
         self._attr_is_on = self.coordinator.data.passage_mode_active()
