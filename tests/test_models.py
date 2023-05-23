@@ -27,6 +27,21 @@ class TestEpochMs:
 
 
 class TestPassageModeConfig:
+    def test_passage_mode(self):
+        parsed = PassageModeConfig.parse_obj(
+            {
+                "autoUnlock": 2,
+                "isAllDay": 2,
+                "endDate": 1200,
+                "weekDays": [1, 2, 3, 4, 5, 6, 7],
+                "passageMode": 1,
+                "startDate": 420,
+            }
+        )
+        assert parsed.enabled
+        assert not parsed.all_day
+        assert not parsed.auto_unlock
+
     def test_null_start_end_date(self):
         parsed = PassageModeConfig.parse_obj(
             {
