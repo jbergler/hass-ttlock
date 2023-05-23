@@ -98,7 +98,7 @@ class TTLockApi:
         log_id = token_hex(2)
 
         url = urljoin(self.BASE, path)
-        _LOGGER.debug("[%s] Sending request to %s with args=%s", id, url, kwargs)
+        _LOGGER.debug("[%s] Sending request to %s with args=%s", log_id, url, kwargs)
         resp = await self._web_session.get(
             url,
             params=self._add_auth(**kwargs),
@@ -111,7 +111,7 @@ class TTLockApi:
         log_id = token_hex(2)
 
         url = urljoin(self.BASE, path)
-        _LOGGER.debug("[%s] Sending request to %s with args=%s", id, url, kwargs)
+        _LOGGER.debug("[%s] Sending request to %s with args=%s", log_id, url, kwargs)
         resp = await self._web_session.post(
             url,
             params=self._add_auth(),
