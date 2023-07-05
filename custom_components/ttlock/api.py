@@ -40,6 +40,18 @@ class TTLockAuthImplementation(
             }
         )
 
+    async def _async_refresh_token(self, token: dict) -> dict:
+        """Refresh tokens."""
+        new_token = await self._token_request(
+            {
+                "grant_type": "refresh_token",
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "refresh_token": token["refresh_token"],
+            }
+        )
+        return {**token, **new_token}
+
     async def async_resolve_external_data(self, external_data: Any) -> dict:
         """Resolve the authorization code to tokens."""
         return dict(external_data)
@@ -66,9 +78,9 @@ class TTLockApi:
 
         return self._oauth_session.token["access_token"]
 
-    def _add_auth(self, **kwargs) -> dict:
+    async def _add_auth(self, **kwargs) -> dict:
         kwargs["clientId"] = self._oauth_session.implementation.client_id
-        kwargs["accessToken"] = self._oauth_session.token["access_token"]
+        kwargs["accessToken"] = await self.async_get_access_token()
         kwargs["date"] = str(round(time.time() * 1000))
         return kwargs
 
@@ -101,7 +113,7 @@ class TTLockApi:
         _LOGGER.debug("[%s] Sending request to %s with args=%s", log_id, url, kwargs)
         resp = await self._web_session.get(
             url,
-            params=self._add_auth(**kwargs),
+            params=await self._add_auth(**kwargs),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         return await self._parse_resp(resp, log_id)
@@ -114,7 +126,7 @@ class TTLockApi:
         _LOGGER.debug("[%s] Sending request to %s with args=%s", log_id, url, kwargs)
         resp = await self._web_session.post(
             url,
-            params=self._add_auth(),
+            params=await self._add_auth(),
             data=kwargs,
         )
         return await self._parse_resp(resp, log_id)
