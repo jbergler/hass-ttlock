@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 import pytest
 
-from custom_components.ttlock.models import EpochMs, PassageModeConfig
+from custom_components.ttlock.models import EpochMs, Features, PassageModeConfig
 
 
 class TestEpochMs:
@@ -55,3 +55,35 @@ class TestPassageModeConfig:
         )
         assert parsed.start_minute == 0
         assert parsed.end_minute == 0
+
+
+class TestFeatures:
+    @pytest.fixture()
+    def features(self, feature_value):
+        return Features.from_feature_value(feature_value)
+
+    @pytest.mark.parametrize(
+        ["feature_value", "expected"],
+        (
+            [
+                "10C2F44754CF5F7",
+                (
+                    Features.lock_remotely,
+                    Features.unlock_via_gateway,
+                    Features.passage_mode,
+                    Features.wifi,
+                ),
+            ],
+            [
+                "F44354CD5F3",
+                (
+                    Features.lock_remotely,
+                    Features.unlock_via_gateway,
+                    Features.passage_mode,
+                ),
+            ],
+        ),
+    )
+    def test_flags(self, features: Features, expected):
+        for feature in Features:
+            assert (feature in features) == (feature in expected)

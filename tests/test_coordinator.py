@@ -28,6 +28,7 @@ async def test_coordinator_loads_data(
     assert coordinator.data.action_pending is False
     assert coordinator.data.last_user is None
     assert coordinator.data.last_reason is None
+    assert coordinator.data.features is not None
 
 
 @pytest.fixture(params=[{"auto_lock_seconds": 30}])

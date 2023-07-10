@@ -2,7 +2,7 @@
 
 from collections import namedtuple
 from datetime import datetime
-from enum import Enum, auto
+from enum import Enum, IntFlag, auto
 
 from pydantic import BaseModel, Field, validator
 
@@ -229,3 +229,19 @@ class WebhookEvent(BaseModel):
             return LockState(state=State.unlocked)
 
         return LockState(state=None)
+
+
+class Features(IntFlag):
+    """Parses the features bitmask from the hex string in the api response."""
+
+    # Docs: https://euopen.ttlock.com/document/doc?urlName=cloud%2Flock%2FfeatureValueEn.html.
+
+    lock_remotely = 2**8
+    unlock_via_gateway = 2**10
+    passage_mode = 2**22
+    wifi = 2**56
+
+    @classmethod
+    def from_feature_value(cls, value: str | None):
+        """Parse the hex feature_value string."""
+        return Features(int(value, 16)) if value else Features(0)
