@@ -14,7 +14,7 @@ from aiohttp import ClientResponse, ClientSession
 from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.helpers import config_entry_oauth2_flow
 
-from .models import Lock, LockState, PassageModeConfig
+from .models import Features, Lock, LockState, PassageModeConfig
 
 _LOGGER = logging.getLogger(__name__)
 GW_LOCK = asyncio.Lock()
@@ -134,7 +134,15 @@ class TTLockApi:
     async def get_locks(self) -> list[int]:
         """Enumerate all locks in the account."""
         res = await self.get("lock/list", pageNo=1, pageSize=1000)
-        return [lock["lockId"] for lock in res["list"] if lock["hasGateway"] != 0]
+
+        def lock_connectable(lock) -> bool:
+            has_gateway = lock.get("hasGateway") != 0
+            has_wifi = Features.wifi in Features.from_feature_value(
+                lock.get("featureValue")
+            )
+            return has_gateway or has_wifi
+
+        return [lock["lockId"] for lock in res["list"] if lock_connectable(lock)]
 
     async def get_lock(self, lock_id: int) -> Lock:
         """Get a lock by ID."""

@@ -17,7 +17,7 @@ from homeassistant.util import dt
 
 from .api import TTLockApi
 from .const import DOMAIN, SIGNAL_NEW_DATA, TT_LOCKS
-from .models import PassageModeConfig, State, WebhookEvent
+from .models import Features, PassageModeConfig, State, WebhookEvent
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ class LockState:
     battery_level: int | None = None
     hardware_version: str | None = None
     firmware_version: str | None = None
+    features: Features | None = None
     locked: bool | None = None
     action_pending: bool = False
     last_user: str | None = None
@@ -125,6 +126,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 name=details.name,
                 mac=details.mac,
                 model=details.model,
+                features=Features.from_feature_value(details.featureValue),
             )
 
             # update mutable attributes
