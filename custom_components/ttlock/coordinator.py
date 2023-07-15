@@ -162,6 +162,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         if not event.success:
             return
 
+        if not self.data:
+            return
+
         new_data = deepcopy(self.data)
         new_data.battery_level = event.battery_level
 
