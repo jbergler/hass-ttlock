@@ -14,7 +14,7 @@ from aiohttp import ClientResponse, ClientSession
 from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.helpers import config_entry_oauth2_flow
 
-from .models import Features, Lock, LockState, PassageModeConfig
+from .models import Features, Lock, LockState, PassageModeConfig, AddPasscodeConfig
 
 _LOGGER = logging.getLogger(__name__)
 GW_LOCK = asyncio.Lock()
@@ -200,6 +200,27 @@ class TTLockApi:
 
         if "errcode" in res and res["errcode"] != 0:
             _LOGGER.error("Failed to unlock %s: %s", lock_id, res["errmsg"])
+            return False
+
+        return True
+
+    async def add_passcode(self, lock_id: int, config: AddPasscodeConfig) -> bool:
+        """Add new passcode."""
+
+        async with GW_LOCK:
+            res = await self.post(
+                "keyboardPwd/add",
+                lockId=lock_id,
+                addType=2,  # via gateway
+                keyboardPwd=config.passcode,
+                keyboardPwdName=config.passcode_name,
+                keyboardPwdType=3,  # Only temporary passcode supported
+                startDate=config.start_minute,
+                endDate=config.end_minute,
+            )
+
+        if "errcode" in res and res["errcode"] != 0:
+            _LOGGER.error("Failed to create passcode for %s: %s", lock_id, res["errmsg"])
             return False
 
         return True

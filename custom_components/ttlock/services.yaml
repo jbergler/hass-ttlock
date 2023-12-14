@@ -72,3 +72,39 @@ configure_passage_mode:
               value: sun
           multiple: true
           mode: list
+
+create_pass_code:
+  name: Create a new pass code
+  description: Tries to create a new pass code for a lock.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    passcode_name:
+      name: Pass code name
+      description: The unique name of this pass code (Can be whatever you like)
+      required: true
+      default: My pass code name
+      selector:
+        text:
+    passcode:
+      name: Pass code
+      description: The pass code that will be typed by the user to unlock the lock. (4-9 digits)
+      required: true
+      default: 123456789
+      selector:
+        text:
+        type: number
+    start_time:
+      name: Start date / time
+      description: What date/time pass code will become valid
+      required: true
+      selector:
+        datetime:
+    end_time:
+      name: End date / time
+      description: What date/time pass code will become invalid
+      required: true
+      selector:
+        datetime:

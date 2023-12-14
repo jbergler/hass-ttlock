@@ -102,6 +102,13 @@ class PassageModeConfig(BaseModel):
     def _set_end_minute(cls, end_minute: int | None) -> int:
         return end_minute or 0
 
+class AddPasscodeConfig(BaseModel):
+    """The passcode creation configuration."""
+
+    passcode: str = Field(None, alias="passcode")
+    passcode_name: str = Field(None, alias="passcodeName")
+    start_minute: int = Field(0, alias="startDate")
+    end_minute: int = Field(0, alias="endDate")
 
 class Action(Enum):
     """Lock action from an event."""
