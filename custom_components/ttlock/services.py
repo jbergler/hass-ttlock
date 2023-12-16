@@ -67,6 +67,17 @@ class Services:
             ),
         )
 
+        self.hass.services.register(
+            DOMAIN,
+            "delete_outdated_pass_codes",
+            self.handle_delete_outdated_pass_codes,
+            vol.Schema(
+                {
+                    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                }
+            ),
+        )
+
     def _get_coordinators(self, call: ServiceCall) -> list[LockUpdateCoordinator]:
         entity_ids = call.data.get(ATTR_ENTITY_ID)
         if entity_ids:
@@ -126,4 +137,11 @@ class Services:
         for coordinator in self._get_coordinators(call):
             if await coordinator.api.add_passcode(coordinator.lock_id, config):
                 coordinator.data.add_passcode_config = config
+                coordinator.async_update_listeners()
+
+    async def handle_delete_outdated_pass_codes(self, call: ServiceCall):
+        """list and delete outdated pass codes for the given entities."""
+
+        for coordinator in self._get_coordinators(call):
+            if await coordinator.api.delete_outdated_pass_codes(coordinator.lock_id):
                 coordinator.async_update_listeners()

@@ -108,3 +108,11 @@ create_pass_code:
       required: true
       selector:
         datetime:
+        
+delete_outdated_pass_codes:
+  name: Delete outdated pass codes
+  description: Lists all pass codes for the selected lock and deletes ALL outdated pass codes (where the end of validity date is older is past).
+  target:
+    entity:
+      integration: ttlock
+      domain: lock

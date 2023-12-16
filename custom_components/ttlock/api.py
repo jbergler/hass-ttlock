@@ -224,3 +224,32 @@ class TTLockApi:
             return False
 
         return True
+
+    async def delete_outdated_pass_codes(self, lock_id: int) -> bool:
+        """Get the list of pass codes of a lock."""
+        res = await self.get("lock/listKeyboardPwd", lockId=lock_id, pageNo=1, pageSize=100)
+        
+        def passcode_outdated(passcode) -> bool:
+            is_temporary = passcode.get("keyboardPwdType") == 3
+            is_outdated = passcode.get("endDate") < int(round(time.time() * 1000))
+            return is_temporary and is_outdated
+
+        for passcode in res["list"]:
+            if passcode_outdated(passcode):
+                async with GW_LOCK:
+                    resDel = await self.post(
+                        "keyboardPwd/delete",
+                        lockId=lock_id,
+                        deleteType=2,  # via gateway
+                        keyboardPwdId=passcode.get("keyboardPwdId"),
+                    )
+                    
+                if "errcode" in resDel and resDel["errcode"] != 0:
+                    _LOGGER.error("Failed to delete passcodes for %s: %s", lock_id, resDel["errmsg"])
+                    return False
+        
+        if "errcode" in res and res["errcode"] != 0:
+            _LOGGER.error("Failed to list passcodes for %s: %s", lock_id, res["errmsg"])
+            return False
+
+        return True
