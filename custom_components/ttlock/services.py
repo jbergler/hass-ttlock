@@ -134,6 +134,14 @@ class Services:
 
     async def handle_cleanup_passcodes(self, call: ServiceCall):
         """Clean up expired passcodes for the given entities."""
+        success = True
 
         for coordinator in self._get_coordinators(call):
-            await coordinator.api.delete_outdated_pass_codes(coordinator.lock_id)
+            codes = await coordinator.api.list_passcodes(coordinator.lock_id)
+            for code in codes:
+                if code.expired:
+                    success = success and await coordinator.api.delete_passcode(
+                        coordinator.lock_id, code.id
+                    )
+
+        return success

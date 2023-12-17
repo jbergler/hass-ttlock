@@ -14,7 +14,14 @@ from aiohttp import ClientResponse, ClientSession
 from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.helpers import config_entry_oauth2_flow
 
-from .models import AddPasscodeConfig, Features, Lock, LockState, PassageModeConfig
+from .models import (
+    AddPasscodeConfig,
+    Features,
+    Lock,
+    LockState,
+    PassageModeConfig,
+    Passcode,
+)
 
 _LOGGER = logging.getLogger(__name__)
 GW_LOCK = asyncio.Lock()
@@ -227,37 +234,31 @@ class TTLockApi:
 
         return True
 
-    async def delete_outdated_pass_codes(self, lock_id: int) -> bool:
-        """Get the list of pass codes of a lock."""
+    async def list_passcodes(self, lock_id: int) -> list[Passcode]:
+        """Get currently configured passcodes from lock."""
+
         res = await self.get(
             "lock/listKeyboardPwd", lockId=lock_id, pageNo=1, pageSize=100
         )
+        return [Passcode.parse_obj(passcode) for passcode in res["list"]]
 
-        def passcode_outdated(passcode) -> bool:
-            is_temporary = passcode.get("keyboardPwdType") == 3
-            is_outdated = passcode.get("endDate") < int(round(time.time() * 1000))
-            return is_temporary and is_outdated
+    async def delete_passcode(self, lock_id: int, passcode_id: int) -> bool:
+        """Delete a passcode from lock."""
 
-        for passcode in res["list"]:
-            if passcode_outdated(passcode):
-                async with GW_LOCK:
-                    resDel = await self.post(
-                        "keyboardPwd/delete",
-                        lockId=lock_id,
-                        deleteType=2,  # via gateway
-                        keyboardPwdId=passcode.get("keyboardPwdId"),
-                    )
+        async with GW_LOCK:
+            resDel = await self.post(
+                "keyboardPwd/delete",
+                lockId=lock_id,
+                deleteType=2,  # via gateway
+                keyboardPwdId=passcode_id,
+            )
 
-                if "errcode" in resDel and resDel["errcode"] != 0:
-                    _LOGGER.error(
-                        "Failed to delete passcodes for %s: %s",
-                        lock_id,
-                        resDel["errmsg"],
-                    )
-                    return False
-
-        if "errcode" in res and res["errcode"] != 0:
-            _LOGGER.error("Failed to list passcodes for %s: %s", lock_id, res["errmsg"])
+        if "errcode" in resDel and resDel["errcode"] != 0:
+            _LOGGER.error(
+                "Failed to delete passcode for %s: %s",
+                lock_id,
+                resDel["errmsg"],
+            )
             return False
 
         return True
