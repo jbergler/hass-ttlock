@@ -95,7 +95,7 @@ create_passcode:
       default: ""
       selector:
         text:
-        type: number
+          type: number
     start_time:
       name: Start date / time
       description: What date/time pass code will become valid
