@@ -53,8 +53,8 @@ class Services:
 
         self.hass.services.register(
             DOMAIN,
-            "create_pass_code",
-            self.handle_create_pass_code,
+            "create_passcode",
+            self.handle_create_passcode,
             vol.Schema(
                 {
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
@@ -68,8 +68,8 @@ class Services:
 
         self.hass.services.register(
             DOMAIN,
-            "delete_outdated_pass_codes",
-            self.handle_delete_outdated_pass_codes,
+            "cleanup_passcodes",
+            self.handle_cleanup_passcodes,
             vol.Schema(
                 {
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
@@ -109,8 +109,8 @@ class Services:
                 coordinator.data.passage_mode_config = config
                 coordinator.async_update_listeners()
 
-    async def handle_create_pass_code(self, call: ServiceCall):
-        """Create a new pass code for the given entities."""
+    async def handle_create_passcode(self, call: ServiceCall):
+        """Create a new passcode for the given entities."""
 
         start_time_val = call.data.get("start_time")
         start_time_utc = as_utc(start_time_val)
@@ -122,25 +122,18 @@ class Services:
         end_time_ts = end_time_utc.timestamp()
         end_time = end_time_ts * 1000
 
-        pass_code = call.data.get("passcode")
-
-        pass_code_name = call.data.get("passcode_name")
-
         config = AddPasscodeConfig(
-            passcode=pass_code,
-            passcodeName=pass_code_name,
+            passcode=call.data.get("passcode"),
+            passcodeName=call.data.get("passcode_name"),
             startDate=start_time,
             endDate=end_time,
         )
 
         for coordinator in self._get_coordinators(call):
-            if await coordinator.api.add_passcode(coordinator.lock_id, config):
-                coordinator.data.add_passcode_config = config
-                coordinator.async_update_listeners()
+            await coordinator.api.add_passcode(coordinator.lock_id, config)
 
-    async def handle_delete_outdated_pass_codes(self, call: ServiceCall):
-        """List and delete outdated pass codes for the given entities."""
+    async def handle_cleanup_passcodes(self, call: ServiceCall):
+        """Clean up expired passcodes for the given entities."""
 
         for coordinator in self._get_coordinators(call):
-            if await coordinator.api.delete_outdated_pass_codes(coordinator.lock_id):
-                coordinator.async_update_listeners()
+            await coordinator.api.delete_outdated_pass_codes(coordinator.lock_id)

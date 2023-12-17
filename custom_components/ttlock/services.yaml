@@ -73,9 +73,9 @@ configure_passage_mode:
           multiple: true
           mode: list
 
-create_pass_code:
+create_passcode:
   name: Create a new pass code
-  description: Tries to create a new pass code for a lock.
+  description: Tries to create a new (temporary) passcode for a lock.
   target:
     entity:
       integration: ttlock
@@ -85,14 +85,14 @@ create_pass_code:
       name: Pass code name
       description: The unique name of this pass code (Can be whatever you like)
       required: true
-      default: My pass code name
+      default: My passcode name
       selector:
         text:
     passcode:
-      name: Pass code
-      description: The pass code that will be typed by the user to unlock the lock. (4-9 digits)
+      name: Passcode
+      description: The passcode that will be typed by the user to unlock the lock. (4-9 digits)
       required: true
-      default: 123456789
+      default: ""
       selector:
         text:
         type: number
@@ -109,9 +109,9 @@ create_pass_code:
       selector:
         datetime:
 
-delete_outdated_pass_codes:
-  name: Delete outdated pass codes
-  description: Lists all pass codes for the selected lock and deletes ALL outdated pass codes (where the end of validity date is older is past).
+cleanup_passcodes:
+  name: Remove expired passcodes
+  description: Lists all passcodes for the selected lock and deletes ALL expired passcodes (where the end of validity date is older is past).
   target:
     entity:
       integration: ttlock
