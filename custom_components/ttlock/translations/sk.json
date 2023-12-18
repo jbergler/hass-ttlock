@@ -1,0 +1,29 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Účet je už nakonfigurovaný",
+      "already_in_progress": "Tok konfigurácie už prebieha",
+      "authorize_url_timeout": "Časový limit generovania autorizačnej adresy URL.",
+      "missing_configuration": "Komponent nie je nakonfigurovaný. Postupujte podľa dokumentácie.",
+      "no_url_available": "Nie je k dispozícii žiadna adresa URL. Informácie o tejto chybe nájdete [pozrite si sekciu pomocníka]({docs_url})",
+      "oauth_error": "Prijaté neplatné údaje tokenu.",
+      "user_rejected_authorize": "Prepojenie účtu bolo odmietnuté: {error}"
+    },
+    "create_entry": {
+      "default": "Úspešne overené"
+    },
+    "step": {
+      "auth": {
+        "title": "Prihlásiť sa do TTLock",
+        "description": "Pri nastavovaní zámkov uveďte prihlasovacie údaje, ktoré ste použili na prihlásenie do aplikácie TTLock",
+        "data": {
+          "password": "Heslo",
+          "username": "Používateľské meno"
+        }
+      },
+      "pick_implementation": {
+        "title": "Vyberte metódu overenia"
+      }
+    }
+  }
+}
