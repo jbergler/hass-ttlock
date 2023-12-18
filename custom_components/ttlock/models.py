@@ -106,6 +106,8 @@ class PassageModeConfig(BaseModel):
 class PasscodeType(IntEnum):
     """Type of passcode."""
 
+    unknown = 0
+    permanent = 2
     temporary = 3
 
 
