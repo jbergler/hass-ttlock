@@ -133,7 +133,8 @@ class TTLockApi:
 
     async def get_locks(self) -> list[int]:
         """Enumerate all locks in the account."""
-        res = await self.get("lock/list", pageNo=1, pageSize=1000)
+        res_local = await self.get("lock/list", pageNo=1, pageSize=1000)
+        res_remote = await self.get("key/list", pageNo=1, pageSize=1000)
 
         def lock_connectable(lock) -> bool:
             has_gateway = lock.get("hasGateway") != 0
@@ -142,11 +143,25 @@ class TTLockApi:
             )
             return has_gateway or has_wifi
 
-        return [lock["lockId"] for lock in res["list"] if lock_connectable(lock)]
+        locks = [lock["lockId"] for lock in res_local["list"] if lock_connectable(lock)]
+        locks += [lock["lockId"] for lock in res_remote["list"] if lock_connectable(lock)]
+
+        return locks
 
     async def get_lock(self, lock_id: int) -> Lock:
         """Get a lock by ID."""
-        res = await self.get("lock/detail", lockId=lock_id)
+        try:
+            res = await self.get("lock/detail", lockId=lock_id)
+            return Lock.parse_obj(res)
+        except RequestFailed:
+            # It is either eKey lock or really exception. For eKey locks this
+            # API will return errcode if you are not admin for this lock.
+            # Give up here and try another API
+            pass
+
+        # Don't wrap it in try-except, in case of exception it will reraise the
+        # same one you got in the first request
+        res = await self.get("key/get", lockId=lock_id)
         return Lock.parse_obj(res)
 
     async def get_lock_state(self, lock_id: int) -> LockState:
