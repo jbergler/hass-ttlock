@@ -6,5 +6,6 @@ hassil
 home-assistant-intents
 mutagen
 python-matter-server
+haffmpeg
 aiohttp_cors # http component
 dateparser # tests
