@@ -5,5 +5,7 @@ webrtcvad
 hassil
 home-assistant-intents
 mutagen
+python-matter-server
+ha-ffmpeg
 aiohttp_cors # http component
 dateparser # tests
