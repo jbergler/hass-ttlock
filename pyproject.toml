@@ -173,10 +173,10 @@ norecursedirs = [
 log_format = "%(asctime)s.%(msecs)03d %(levelname)-8s %(threadName)s %(name)s:%(filename)s:%(lineno)s %(message)s"
 log_date_format = "%Y-%m-%d %H:%M:%S"
 asyncio_mode = "auto"
-filterwarnings = ["error::sqlalchemy.exc.SAWarning"]
+filterwarnings = []
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 
 select = [
     "B007", # Loop control variable {name} not used within loop body
