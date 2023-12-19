@@ -6,7 +6,12 @@ import logging
 import voluptuous as vol
 
 from homeassistant.const import ATTR_ENTITY_ID, CONF_ENABLED, WEEKDAYS
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+)
 import homeassistant.helpers.config_validation as cv
 from homeassistant.util.dt import as_utc
 
@@ -17,6 +22,9 @@ from .const import (
     CONF_START_TIME,
     CONF_WEEK_DAYS,
     DOMAIN,
+    SVC_CLEANUP_PASSCODES,
+    SVC_CONFIG_PASSAGE_MODE,
+    SVC_CREATE_PASSCODE,
 )
 from .coordinator import LockUpdateCoordinator, coordinator_for
 from .models import AddPasscodeConfig, OnOff, PassageModeConfig
@@ -36,7 +44,7 @@ class Services:
 
         self.hass.services.register(
             DOMAIN,
-            "configure_passage_mode",
+            SVC_CONFIG_PASSAGE_MODE,
             self.handle_configure_passage_mode,
             vol.Schema(
                 {
@@ -53,7 +61,7 @@ class Services:
 
         self.hass.services.register(
             DOMAIN,
-            "create_passcode",
+            SVC_CREATE_PASSCODE,
             self.handle_create_passcode,
             vol.Schema(
                 {
@@ -66,15 +74,16 @@ class Services:
             ),
         )
 
-        self.hass.services.register(
+        self.hass.services.async_register(
             DOMAIN,
-            "cleanup_passcodes",
+            SVC_CLEANUP_PASSCODES,
             self.handle_cleanup_passcodes,
-            vol.Schema(
+            schema=vol.Schema(
                 {
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
                 }
             ),
+            supports_response=SupportsResponse.OPTIONAL,
         )
 
     def _get_coordinators(self, call: ServiceCall) -> list[LockUpdateCoordinator]:
@@ -132,16 +141,15 @@ class Services:
         for coordinator in self._get_coordinators(call):
             await coordinator.api.add_passcode(coordinator.lock_id, config)
 
-    async def handle_cleanup_passcodes(self, call: ServiceCall):
+    async def handle_cleanup_passcodes(self, call: ServiceCall) -> ServiceResponse:
         """Clean up expired passcodes for the given entities."""
-        success = True
+        removed = []
 
         for coordinator in self._get_coordinators(call):
             codes = await coordinator.api.list_passcodes(coordinator.lock_id)
             for code in codes:
                 if code.expired:
-                    success = success and await coordinator.api.delete_passcode(
-                        coordinator.lock_id, code.id
-                    )
+                    await coordinator.api.delete_passcode(coordinator.lock_id, code.id)
+                    removed.append(code.name)
 
-        return success
+        return {"removed": removed}
