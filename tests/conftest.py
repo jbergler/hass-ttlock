@@ -8,7 +8,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ttlock.api import TTLockApi
-from custom_components.ttlock.const import DOMAIN
+from custom_components.ttlock.const import DOMAIN, TT_LOCKS
 from custom_components.ttlock.coordinator import LockUpdateCoordinator
 from custom_components.ttlock.models import Lock, LockState, PassageModeConfig
 from homeassistant.components.application_credentials import (
@@ -73,7 +73,9 @@ def component_setup(hass: HomeAssistant, config_entry: MockConfigEntry):
             config_entry.data["auth_implementation"],
         )
         config_entry.add_to_hass(hass)
-        return await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.config_entries.async_setup(config_entry.entry_id)
+
+        return hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS][0]
 
     return _setup_func
 

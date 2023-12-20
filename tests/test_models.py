@@ -1,7 +1,14 @@
+from datetime import datetime, timedelta
+
 from pydantic import BaseModel
 import pytest
 
-from custom_components.ttlock.models import EpochMs, Features, PassageModeConfig
+from custom_components.ttlock.models import (
+    EpochMs,
+    Features,
+    PassageModeConfig,
+    Passcode,
+)
 
 
 class TestEpochMs:
@@ -87,3 +94,46 @@ class TestFeatures:
     def test_flags(self, features: Features, expected):
         for feature in Features:
             assert (feature in features) == (feature in expected)
+
+
+class TestPasscode:
+    def test_permanent_code(self):
+        code = Passcode.parse_obj(
+            {
+                "endDate": 0,
+                "sendDate": 1690412306000,
+                "keyboardPwdId": 311183184,
+                "nickName": "Person A",
+                "keyboardPwdType": 2,
+                "lockId": 4567,
+                "keyboardPwdVersion": 4,
+                "isCustom": 0,
+                "keyboardPwdName": "Person A",
+                "keyboardPwd": "1234",
+                "startDate": 1690408800000,
+                "senderUsername": "some@email.com",
+                "receiverUsername": "",
+                "status": 1,
+            }
+        )
+        assert code.expired is False
+
+    @pytest.mark.parametrize(
+        ("offset", "expired"),
+        [
+            (timedelta(weeks=-1), True),
+            (timedelta(weeks=1), False),
+        ],
+    )
+    def test_temporary_code(self, offset, expired):
+        code = Passcode.parse_obj(
+            {
+                "startDate": 1690408800000,
+                "endDate": round((datetime.now() + offset).timestamp() * 1000),
+                "keyboardPwdId": 311183184,
+                "keyboardPwdType": 3,
+                "keyboardPwdName": "Person A",
+                "keyboardPwd": "1234",
+            }
+        )
+        assert code.expired == expired

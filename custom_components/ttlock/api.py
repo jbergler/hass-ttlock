@@ -14,7 +14,14 @@ from aiohttp import ClientResponse, ClientSession
 from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.helpers import config_entry_oauth2_flow
 
-from .models import Features, Lock, LockState, PassageModeConfig
+from .models import (
+    AddPasscodeConfig,
+    Features,
+    Lock,
+    LockState,
+    PassageModeConfig,
+    Passcode,
+)
 
 _LOGGER = logging.getLogger(__name__)
 GW_LOCK = asyncio.Lock()
@@ -200,6 +207,58 @@ class TTLockApi:
 
         if "errcode" in res and res["errcode"] != 0:
             _LOGGER.error("Failed to unlock %s: %s", lock_id, res["errmsg"])
+            return False
+
+        return True
+
+    async def add_passcode(self, lock_id: int, config: AddPasscodeConfig) -> bool:
+        """Add new passcode."""
+
+        async with GW_LOCK:
+            res = await self.post(
+                "keyboardPwd/add",
+                lockId=lock_id,
+                addType=2,  # via gateway
+                keyboardPwd=config.passcode,
+                keyboardPwdName=config.passcode_name,
+                keyboardPwdType=3,  # Only temporary passcode supported
+                startDate=config.start_minute,
+                endDate=config.end_minute,
+            )
+
+        if "errcode" in res and res["errcode"] != 0:
+            _LOGGER.error(
+                "Failed to create passcode for %s: %s", lock_id, res["errmsg"]
+            )
+            return False
+
+        return True
+
+    async def list_passcodes(self, lock_id: int) -> list[Passcode]:
+        """Get currently configured passcodes from lock."""
+
+        res = await self.get(
+            "lock/listKeyboardPwd", lockId=lock_id, pageNo=1, pageSize=100
+        )
+        return [Passcode.parse_obj(passcode) for passcode in res["list"]]
+
+    async def delete_passcode(self, lock_id: int, passcode_id: int) -> bool:
+        """Delete a passcode from lock."""
+
+        async with GW_LOCK:
+            resDel = await self.post(
+                "keyboardPwd/delete",
+                lockId=lock_id,
+                deleteType=2,  # via gateway
+                keyboardPwdId=passcode_id,
+            )
+
+        if "errcode" in resDel and resDel["errcode"] != 0:
+            _LOGGER.error(
+                "Failed to delete passcode for %s: %s",
+                lock_id,
+                resDel["errmsg"],
+            )
             return False
 
         return True

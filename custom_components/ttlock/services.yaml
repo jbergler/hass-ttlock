@@ -72,3 +72,47 @@ configure_passage_mode:
               value: sun
           multiple: true
           mode: list
+
+create_passcode:
+  name: Create a new pass code
+  description: Tries to create a new (temporary) passcode for a lock.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    passcode_name:
+      name: Pass code name
+      description: The unique name of this pass code (Can be whatever you like)
+      required: true
+      default: My passcode name
+      selector:
+        text:
+    passcode:
+      name: Passcode
+      description: The passcode that will be typed by the user to unlock the lock. (4-9 digits)
+      required: true
+      default: ""
+      selector:
+        text:
+          type: number
+    start_time:
+      name: Start date / time
+      description: What date/time pass code will become valid
+      required: true
+      selector:
+        datetime:
+    end_time:
+      name: End date / time
+      description: What date/time pass code will become invalid
+      required: true
+      selector:
+        datetime:
+
+cleanup_passcodes:
+  name: Remove expired passcodes
+  description: Lists all passcodes for the selected lock and deletes ALL expired passcodes (where the end of validity date is older is past).
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
