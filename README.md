@@ -15,6 +15,8 @@ This integration uses the TTLock Cloud to communicate with your lock. It support
 - Discovery of locks on startup
 - Real-time updates via a webhook (no periodic polling which wastes battery)
 - Additional sensors for battery, last operator + reason
+- Add new pass codes
+- Delete expired pass codes
 
 ## Known working locks
 
