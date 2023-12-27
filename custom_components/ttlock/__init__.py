@@ -21,8 +21,13 @@ from homeassistant.const import (
     Platform,
 )
 from homeassistant.core import CoreState, Event, HomeAssistant
-from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
+from homeassistant.helpers import (
+    aiohttp_client,
+    config_entry_oauth2_flow,
+    issue_registry as ir,
+)
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.network import NoURLAvailableError
 
 from .api import TTLockApi
 from .const import (
@@ -104,6 +109,25 @@ class WebhookHandler:
                 EVENT_HOMEASSISTANT_STARTED, self.register_webhook
             )
 
+    async def get_url(self) -> str:
+        """Get the webhook url depending on the setup."""
+        if cloud.async_active_subscription(self.hass):
+            if CONF_WEBHOOK_URL not in self.entry.data:
+                try:
+                    return await cloud.async_create_cloudhook(
+                        self.hass, self.entry.data[CONF_WEBHOOK_ID]
+                    )
+                except cloud.CloudNotConnected:
+                    return webhook.async_generate_url(
+                        self.hass, self.entry.data[CONF_WEBHOOK_ID]
+                    )
+            else:
+                return self.entry.data[CONF_WEBHOOK_URL]
+        else:
+            return webhook.async_generate_url(
+                self.hass, self.entry.data[CONF_WEBHOOK_ID]
+            )
+
     async def register_webhook(self, event: Event | None = None) -> None:
         """Set up a webhook to receive pushed data."""
         if CONF_WEBHOOK_ID not in self.entry.data:
@@ -111,25 +135,23 @@ class WebhookHandler:
             data = {**self.entry.data, CONF_WEBHOOK_ID: secrets.token_hex()}
             self.hass.config_entries.async_update_entry(self.entry, data=data)
 
-        if cloud.async_active_subscription(self.hass):
-            if CONF_WEBHOOK_URL not in self.entry.data:
-                try:
-                    webhook_url = await cloud.async_create_cloudhook(
-                        self.hass, self.entry.data[CONF_WEBHOOK_ID]
-                    )
-                except cloud.CloudNotConnected:
-                    webhook_url = webhook.async_generate_url(
-                        self.hass, self.entry.data[CONF_WEBHOOK_ID]
-                    )
-                else:
-                    data = {**self.entry.data, CONF_WEBHOOK_URL: webhook_url}
-                    self.hass.config_entries.async_update_entry(self.entry, data=data)
-            else:
-                webhook_url = self.entry.data[CONF_WEBHOOK_URL]
-        else:
-            webhook_url = webhook.async_generate_url(
-                self.hass, self.entry.data[CONF_WEBHOOK_ID]
+        try:
+            webhook_url = await self.get_url()
+            data = {**self.entry.data, CONF_WEBHOOK_URL: webhook_url}
+            self.hass.config_entries.async_update_entry(self.entry, data=data)
+        except NoURLAvailableError:
+            _LOGGER.exception("Could not find base URL for installation")
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                "no_webhook_url",
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="no_webhook_url",
             )
+            return
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, "no_webhook_url")
 
         if CONF_WEBHOOK_STATUS not in self.entry.data:
             self.async_show_setup_message(webhook_url)
