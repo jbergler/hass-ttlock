@@ -25,5 +25,11 @@
         "title": "Pick Authentication Method"
       }
     }
+  },
+  "issues": {
+    "no_webhook_url": {
+      "description": "An error ocurred while trying to generate a webhook url. Please make sure that you have a URL configured in Settings > System > Network.",
+      "title": "Unable to generate webhook URL."
+    }
   }
 }
