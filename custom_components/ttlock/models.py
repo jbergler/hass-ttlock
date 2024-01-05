@@ -75,7 +75,7 @@ class Lock(BaseModel):
     date: int
 
     # sensitive fields
-    noKeyPwd: str = Field(alias="adminPwd")
+    noKeyPwd: str = Field(None, alias="adminPwd")
 
 
 class LockState(BaseModel):
