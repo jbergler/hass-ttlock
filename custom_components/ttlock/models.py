@@ -156,37 +156,37 @@ class Passcode(BaseModel):
 class RecordType(IntEnum):
     """Type of lock record."""
 
-    BLUETOOTH_UNLOCK = 1
+    APP_UNLOCK = 1
     PASSWORD_UNLOCK = 4
-    PARKING_LOCK = 5
-    PARKING_SPACE_LOCK_AND_LOWERING = 6
-    IC_CARD_UNLOCK = 7
+    RAISE_PARKING_LOCK = 5
+    LOWER_PARKING_LOCK = 6
+    RFID_UNLOCK = 7
     FINGERPRINT_UNLOCK = 8
     BRACELET_UNLOCK = 9
     MECHANICAL_KEY_UNLOCK = 10
-    BLUETOOTH_LOCK = 11
+    APP_LOCK = 11
     GATEWAY_UNLOCK = 12
-    ILLEGAL_UNLOCKING = 29
-    DOOR_MAGNET_CLOSED = 30
+    FORCE_DETECTED = 29
+    DOOR_SENSOR_CLOSED = 30
     DOOR_SENSOR_OPEN = 31
-    OPEN_DOOR_FROM_INSIDE = 32
+    OPENED_FROM_INSIDE = 32
     FINGERPRINT_LOCK = 33
     PASSWORD_LOCK = 34
-    IC_CARD_LOCK = 35
+    RFID_LOCK = 35
     MECHANICAL_KEY_LOCK = 36
     APP_BUTTON_CONTROL = 37
-    POST_OFFICE_LOCAL_MAIL = 42
-    POST_OFFICE_OUT_OF_TOWN_MAIL = 43
-    ANTI_THEFT_ALARM = 44
-    AUTOMATIC_LOCK_TIMEOUT = 45
+    MAIL_RECEIVED_LOCAL = 42
+    MAIL_RECEIVED_NON_LOCAL = 43
+    TAMPER_ALARM = 44
+    AUTO_LOCK = 45
     UNLOCK_BUTTON = 46
     LOCK_BUTTON = 47
     SYSTEM_LOCKED = 48
     HOTEL_CARD_UNLOCK = 49
     HIGH_TEMPERATURE_UNLOCK = 50
-    DELETED_CARD_UNLOCK = 51
-    LOCK_WITH_APP = 52
-    LOCK_WITH_PASSWORD = 53
+    UNLOCK_FAILED_DELETED_CARD = 51
+    APP_LOCK_DEADBOLT = 52
+    PASSWORD_LOCK_DEADBOLT = 53
     CAR_LEAVES = 54
     REMOTE_CONTROL = 55
     QR_CODE_UNLOCK_SUCCESS = 57
@@ -216,7 +216,7 @@ class RecordType(IntEnum):
     PALM_VEIN_UNLOCK_FAILED_LOCKED = 85
     PALM_VEIN_ATRESIA = 86
     PALM_VEIN_OPENING_FAILED_EXPIRED = 88
-    IC_CARD_UNLOCK_FAILED = 91
+    UNLOCK_FAILED_RFID = 91
     ADMINISTRATOR_PASSWORD_UNLOCK = 92
 
 
@@ -364,20 +364,21 @@ class WebhookEvent(BaseModel):
     @property
     def state(self) -> LockState:
         """The end state of the lock after this event."""
-        if self.success and self.event.action == Action.lock:
-            return LockState(state=State.locked)
-        elif self.success and self.event.action == Action.unlock:
-            return LockState(state=State.unlocked)
-        return LockState(state=None)
 
-    @property
-    def sensorState(self) -> LockState:
-        """The end state of the sensor after this event."""
-        if self.success and self.event.action == Action.close:
-            return LockState(state=State.locked, sensorState=SensorState.closed)
-        elif self.success and self.event.action == Action.open:
-            return LockState(sensorState=SensorState.opened)
-        return LockState(sensorState=None)
+        res = LockState()
+        if self.success:
+            match self.event.action:
+                case Action.lock:
+                    res.locked = State.locked
+                case Action.unlock:
+                    res.locked = State.unlocked
+                case Action.close:
+                    res.locked = State.locked
+                    res.opened = SensorState.closed
+                case Action.open:
+                    res.opened = SensorState.opened
+
+        return res
 
 
 class Features(IntFlag):

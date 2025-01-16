@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
-from typing import TypeGuard
+from typing import TypeGuard, cast
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -18,7 +18,15 @@ from homeassistant.util import dt
 
 from .api import TTLockApi
 from .const import DOMAIN, SIGNAL_NEW_DATA, TT_LOCKS
-from .models import Features, PassageModeConfig, SensorState, State, WebhookEvent
+from .models import (
+    EpochMs,
+    Event,
+    Features,
+    PassageModeConfig,
+    SensorState,
+    State,
+    WebhookEvent,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,6 +64,7 @@ class LockState:
     sensor: SensorData | None = None
     auto_lock_seconds: int | None = None
     passage_mode_config: PassageModeConfig | None = None
+    timezone_offset: timedelta | None = None
 
     def passage_mode_active(self, current_date: datetime = dt.now()) -> bool:
         """Check if passage mode is currently active."""
@@ -188,6 +197,11 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             new_data.passage_mode_config = await self.api.get_lock_passage_mode_config(
                 self.lock_id
             )
+            new_data.timezone_offset = (
+                timedelta(milliseconds=details.timezoneRawOffset)
+                if details.timezoneRawOffset
+                else None
+            )
 
             return new_data
         except Exception as err:
@@ -221,15 +235,15 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 new_data.last_user = event.user
                 new_data.last_reason = event.event.description
 
-        if new_data.sensor and new_data.sensor.present and event.sensorState:
-            if event.sensorState.opened == SensorState.opened:
-                new_data.sensor.opened = True
-            if event.sensorState.opened == SensorState.closed:
-                new_data.sensor.opened = False
-                new_data.locked = True
-                new_data.last_reason = "Door Closed"
+            if sensor_present(new_data.sensor):
+                if event.state.opened == SensorState.opened:
+                    new_data.sensor.opened = True
+                if event.state.opened == SensorState.closed:
+                    new_data.sensor.opened = False
+                    new_data.locked = True
+                    new_data.last_reason = "Door Closed"
+                    _LOGGER.debug("Assuming auto-locked via sensor")
 
-                _LOGGER.debug("Assuming auto-locked via sensor")
         self.async_set_updated_data(new_data)
 
     def _handle_auto_lock(self, lock_ts: datetime, server_ts: datetime):
@@ -293,12 +307,31 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             ],
         }
 
+    def do_fake_webhook_event(self, action_id: int):
+        """Send a webhook through the pipeline to trigger event logic as if the cloud sent it to us."""
+        ts = cast(EpochMs, dt.as_utc(dt.now()))
+
+        if self.data.timezone_offset:
+            ts += self.data.timezone_offset
+
+        event = WebhookEvent(
+            id=self.lock_id,
+            mac=self.data.mac,
+            server_ts=ts,
+            lock_ts=ts,
+            event=Event(action_id),
+            user="Home Assistant",
+            success=True,
+        )
+        self._process_webhook_data(event)
+
     async def lock(self) -> None:
         """Try to lock the lock."""
         with lock_action(self):
             res = await self.api.lock(self.lock_id)
             if res:
                 self.data.locked = True
+                self.do_fake_webhook_event(11)  # lock by app
 
     async def unlock(self) -> None:
         """Try to unlock the lock."""
@@ -306,6 +339,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             res = await self.api.unlock(self.lock_id)
             if res:
                 self.data.locked = False
+                self.do_fake_webhook_event(1)  # unlock by app
 
     async def set_auto_lock(self, on: bool) -> None:
         """Turn on/off Autolock."""
