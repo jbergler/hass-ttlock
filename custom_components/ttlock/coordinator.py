@@ -56,7 +56,6 @@ class LockState:
     sensor: SensorData | None = None
     auto_lock_seconds: int | None = None
     passage_mode_config: PassageModeConfig | None = None
-    timezone_offset: timedelta | None = None
 
     def passage_mode_active(self, current_date: datetime = dt.now()) -> bool:
         """Check if passage mode is currently active."""
@@ -189,11 +188,6 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             new_data.passage_mode_config = await self.api.get_lock_passage_mode_config(
                 self.lock_id
             )
-            new_data.timezone_offset = (
-                timedelta(milliseconds=details.timezoneRawOffset)
-                if details.timezoneRawOffset
-                else None
-            )
 
             return new_data
         except Exception as err:
@@ -299,28 +293,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             ],
         }
 
-    def do_fake_webhook_event(self, action_id: int):
-        """Send a webhook through the pipeline to trigger event logic as if the cloud sent it to us."""
-        ts = dt.as_utc(dt.now()).timestamp * 1000
-
-        event = WebhookEvent(
-            lockId=self.lock_id,
-            lockMac=self.data.mac,
-            serverDate=ts,
-            lockDate=ts,
-            recordType=action_id,
-            username="Home Assistant",
-            success=True,
-        )
-        self._process_webhook_data(event)
-
     async def lock(self) -> None:
         """Try to lock the lock."""
         with lock_action(self):
             res = await self.api.lock(self.lock_id)
             if res:
                 self.data.locked = True
-                self.do_fake_webhook_event(11)  # lock by app
 
     async def unlock(self) -> None:
         """Try to unlock the lock."""
@@ -328,7 +306,6 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             res = await self.api.unlock(self.lock_id)
             if res:
                 self.data.locked = False
-                self.do_fake_webhook_event(1)  # unlock by app
 
     async def set_auto_lock(self, on: bool) -> None:
         """Turn on/off Autolock."""
