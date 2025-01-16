@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
-from typing import TypeGuard, cast
+from typing import TypeGuard
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -18,15 +18,7 @@ from homeassistant.util import dt
 
 from .api import TTLockApi
 from .const import DOMAIN, SIGNAL_NEW_DATA, TT_LOCKS
-from .models import (
-    EpochMs,
-    Event,
-    Features,
-    PassageModeConfig,
-    SensorState,
-    State,
-    WebhookEvent,
-)
+from .models import Features, PassageModeConfig, SensorState, State, WebhookEvent
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -309,18 +301,15 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
     def do_fake_webhook_event(self, action_id: int):
         """Send a webhook through the pipeline to trigger event logic as if the cloud sent it to us."""
-        ts = cast(EpochMs, dt.as_utc(dt.now()))
-
-        if self.data.timezone_offset:
-            ts += self.data.timezone_offset
+        ts = dt.as_utc(dt.now()).timestamp * 1000
 
         event = WebhookEvent(
-            id=self.lock_id,
-            mac=self.data.mac,
-            server_ts=ts,
-            lock_ts=ts,
-            event=Event(action_id),
-            user="Home Assistant",
+            lockId=self.lock_id,
+            lockMac=self.data.mac,
+            serverDate=ts,
+            lockDate=ts,
+            recordType=action_id,
+            username="Home Assistant",
             success=True,
         )
         self._process_webhook_data(event)
