@@ -52,8 +52,10 @@ This integration uses the TTLock Cloud to communicate with your lock. It support
    - The first credentials you will be prompted for are the Application Client ID & Secret that you created earlier.
    - The second credentials you will be prompted for are the username/password you use to login to the ttlock app on your phone.
 1. Once the integration is working you should receive a system notification with the webhook url
-   - This will go away when the webhook receives data
-1. Go back to the url from the first step and set the 'Callback URL' for your application
+   - Go back to https://open.ttlock.com/manager
+   - Select your application, and edit the "callback url". Enter the webhook url from the notification
+   - Test by unlocking your door
+   - If the event data was received by home assistant the notification will go away indicating that everything is working.
 
 # Troubleshooting
 
