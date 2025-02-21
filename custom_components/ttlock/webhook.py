@@ -149,7 +149,12 @@ class WebhookHandler:
     def async_show_setup_message(self, uri: str) -> None:
         """Display persistent notification with setup information."""
         persistent_notification.async_create(
-            self.hass, f"Webhook url: {uri}", "TTLock Setup", self.entry.entry_id
+            self.hass,
+            f"Webhook url: {uri}.\n\n"
+            "This should be [registered with your app](https://open.ttlock.com/manager). "
+            "See [the docs](https://github.com/jbergler/hass-ttlock?tab=readme-ov-file#creating-an-oauth-app) for more info.",
+            "TTLock Setup",
+            self.entry.entry_id,
         )
 
     def async_dismiss_setup_message(self) -> None:
