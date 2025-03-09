@@ -308,6 +308,10 @@ class Event:
             Action.unknown, "Lock with QR code failed, the lock is double locked"
         ),
         63: EventDescription(Action.unlock, "auto unlock at passage mode"),
+        67: EventDescription(Action.unlock, "3D Face Unlock Success"),
+        68: EventDescription(Action.unknown, "3D Face Unlock Failed (Locked)"),
+        69: EventDescription(Action.lock, "Locked via 3D Face"),
+        71: EventDescription(Action.unknown, "3D Face Recognition Failed (Expired)"),
     }
 
     @property
