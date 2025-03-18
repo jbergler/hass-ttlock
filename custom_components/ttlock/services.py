@@ -83,8 +83,8 @@ class Services:
             schema=vol.Schema(
                 {
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
-                    vol.Required("passcode_name"): str,
-                    vol.Required("passcode"): str,
+                    vol.Required("passcode_name"): cv.string,
+                    vol.Required("passcode"): cv.string,
                     vol.Optional("start_time"): cv.datetime,
                     vol.Optional("end_time"): cv.datetime,
                 }
@@ -98,9 +98,9 @@ class Services:
             schema=vol.Schema(
                 {
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
-                    vol.Required("passcode_id"): int,
-                    vol.Required("passcode_name"): str,
-                    vol.Required("passcode"): str,
+                    vol.Required("passcode_id"): cv.positive_int,
+                    vol.Required("passcode_name"): cv.string,
+                    vol.Required("passcode"): cv.string,
                     vol.Optional("start_time"): cv.datetime,
                     vol.Optional("end_time"): cv.datetime,
                 }
@@ -114,7 +114,7 @@ class Services:
             schema=vol.Schema(
                 {
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
-                    vol.Required("passcode_id"): int,
+                    vol.Required("passcode_id"): cv.positive_int,
                 }
             ),
         )
