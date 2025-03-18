@@ -257,7 +257,7 @@ class TTLockApi:
                 lockId=lock_id,
                 changeType=2,  # via gateway
                 keyboardPwdId=passcode_id,
-                keyboardPwd=config.passcode,
+                newKeyboardPwd=config.passcode,
                 keyboardPwdName=config.passcode_name,
                 startDate=config.start_minute,
                 endDate=config.end_minute,

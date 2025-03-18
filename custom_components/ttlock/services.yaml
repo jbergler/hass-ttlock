@@ -122,7 +122,9 @@ modify_passcode:
       description: The ID of the passcode to modify
       required: true
       selector:
-        text:
+        number:
+          min: 1
+          mode: box
     passcode_name:
       name: Pass code name
       description: The new name for this pass code (Can be whatever you like)
