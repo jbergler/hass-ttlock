@@ -246,6 +246,31 @@ class TTLockApi:
 
         return True
 
+    async def modify_passcode(
+        self, lock_id: int, passcode_id: int, config: AddPasscodeConfig
+    ) -> bool:
+        """Modify an existing passcode."""
+
+        async with GW_LOCK:
+            res = await self.post(
+                "keyboardPwd/change",
+                lockId=lock_id,
+                changeType=2,  # via gateway
+                keyboardPwdId=passcode_id,
+                keyboardPwd=config.passcode,
+                keyboardPwdName=config.passcode_name,
+                startDate=config.start_minute,
+                endDate=config.end_minute,
+            )
+
+        if "errcode" in res and res["errcode"] != 0:
+            _LOGGER.error(
+                "Failed to modify passcode for %s: %s", lock_id, res["errmsg"]
+            )
+            return False
+
+        return True
+
     async def list_passcodes(self, lock_id: int) -> list[Passcode]:
         """Get currently configured passcodes from lock."""
 
