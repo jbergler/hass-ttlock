@@ -297,7 +297,7 @@ class Test_create_passcode:
 
         attrs = {
             "passcode_name": "Test User",
-            "passcode": 1234,
+            "passcode": "1234",
             "start_time": dt.now() - timedelta(days=1),
             "end_time": dt.now() + timedelta(weeks=2),
         }
@@ -338,7 +338,7 @@ class Test_modify_passcode:
         attrs = {
             "passcode_id": 123,
             "passcode_name": "Updated User",
-            "passcode": 5678,
+            "passcode": "5678",
             "start_time": dt.now() - timedelta(days=1),
             "end_time": dt.now() + timedelta(weeks=2),
         }
@@ -378,7 +378,7 @@ class Test_modify_passcode:
         attrs = {
             "passcode_id": 123,
             "passcode_name": "Updated User",
-            "passcode": 5678,
+            "passcode": "5678",
             "start_time": dt.now() - timedelta(days=1),
             "end_time": dt.now() + timedelta(weeks=2),
         }
