@@ -85,8 +85,8 @@ class Services:
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
                     vol.Required("passcode_name"): str,
                     vol.Required("passcode"): str,
-                    vol.Optional("start_time", default=time()): cv.datetime,
-                    vol.Optional("end_time", default=time()): cv.datetime,
+                    vol.Optional("start_time"): cv.datetime,
+                    vol.Optional("end_time"): cv.datetime,
                 }
             ),
         )
@@ -101,8 +101,8 @@ class Services:
                     vol.Required("passcode_id"): int,
                     vol.Required("passcode_name"): str,
                     vol.Required("passcode"): str,
-                    vol.Optional("start_time", default=time()): cv.datetime,
-                    vol.Optional("end_time", default=time()): cv.datetime,
+                    vol.Optional("start_time"): cv.datetime,
+                    vol.Optional("end_time"): cv.datetime,
                 }
             ),
         )

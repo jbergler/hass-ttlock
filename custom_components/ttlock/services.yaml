@@ -99,13 +99,13 @@ create_passcode:
     start_time:
       name: Start date / time
       description: What date/time pass code will become valid
-      required: true
+      required: false
       selector:
         datetime:
     end_time:
       name: End date / time
       description: What date/time pass code will become invalid
-      required: true
+      required: false
       selector:
         datetime:
 
@@ -139,13 +139,13 @@ modify_passcode:
     start_time:
       name: Start date / time
       description: What date/time pass code will become valid
-      required: true
+      required: false
       selector:
         datetime:
     end_time:
       name: End date / time
       description: What date/time pass code will become invalid
-      required: true
+      required: false
       selector:
         datetime:
 

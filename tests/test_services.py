@@ -325,6 +325,87 @@ class Test_create_passcode:
                 )
             ]
 
+    async def test_create_passcode_failure(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test creating a passcode when the API call fails."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        attrs = {
+            "passcode_name": "Test User",
+            "passcode": "1234",
+            "start_time": dt.now() - timedelta(days=1),
+            "end_time": dt.now() + timedelta(weeks=2),
+        }
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.add_passcode", return_value=False
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_CREATE_PASSCODE,
+                {
+                    ATTR_ENTITY_ID: entity_id,
+                    **attrs,
+                },
+            )
+            await hass.async_block_till_done()
+            assert mock.called
+
+    async def test_create_passcode_invalid_entity(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test creating a passcode with an invalid entity ID."""
+        mock_api_responses("default")
+        await component_setup()
+
+        attrs = {
+            "passcode_name": "Test User",
+            "passcode": "1234",
+            "start_time": dt.now() - timedelta(days=1),
+            "end_time": dt.now() + timedelta(weeks=2),
+        }
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.add_passcode", return_value=True
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_CREATE_PASSCODE,
+                {
+                    ATTR_ENTITY_ID: "lock.invalid_entity",
+                    **attrs,
+                },
+            )
+            await hass.async_block_till_done()
+            assert not mock.called
+
+    async def test_create_passcode_without_dates(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test creating a passcode without start/end dates."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        attrs = {
+            "passcode_name": "Test User",
+            "passcode": "1234",
+        }
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.add_passcode", return_value=True
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_CREATE_PASSCODE,
+                {
+                    ATTR_ENTITY_ID: entity_id,
+                    **attrs,
+                },
+            )
+            await hass.async_block_till_done()
+            assert mock.called
+
 
 class Test_modify_passcode:
     async def test_can_modify_passcode(
@@ -396,6 +477,61 @@ class Test_modify_passcode:
             await hass.async_block_till_done()
             assert mock.called
 
+    async def test_modify_passcode_invalid_entity(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test modifying a passcode with an invalid entity ID."""
+        mock_api_responses("default")
+        await component_setup()
+
+        attrs = {
+            "passcode_id": 123,
+            "passcode_name": "Updated User",
+            "passcode": "5678",
+            "start_time": dt.now() - timedelta(days=1),
+            "end_time": dt.now() + timedelta(weeks=2),
+        }
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.modify_passcode", return_value=True
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_MODIFY_PASSCODE,
+                {
+                    ATTR_ENTITY_ID: "lock.invalid_entity",
+                    **attrs,
+                },
+            )
+            await hass.async_block_till_done()
+            assert not mock.called
+
+    async def test_modify_passcode_without_dates(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test modifying a passcode without start/end dates."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        attrs = {
+            "passcode_id": 123,
+            "passcode_name": "Updated User",
+            "passcode": "5678",
+        }
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.modify_passcode", return_value=True
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_MODIFY_PASSCODE,
+                {
+                    ATTR_ENTITY_ID: entity_id,
+                    **attrs,
+                },
+            )
+            await hass.async_block_till_done()
+            assert mock.called
+
 
 class Test_delete_passcode:
     async def test_can_delete_passcode(
@@ -407,7 +543,7 @@ class Test_delete_passcode:
         entity_id = coordinator.entities[0].entity_id
 
         attrs = {
-            "passcode_id": 123,
+            "passcode_id": "123",
         }
         with patch(
             "custom_components.ttlock.api.TTLockApi.delete_passcode", return_value=True
@@ -437,7 +573,7 @@ class Test_delete_passcode:
         entity_id = coordinator.entities[0].entity_id
 
         attrs = {
-            "passcode_id": 123,
+            "passcode_id": "123",
         }
         with patch(
             "custom_components.ttlock.api.TTLockApi.delete_passcode", return_value=False
@@ -452,6 +588,30 @@ class Test_delete_passcode:
             )
             await hass.async_block_till_done()
             assert mock.called
+
+    async def test_delete_passcode_invalid_entity(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test deleting a passcode with an invalid entity ID."""
+        mock_api_responses("default")
+        await component_setup()
+
+        attrs = {
+            "passcode_id": "123",
+        }
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.delete_passcode", return_value=True
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_DELETE_PASSCODE,
+                {
+                    ATTR_ENTITY_ID: "lock.invalid_entity",
+                    **attrs,
+                },
+            )
+            await hass.async_block_till_done()
+            assert not mock.called
 
 
 class Test_cleanup_passcodes:
@@ -513,4 +673,4 @@ class Test_cleanup_passcodes:
             await hass.async_block_till_done()
             assert mock.call_args_list == [call(coordinator.lock_id, 123)]
 
-        assert response == {"removed": {entity_id: ["Test"]}}
+        assert response == {"removed": {"lock.front_door": ["Test"]}}
