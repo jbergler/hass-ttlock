@@ -1,0 +1,35 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "La cuenta ya está configurada",
+      "already_in_progress": "Configuración ya está en curso",
+      "authorize_url_timeout": "El tiempo de espera para generar la URL de autorización ha expirado.",
+      "missing_configuration": "El componente no está configurado. Siga la documentación.",
+      "no_url_available": "No hay ninguna URL disponible. Para obtener información sobre este error,  [check the help section]({docs_url})",
+      "oauth_error": "Se recibieron datos de token no válidos.",
+      "user_rejected_authorize": "Vinculación de cuenta rechazada: {error}"
+    },
+    "create_entry": {
+      "default": "Autenticado exitosamente"
+    },
+    "step": {
+      "auth": {
+        "title": "Inicie sesión con TTLock",
+        "description": "Proporcione los datos de inicio de sesión que utilizó para iniciar sesión en la aplicación TTLock al configurar sus cerraduras",
+        "data": {
+          "password": "Contraseña",
+          "username": "Nombre de usuario"
+        }
+      },
+      "pick_implementation": {
+        "title": "Elija el método de autenticación"
+      }
+    }
+  },
+  "issues": {
+    "no_webhook_url": {
+      "description": "Se produjo un error al intentar generar la URL del webhook. Asegúrese de tener una URL configurada en Configuración > Sistema > Red.",
+      "title": "No se puede generar la URL del webhook."
+    }
+  }
+}
