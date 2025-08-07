@@ -104,7 +104,8 @@ async def api():
 @pytest.fixture
 async def coordinator(hass, api):
     """Co-ordinator instance for use in tests."""
-    return LockUpdateCoordinator(hass, api, 7252408)
+    config_entry = MockConfigEntry(domain=DOMAIN)
+    return LockUpdateCoordinator(hass, config_entry, api, 7252408)
 
 
 class MockApiData(NamedTuple):
