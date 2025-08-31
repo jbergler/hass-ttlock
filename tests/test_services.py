@@ -11,6 +11,7 @@ from custom_components.ttlock.const import (
     SVC_CREATE_PASSCODE,
     SVC_LIST_PASSCODES,
     SVC_LIST_RECORDS,
+    SVC_UPDATE_STATE,
 )
 from custom_components.ttlock.models import (
     AddPasscodeConfig,
@@ -18,10 +19,15 @@ from custom_components.ttlock.models import (
     Passcode,
     PasscodeType,
     RecordType,
+    LockState,
 )
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt
+
+from .const import (
+    LOCK_STATE_LOCKED,
+)
 
 
 class Test_configure_autolock:
@@ -384,3 +390,36 @@ class Test_cleanup_passcodes:
             assert mock.call_args_list == [call(coordinator.lock_id, 123)]
 
         assert response == {"removed": {entity_id: ["Test"]}}
+
+
+class Test_update_state:
+    async def test_successful_lock_state_updated(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ) -> None:
+        """Test update state."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        # Verify that initial state is unlocked (different that API response)
+        initial_state = hass.states.get(entity_id)
+        assert initial_state.state == "unlocked"
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.get_lock_state",
+            return_value=LockState.parse_obj(LOCK_STATE_LOCKED)
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_UPDATE_STATE,
+                {ATTR_ENTITY_ID: entity_id},
+                blocking=True,
+            )
+            await hass.async_block_till_done()
+
+            # Assert the API call was made
+            assert mock.called
+
+            # Assert the entity's state has been updated
+            updated_state = hass.states.get(entity_id)
+            assert updated_state.state == "locked"

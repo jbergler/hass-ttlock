@@ -29,6 +29,7 @@ from .const import (
     SVC_CREATE_PASSCODE,
     SVC_LIST_PASSCODES,
     SVC_LIST_RECORDS,
+    SVC_UPDATE_STATE,
 )
 from .coordinator import LockUpdateCoordinator, coordinator_for
 from .models import AddPasscodeConfig, OnOff, PassageModeConfig
@@ -143,6 +144,17 @@ class Services:
                     vol.Optional(CONF_SECONDS): vol.All(
                         vol.Coerce(int), vol.Range(min=0, max=60)
                     ),
+                }
+            ),
+        )
+
+        self.hass.services.register(
+            DOMAIN,
+            SVC_UPDATE_STATE,
+            self.handle_update_state,
+            schema=vol.Schema(
+                {
+                    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
                 }
             ),
         )
@@ -295,3 +307,9 @@ class Services:
             ]
 
         return {"records": records}
+
+    async def handle_update_state(self, call: ServiceCall):
+        """Gets the lock state."""
+
+        for entity_id, coordinator in self._get_coordinators(call).items():
+            await coordinator.update_lock_state()

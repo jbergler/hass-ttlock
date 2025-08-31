@@ -332,3 +332,15 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         if res:
             self.data.lock_sound = on
             self.async_update_listeners()
+
+    async def update_lock_state(self) -> None:
+        """Update the lock state."""
+        new_data = deepcopy(self.data)
+        try:
+            state = await self.api.get_lock_state(self.lock_id)
+            new_data.locked = state.locked == State.locked
+            if sensor_present(new_data.sensor):
+                new_data.sensor.opened = state.opened == SensorState.opened
+        except Exception:
+            pass
+        self.async_set_updated_data(new_data)
