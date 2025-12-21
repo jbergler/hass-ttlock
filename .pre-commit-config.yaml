@@ -1,17 +1,11 @@
 repos:
   - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: v0.0.256
+    rev: v0.14.10
     hooks:
-      - id: ruff
+      - id: ruff-check
         args:
           - --fix
-  - repo: https://github.com/psf/black
-    rev: 23.1.0
-    hooks:
-      - id: black
-        args:
-          - --quiet
-        files: ^((custom_components|tests)/.+)?[^/]+\.py$
+      - id: ruff-format
   - repo: https://github.com/codespell-project/codespell
     rev: v2.2.2
     hooks:
@@ -21,16 +15,8 @@ repos:
           - --skip="./.*,*.csv,*.json"
           - --quiet-level=2
         exclude_types: [csv, json]
-  - repo: https://github.com/PyCQA/isort
-    rev: 5.12.0
-    hooks:
-      - id: isort
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v2.7.1
-    hooks:
-      - id: prettier
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.1.1
+    rev: v1.19.1
     hooks:
       - id: mypy
         additional_dependencies:
