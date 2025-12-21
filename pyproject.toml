@@ -1,24 +1,16 @@
-[tool.poetry]
-name = "ttlock"
-version = "0.0.0"
-description = "Home Assistant integration for TTLock devices"
-authors = ["Jonas Bergler <jonas@lemon.nz>"]
-readme = "README.md"
-
-[tool.poetry.dependencies]
-python = "^3.12"
-homeassistant = "^2024.12.1"
-
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+[project]
+name = "hass-ttlock"
+version = "0.1.0"
+requires-python = ">=3.13.2"
+dependencies = [
+    "homeassistant>=2025.12.4",
+]
 
 [tool.black]
 extend-exclude = "/generated/"
 
 [tool.pylint.MAIN]
-py-version = "3.12"
+py-version = "3.13"
 ignore = [
     "tests",
 ]
@@ -233,3 +225,9 @@ forced-separate = [
     "tests",
 ]
 combine-as-imports = true
+
+[dependency-groups]
+dev = [
+    "dateparser>=1.2.2",
+    "pytest-homeassistant-custom-component>=0.13.301",
+]
