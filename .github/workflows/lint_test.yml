@@ -17,7 +17,7 @@ jobs:
     name: "HACS"
     runs-on: ubuntu-latest
     steps:
-      - uses: "actions/checkout@v3"
+      - uses: "actions/checkout@v6"
       - name: HACS Action
         uses: "hacs/action@main"
         with:
@@ -27,7 +27,7 @@ jobs:
     name: "Hassfest"
     runs-on: "ubuntu-latest"
     steps:
-      - uses: "actions/checkout@v3"
+      - uses: "actions/checkout@v6"
       - uses: "home-assistant/actions/hassfest@master"
 
   test:
@@ -35,20 +35,16 @@ jobs:
     name: Tests
     steps:
       - name: Check out code from GitHub
-        uses: "actions/checkout@v3"
-      - name: Setup Python
-        uses: "actions/setup-python@v4"
-        with:
-          python-version: "3.13"
-      - uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libturbojpeg
-          version: 1.0
-      - name: Install requirements
-        run: python3 -m pip install -r requirements.txt
+        uses: "actions/checkout@v6"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Set up Python
+        run: uv python install
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
       - name: Run tests
         run: |
-          pytest \
+          uv run pytest \
             -qq \
             --timeout=9 \
             --durations=10 \
