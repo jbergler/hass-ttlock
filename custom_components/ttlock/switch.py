@@ -47,7 +47,7 @@ class AutoLock(BaseLockEntity, SwitchEntity):
     def _update_from_coordinator(self) -> None:
         """Fetch state from the device."""
         self._attr_name = f"{self.coordinator.data.name} Auto Lock"
-        self._attr_is_on = self.coordinator.data.auto_lock_seconds > 0
+        self._attr_is_on = (self.coordinator.data.auto_lock_seconds or 0) > 0
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the entity on."""
