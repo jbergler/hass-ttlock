@@ -1,4 +1,5 @@
 """Config flow for TTLock."""
+
 import logging
 from typing import Any
 

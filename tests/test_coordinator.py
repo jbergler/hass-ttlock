@@ -1,6 +1,5 @@
 """Test ttlock setup process."""
 
-
 import asyncio
 from datetime import timedelta
 
