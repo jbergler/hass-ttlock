@@ -1,5 +1,6 @@
 """Global fixtures for ttlock integration."""
 
+from collections.abc import Generator
 from time import time
 from typing import NamedTuple
 from unittest.mock import patch
@@ -48,8 +49,9 @@ def auto_enable_custom_integrations(enable_custom_integrations):
 @pytest.fixture(name="skip_notifications", autouse=True)
 def skip_notifications_fixture():
     """Skip notification calls."""
-    with patch("homeassistant.components.persistent_notification.async_create"), patch(
-        "homeassistant.components.persistent_notification.async_dismiss"
+    with (
+        patch("homeassistant.components.persistent_notification.async_create"),
+        patch("homeassistant.components.persistent_notification.async_dismiss"),
     ):
         yield
 
@@ -201,3 +203,15 @@ def mock_api_responses(monkeypatch, mock_data_factory):
         )
 
     return create_mock_responses
+
+
+@pytest.fixture(autouse=True)
+def mock_webhook_cloudhook() -> Generator[None]:
+    """Fixture to mock home assistant cloud."""
+    with (
+        patch(
+            "custom_components.ttlock.webhook.WebhookHandler.try_generate_cloudhook",
+            return_value=None,
+        ),
+    ):
+        yield
