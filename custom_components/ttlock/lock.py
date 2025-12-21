@@ -1,4 +1,5 @@
 """The actual lock part of the locks."""
+
 from __future__ import annotations
 
 from typing import Any

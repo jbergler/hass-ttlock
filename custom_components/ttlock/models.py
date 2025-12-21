@@ -3,7 +3,6 @@
 from collections import namedtuple
 from datetime import datetime
 from enum import Enum, IntEnum, IntFlag, auto
-from typing import Optional
 
 try:
     from pydantic.v1 import BaseModel, Field, validator
@@ -227,7 +226,7 @@ class LockRecord(BaseModel):
     lock_id: int = Field(None, alias="lockId")
     record_type: RecordType = Field(None, alias="recordType")
     success: bool = Field(...)
-    username: Optional[str] = Field(None)
+    username: str | None = Field(None)
     keyboard_pwd: str | None = Field(None, alias="keyboardPwd")
     lock_date: EpochMs = Field(None, alias="lockDate")
     server_date: EpochMs = Field(None, alias="serverDate")

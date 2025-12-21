@@ -1,4 +1,5 @@
 """Test the TTLock services."""
+
 from datetime import timedelta
 from unittest.mock import call, patch
 
@@ -360,19 +361,23 @@ class Test_cleanup_passcodes:
         coordinator = await component_setup()
         entity_id = coordinator.entities[0].entity_id
 
-        with patch(
-            "custom_components.ttlock.api.TTLockApi.list_passcodes",
-            return_value=[
-                Passcode(
-                    keyboardPwdId=123,
-                    keyboardPwdType=PasscodeType.temporary,
-                    keyboardPwdName="Test",
-                    endDate=0,
-                )
-            ],
-        ), patch(
-            "custom_components.ttlock.api.TTLockApi.delete_passcode", return_value=True
-        ) as mock:
+        with (
+            patch(
+                "custom_components.ttlock.api.TTLockApi.list_passcodes",
+                return_value=[
+                    Passcode(
+                        keyboardPwdId=123,
+                        keyboardPwdType=PasscodeType.temporary,
+                        keyboardPwdName="Test",
+                        endDate=0,
+                    )
+                ],
+            ),
+            patch(
+                "custom_components.ttlock.api.TTLockApi.delete_passcode",
+                return_value=True,
+            ) as mock,
+        ):
             response = await hass.services.async_call(
                 DOMAIN,
                 SVC_CLEANUP_PASSCODES,
