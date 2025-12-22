@@ -76,18 +76,31 @@ class Services:
             ),
         )
 
+        def _validate_start_and_end_time_together(config):
+            """Ensure start_time and end_time are both present or both absent."""
+            has_start = "start_time" in config
+            has_end = "end_time" in config
+
+            if has_start != has_end:
+                raise vol.Invalid("start_time and end_time must be provided together")
+
+            return config
+
         self.hass.services.register(
             DOMAIN,
             SVC_CREATE_PASSCODE,
             self.handle_create_passcode,
-            schema=vol.Schema(
-                {
-                    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
-                    vol.Required("passcode_name"): cv.string,
-                    vol.Required("passcode"): cv.string,
-                    vol.Optional("start_time"): cv.datetime,
-                    vol.Optional("end_time"): cv.datetime,
-                }
+            schema=vol.All(
+                vol.Schema(
+                    {
+                        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                        vol.Required("passcode_name"): cv.string,
+                        vol.Required("passcode"): cv.string,
+                        vol.Optional("start_time"): cv.datetime,
+                        vol.Optional("end_time"): cv.datetime,
+                    }
+                ),
+                _validate_start_and_end_time_together,
             ),
         )
 
@@ -95,15 +108,18 @@ class Services:
             DOMAIN,
             SVC_MODIFY_PASSCODE,
             self.handle_modify_passcode,
-            schema=vol.Schema(
-                {
-                    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
-                    vol.Required("passcode_id"): cv.positive_int,
-                    vol.Required("passcode_name"): cv.string,
-                    vol.Required("passcode"): cv.string,
-                    vol.Optional("start_time"): cv.datetime,
-                    vol.Optional("end_time"): cv.datetime,
-                }
+            schema=vol.All(
+                vol.Schema(
+                    {
+                        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                        vol.Required("passcode_id"): cv.positive_int,
+                        vol.Required("passcode_name"): cv.string,
+                        vol.Required("passcode"): cv.string,
+                        vol.Optional("start_time"): cv.datetime,
+                        vol.Optional("end_time"): cv.datetime,
+                    }
+                ),
+                _validate_start_and_end_time_together,
             ),
         )
 

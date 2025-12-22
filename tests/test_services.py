@@ -4,11 +4,13 @@ from datetime import timedelta
 from unittest.mock import call, patch
 
 import pytest
+import voluptuous as vol
 
 from custom_components.ttlock.const import (
     DOMAIN,
     SVC_CLEANUP_PASSCODES,
     SVC_CONFIG_AUTOLOCK,
+    SVC_CONFIG_PASSAGE_MODE,
     SVC_CREATE_PASSCODE,
     SVC_DELETE_PASSCODE,
     SVC_LIST_PASSCODES,
@@ -22,6 +24,7 @@ from custom_components.ttlock.models import (
     PasscodeType,
     RecordType,
 )
+from custom_components.ttlock.services import Services
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt
@@ -682,3 +685,108 @@ class Test_cleanup_passcodes:
             assert mock.call_args_list == [call(coordinator.lock_id, 123)]
 
         assert response == {"removed": {"lock.front_door": ["Test"]}}
+
+        class Test_register:
+            """Test the register method of Services."""
+
+            async def test_register_creates_all_services(self, hass: HomeAssistant):
+                """Test that register creates all required services."""
+
+                services_instance = Services(hass)
+                services_instance.register()
+
+                # Verify all services are registered
+                assert hass.services.has_service(DOMAIN, SVC_CONFIG_PASSAGE_MODE)
+                assert hass.services.has_service(DOMAIN, SVC_CREATE_PASSCODE)
+                assert hass.services.has_service(DOMAIN, SVC_MODIFY_PASSCODE)
+                assert hass.services.has_service(DOMAIN, SVC_DELETE_PASSCODE)
+                assert hass.services.has_service(DOMAIN, SVC_CLEANUP_PASSCODES)
+                assert hass.services.has_service(DOMAIN, SVC_LIST_PASSCODES)
+                assert hass.services.has_service(DOMAIN, SVC_LIST_RECORDS)
+                assert hass.services.has_service(DOMAIN, SVC_CONFIG_AUTOLOCK)
+
+            async def test_create_passcode_rejects_start_time_without_end_time(
+                self, hass: HomeAssistant
+            ):
+                """Test that create_passcode rejects start_time without end_time."""
+
+                services_instance = Services(hass)
+                services_instance.register()
+
+                with pytest.raises(vol.Invalid):
+                    await hass.services.async_call(
+                        DOMAIN,
+                        SVC_CREATE_PASSCODE,
+                        {
+                            ATTR_ENTITY_ID: ["lock.test"],
+                            "passcode_name": "Test",
+                            "passcode": "1234",
+                            "start_time": dt.now(),
+                        },
+                        blocking=True,
+                    )
+
+            async def test_create_passcode_rejects_end_time_without_start_time(
+                self, hass: HomeAssistant
+            ):
+                """Test that create_passcode rejects end_time without start_time."""
+
+                services_instance = Services(hass)
+                services_instance.register()
+
+                with pytest.raises(vol.Invalid):
+                    await hass.services.async_call(
+                        DOMAIN,
+                        SVC_CREATE_PASSCODE,
+                        {
+                            ATTR_ENTITY_ID: ["lock.test"],
+                            "passcode_name": "Test",
+                            "passcode": "1234",
+                            "end_time": dt.now(),
+                        },
+                        blocking=True,
+                    )
+
+            async def test_modify_passcode_rejects_start_time_without_end_time(
+                self, hass: HomeAssistant
+            ):
+                """Test that modify_passcode rejects start_time without end_time."""
+
+                services_instance = Services(hass)
+                services_instance.register()
+
+                with pytest.raises(vol.Invalid):
+                    await hass.services.async_call(
+                        DOMAIN,
+                        SVC_MODIFY_PASSCODE,
+                        {
+                            ATTR_ENTITY_ID: ["lock.test"],
+                            "passcode_id": 123,
+                            "passcode_name": "Test",
+                            "passcode": "1234",
+                            "start_time": dt.now(),
+                        },
+                        blocking=True,
+                    )
+
+            async def test_modify_passcode_rejects_end_time_without_start_time(
+                self, hass: HomeAssistant
+            ):
+                """Test that modify_passcode rejects end_time without start_time."""
+
+                services_instance = Services(hass)
+                services_instance.register()
+
+                with pytest.raises(vol.Invalid):
+                    await hass.services.async_call(
+                        DOMAIN,
+                        SVC_MODIFY_PASSCODE,
+                        {
+                            ATTR_ENTITY_ID: ["lock.test"],
+                            "passcode_id": 123,
+                            "passcode_name": "Test",
+                            "passcode": "1234",
+                            "end_time": dt.now(),
+                        },
+                        blocking=True,
+                    )
