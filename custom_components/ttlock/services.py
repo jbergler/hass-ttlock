@@ -27,8 +27,10 @@ from .const import (
     SVC_CONFIG_AUTOLOCK,
     SVC_CONFIG_PASSAGE_MODE,
     SVC_CREATE_PASSCODE,
+    SVC_DELETE_PASSCODE,
     SVC_LIST_PASSCODES,
     SVC_LIST_RECORDS,
+    SVC_MODIFY_PASSCODE,
 )
 from .coordinator import LockUpdateCoordinator, coordinator_for
 from .models import AddPasscodeConfig, OnOff, PassageModeConfig
@@ -61,7 +63,7 @@ class Services:
             DOMAIN,
             SVC_CONFIG_PASSAGE_MODE,
             self.handle_configure_passage_mode,
-            vol.Schema(
+            schema=vol.Schema(
                 {
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
                     vol.Required(CONF_ENABLED): cv.boolean,
@@ -74,17 +76,61 @@ class Services:
             ),
         )
 
+        def _validate_start_and_end_time_together(config):
+            """Ensure start_time and end_time are both present or both absent."""
+            has_start = "start_time" in config
+            has_end = "end_time" in config
+
+            if has_start != has_end:
+                raise vol.Invalid("start_time and end_time must be provided together")
+
+            return config
+
         self.hass.services.register(
             DOMAIN,
             SVC_CREATE_PASSCODE,
             self.handle_create_passcode,
-            vol.Schema(
+            schema=vol.All(
+                vol.Schema(
+                    {
+                        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                        vol.Required("passcode_name"): cv.string,
+                        vol.Required("passcode"): cv.string,
+                        vol.Optional("start_time"): cv.datetime,
+                        vol.Optional("end_time"): cv.datetime,
+                    }
+                ),
+                _validate_start_and_end_time_together,
+            ),
+        )
+
+        self.hass.services.register(
+            DOMAIN,
+            SVC_MODIFY_PASSCODE,
+            self.handle_modify_passcode,
+            schema=vol.All(
+                vol.Schema(
+                    {
+                        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                        vol.Required("passcode_id"): cv.positive_int,
+                        vol.Required("passcode_name"): cv.string,
+                        vol.Required("passcode"): cv.string,
+                        vol.Optional("start_time"): cv.datetime,
+                        vol.Optional("end_time"): cv.datetime,
+                    }
+                ),
+                _validate_start_and_end_time_together,
+            ),
+        )
+
+        self.hass.services.register(
+            DOMAIN,
+            SVC_DELETE_PASSCODE,
+            self.handle_delete_passcode,
+            schema=vol.Schema(
                 {
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
-                    vol.Required("passcode_name"): cv.string,
-                    vol.Required("passcode"): cv.string,
-                    vol.Required("start_time", default=time()): cv.datetime,
-                    vol.Required("end_time", default=time()): cv.datetime,
+                    vol.Required("passcode_id"): cv.positive_int,
                 }
             ),
         )
@@ -112,6 +158,7 @@ class Services:
             ),
             supports_response=SupportsResponse.ONLY,
         )
+
         self.hass.services.register(
             DOMAIN,
             SVC_LIST_RECORDS,
@@ -136,7 +183,7 @@ class Services:
             DOMAIN,
             SVC_CONFIG_AUTOLOCK,
             self.handle_configure_autolock,
-            vol.Schema(
+            schema=vol.Schema(
                 {
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
                     vol.Required(CONF_ENABLED): cv.boolean,
@@ -214,12 +261,18 @@ class Services:
         """Create a new passcode for the given entities."""
 
         start_time_val = call.data.get("start_time")
-        start_time_utc = as_utc(start_time_val)
-        start_time = int(start_time_utc.timestamp() * 1000)
+        if start_time_val:
+            start_time_utc = as_utc(start_time_val)
+            start_time = int(start_time_utc.timestamp() * 1000)
+        else:
+            start_time = None
 
         end_time_val = call.data.get("end_time")
-        end_time_utc = as_utc(end_time_val)
-        end_time = int(end_time_utc.timestamp() * 1000)
+        if end_time_val:
+            end_time_utc = as_utc(end_time_val)
+            end_time = int(end_time_utc.timestamp() * 1000)
+        else:
+            end_time = None
 
         config = AddPasscodeConfig(
             passcode=call.data.get("passcode"),
@@ -230,6 +283,45 @@ class Services:
 
         for _entity_id, coordinator in self._get_coordinators(call).items():
             await coordinator.api.add_passcode(coordinator.lock_id, config)
+
+    async def handle_modify_passcode(self, call: ServiceCall):
+        """Modify an existing passcode for the given entities."""
+
+        start_time_val = call.data.get("start_time")
+        if start_time_val:
+            start_time_utc = as_utc(start_time_val)
+            start_time = int(start_time_utc.timestamp() * 1000)
+        else:
+            start_time = None
+
+        end_time_val = call.data.get("end_time")
+        if end_time_val:
+            end_time_utc = as_utc(end_time_val)
+            end_time = int(end_time_utc.timestamp() * 1000)
+        else:
+            end_time = None
+
+        config = AddPasscodeConfig(
+            passcode=call.data.get("passcode"),
+            passcodeName=call.data.get("passcode_name"),
+            startDate=start_time,
+            endDate=end_time,
+        )
+
+        passcode_id = call.data.get("passcode_id")
+
+        for _entity_id, coordinator in self._get_coordinators(call).items():
+            await coordinator.api.modify_passcode(
+                coordinator.lock_id, passcode_id, config
+            )
+
+    async def handle_delete_passcode(self, call: ServiceCall):
+        """Delete a specific passcode from the given entities."""
+
+        passcode_id = call.data.get("passcode_id")
+
+        for _entity_id, coordinator in self._get_coordinators(call).items():
+            await coordinator.api.delete_passcode(coordinator.lock_id, passcode_id)
 
     async def handle_cleanup_passcodes(self, call: ServiceCall) -> ServiceResponse:
         """Clean up expired passcodes for the given entities."""

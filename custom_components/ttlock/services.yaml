@@ -99,15 +99,73 @@ create_passcode:
     start_time:
       name: Start date / time
       description: What date/time pass code will become valid
-      required: true
+      required: false
       selector:
         datetime:
     end_time:
       name: End date / time
       description: What date/time pass code will become invalid
-      required: true
+      required: false
       selector:
         datetime:
+
+modify_passcode:
+  name: Modify an existing pass code
+  description: Modifies an existing passcode for a lock.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    passcode_id:
+      name: Pass code ID
+      description: The ID of the passcode to modify
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    passcode_name:
+      name: Pass code name
+      description: The new name for this pass code (Can be whatever you like)
+      required: true
+      selector:
+        text:
+    passcode:
+      name: Passcode
+      description: The new passcode that will be typed by the user to unlock the lock. (4-9 digits)
+      required: true
+      selector:
+        text:
+          type: number
+    start_time:
+      name: Start date / time
+      description: What date/time pass code will become valid
+      required: false
+      selector:
+        datetime:
+    end_time:
+      name: End date / time
+      description: What date/time pass code will become invalid
+      required: false
+      selector:
+        datetime:
+
+delete_passcode:
+  name: Delete a pass code
+  description: Deletes a specific passcode from a lock.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    passcode_id:
+      name: Pass code ID
+      description: The ID of the passcode to delete
+      required: true
+      selector:
+        number:
+          min: 1
 
 cleanup_passcodes:
   name: Remove expired passcodes

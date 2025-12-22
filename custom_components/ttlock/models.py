@@ -237,8 +237,8 @@ class AddPasscodeConfig(BaseModel):
 
     passcode: str = Field(None, alias="passcode")
     passcode_name: str = Field(None, alias="passcodeName")
-    start_minute: int = Field(0, alias="startDate")
-    end_minute: int = Field(0, alias="endDate")
+    start_minute: int | None = Field(None, alias="startDate")
+    end_minute: int | None = Field(None, alias="endDate")
 
 
 class Action(Enum):
