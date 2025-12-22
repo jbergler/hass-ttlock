@@ -164,7 +164,8 @@ delete_passcode:
       description: The ID of the passcode to delete
       required: true
       selector:
-        text:
+        number:
+          min: 1
 
 cleanup_passcodes:
   name: Remove expired passcodes

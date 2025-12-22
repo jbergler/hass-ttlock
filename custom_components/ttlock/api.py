@@ -228,16 +228,24 @@ class TTLockApi:
         """Add new passcode."""
 
         async with GW_LOCK:
-            res = await self.post(
-                "keyboardPwd/add",
-                lockId=lock_id,
-                addType=2,  # via gateway
-                keyboardPwd=config.passcode,
-                keyboardPwdName=config.passcode_name,
-                keyboardPwdType=3,  # Only temporary passcode supported
-                startDate=config.start_minute,
-                endDate=config.end_minute,
-            )
+            params: dict[str, Any] = {
+                "lockId": lock_id,
+                "addType": 2,  # via gateway
+                "keyboardPwd": config.passcode,
+                "keyboardPwdName": config.passcode_name,
+            }
+
+            # Only include dates and set type to temporary if dates are provided
+            if config.start_minute is not None or config.end_minute is not None:
+                params["keyboardPwdType"] = 3  # temporary passcode
+                if config.start_minute is not None:
+                    params["startDate"] = config.start_minute
+                if config.end_minute is not None:
+                    params["endDate"] = config.end_minute
+            else:
+                params["keyboardPwdType"] = 2  # permanent passcode
+
+            res = await self.post("keyboardPwd/add", **params)
 
         if "errcode" in res and res["errcode"] != 0:
             _LOGGER.error(
@@ -253,16 +261,23 @@ class TTLockApi:
         """Modify an existing passcode."""
 
         async with GW_LOCK:
-            res = await self.post(
-                "keyboardPwd/change",
-                lockId=lock_id,
-                changeType=2,  # via gateway
-                keyboardPwdId=passcode_id,
-                newKeyboardPwd=config.passcode,
-                keyboardPwdName=config.passcode_name,
-                startDate=config.start_minute,
-                endDate=config.end_minute,
-            )
+            params: dict[str, Any] = {
+                "lockId": lock_id,
+                "changeType": 2,  # via gateway
+                "keyboardPwdId": passcode_id,
+            }
+
+            # Only include fields being changed (None values are omitted per API spec)
+            if config.passcode is not None:
+                params["newKeyboardPwd"] = config.passcode
+            if config.passcode_name is not None:
+                params["keyboardPwdName"] = config.passcode_name
+            if config.start_minute is not None:
+                params["startDate"] = config.start_minute
+            if config.end_minute is not None:
+                params["endDate"] = config.end_minute
+
+            res = await self.post("keyboardPwd/change", **params)
 
         if "errcode" in res and res["errcode"] != 0:
             _LOGGER.error(
