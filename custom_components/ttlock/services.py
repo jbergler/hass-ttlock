@@ -190,6 +190,7 @@ class Services:
         Returns:
             A dictionary where keys are entity_ids and values are their corresponding
             LockUpdateCoordinators. Only includes entries where a coordinator exists.
+
         """
         entity_ids = call.data.get(ATTR_ENTITY_ID)
         if entity_ids:

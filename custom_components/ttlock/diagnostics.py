@@ -1,4 +1,5 @@
 """Diagnostics support for Tractive."""
+
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
@@ -13,7 +14,7 @@ from .const import DOMAIN, TT_LOCKS
 from .models import BaseModel
 
 TO_REDACT = {
-    "auth_implementation" "token",
+    "auth_implementationtoken",
     "lockKey",
     "aesKeyStr",
     "adminPwd",

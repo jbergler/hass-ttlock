@@ -1,4 +1,5 @@
 """API for TTLock bound to Home Assistant OAuth."""
+
 import asyncio
 from collections.abc import Mapping
 from hashlib import md5

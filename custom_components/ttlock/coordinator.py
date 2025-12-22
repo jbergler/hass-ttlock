@@ -1,4 +1,5 @@
 """Provides the TTLock LockUpdateCoordinator."""
+
 from __future__ import annotations
 
 import asyncio
@@ -128,13 +129,23 @@ def coordinator_for(
 class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     """Class to manage fetching Toon data from single endpoint."""
 
-    def __init__(self, hass: HomeAssistant, api: TTLockApi, lock_id: int) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config_entry: ConfigEntry,
+        api: TTLockApi,
+        lock_id: int,
+    ) -> None:
         """Initialize the update co-ordinator for a single lock."""
         self.api = api
         self.lock_id = lock_id
 
         super().__init__(
-            hass, _LOGGER, name=DOMAIN, update_interval=timedelta(minutes=15)
+            hass,
+            _LOGGER,
+            name=DOMAIN,
+            config_entry=config_entry,
+            update_interval=timedelta(minutes=15),
         )
 
         async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._process_webhook_data)
