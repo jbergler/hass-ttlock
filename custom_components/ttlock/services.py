@@ -226,6 +226,7 @@ class Services:
             passcodes[entity_id] = [
                 {
                     "name": code.name,
+                    "id": code.id,
                     "passcode": code.passcode,
                     "type": code.type.name,
                     "start_date": code.start_date,
