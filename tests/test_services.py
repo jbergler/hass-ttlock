@@ -643,7 +643,16 @@ class Test_cleanup_passcodes:
         """Test cleanup service with an expired passcode."""
         mock_api_responses("default")
         coordinator = await component_setup()
-        entity_id = coordinator.entities[0].entity_id
+        # Find the lock entity
+        lock_entity = next(
+            (
+                entity
+                for entity in coordinator.entities
+                if entity.entity_id.startswith("lock.")
+            ),
+            coordinator.entities[0],
+        )
+        entity_id = lock_entity.entity_id
 
         with (
             patch(
