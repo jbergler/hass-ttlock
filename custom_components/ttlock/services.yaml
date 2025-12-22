@@ -75,7 +75,7 @@ configure_passage_mode:
 
 create_passcode:
   name: Create a new pass code
-  description: Tries to create a new (temporary) passcode for a lock.
+  description: Tries to create a new passcode for a lock. If no start/end time is provided, the passcode will be valid forever.
   target:
     entity:
       integration: ttlock

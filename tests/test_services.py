@@ -121,6 +121,7 @@ class Test_list_passcodes:
                 entity_id: [
                     {
                         "name": "Test Code",
+                        "id": 123,
                         "passcode": "123456",
                         "type": "temporary",
                         "start_date": passcode.start_date,
