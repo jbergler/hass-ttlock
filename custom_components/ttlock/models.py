@@ -126,7 +126,7 @@ class PassageModeConfig(BaseModel):
 
 class PasscodeType(IntEnum):
     """Type of passcode.
-    
+
     Reference: https://euopen.ttlock.com/document/doc?urlName=cloud%2Fpasscode%2FgetEn.html
     """
 
