@@ -123,7 +123,7 @@ class Test_list_passcodes:
                         "name": "Test Code",
                         "id": 123,
                         "passcode": "123456",
-                        "type": "temporary",
+                        "type": "period",
                         "start_date": passcode.start_date,
                         "end_date": passcode.end_date,
                         "expired": False,
