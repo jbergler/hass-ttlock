@@ -135,28 +135,19 @@ class PasscodeType(IntEnum):
     permanent = 2  # Must be used at least once within 24 hours after Start Time
     period = 3  # Must be used at least once within 24 hours after Start Time
     delete = 4  # This code will delete all other codes
-    weekend_cyclic = 5  # Valid during time period at the weekend
-    daily_cyclic = 6  # Valid during time period everyday
-    workday_cyclic = 7  # Valid during time period on workdays
-    monday_cyclic = 8  # Valid during time period on Mondays
-    tuesday_cyclic = 9  # Valid during time period on Tuesdays
-    wednesday_cyclic = 10  # Valid during time period on Wednesdays
-    thursday_cyclic = 11  # Valid during time period on Thursdays
-    friday_cyclic = 12  # Valid during time period on Fridays
-    saturday_cyclic = 13  # Valid during time period on Saturdays
-    sunday_cyclic = 14  # Valid during time period on Sundays
+    weekends = 5  # Valid during time period at the weekend
+    daily = 6  # Valid during time period everyday
+    weekdays = 7  # Valid during time period on workdays
+    mondays = 8  # Valid during time period on Mondays
+    tuesdays = 9  # Valid during time period on Tuesdays
+    wednesdays = 10  # Valid during time period on Wednesdays
+    thursdays = 11  # Valid during time period on Thursdays
+    fridays = 12  # Valid during time period on Fridays
+    saturdays = 13  # Valid during time period on Saturdays
+    sundays = 14  # Valid during time period on Sundays
 
-    # Backward compatibility aliases
+    # Backward compatibility alias
     temporary = 3  # Alias for period
-    cyclic = 4  # Alias for delete
-    custom = 6  # Alias for daily_cyclic
-    monday = 8  # Alias for monday_cyclic
-    tuesday = 9  # Alias for tuesday_cyclic
-    wednesday = 10  # Alias for wednesday_cyclic
-    thursday = 11  # Alias for thursday_cyclic
-    friday = 12  # Alias for friday_cyclic
-    saturday = 13  # Alias for saturday_cyclic
-    sunday = 14  # Alias for sunday_cyclic
 
 
 class Passcode(BaseModel):
@@ -177,16 +168,16 @@ class Passcode(BaseModel):
             PasscodeType.period,
             PasscodeType.one_time,
             PasscodeType.delete,
-            PasscodeType.weekend_cyclic,
-            PasscodeType.daily_cyclic,
-            PasscodeType.workday_cyclic,
-            PasscodeType.monday_cyclic,
-            PasscodeType.tuesday_cyclic,
-            PasscodeType.wednesday_cyclic,
-            PasscodeType.thursday_cyclic,
-            PasscodeType.friday_cyclic,
-            PasscodeType.saturday_cyclic,
-            PasscodeType.sunday_cyclic,
+            PasscodeType.weekends,
+            PasscodeType.daily,
+            PasscodeType.weekdays,
+            PasscodeType.mondays,
+            PasscodeType.tuesdays,
+            PasscodeType.wednesdays,
+            PasscodeType.thursdays,
+            PasscodeType.fridays,
+            PasscodeType.saturdays,
+            PasscodeType.sundays,
         )
         if self.type in time_bounded_types and self.end_date:
             return self.end_date < dt.now()
