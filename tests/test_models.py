@@ -179,6 +179,8 @@ class TestPasscode:
             (14, timedelta(weeks=-1), True),  # Sunday
             (1, timedelta(weeks=-1), True),  # One-time
             (4, timedelta(weeks=1), False),  # Cyclic
+            (5, timedelta(weeks=-1), True),  # Weekend cyclic
+            (7, timedelta(weeks=1), False),  # Workday cyclic
         ],
     )
     def test_time_bounded_codes(self, passcode_type, offset, expired):

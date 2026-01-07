@@ -131,20 +131,32 @@ class PasscodeType(IntEnum):
     """
 
     unknown = 0
-    one_time = 1  # Erase code (delete after use)
-    permanent = 2
-    temporary = 3  # Period passcode
-    cyclic = 4  # Recurring passcode
-    # Type 5 is not documented/reserved
-    custom = 6  # Custom (for random passcode generation)
-    # Type 7 is not documented/reserved
-    monday = 8  # Valid during time period on Mondays
-    tuesday = 9  # Valid during time period on Tuesdays
-    wednesday = 10  # Valid during time period on Wednesdays
-    thursday = 11  # Valid during time period on Thursdays
-    friday = 12  # Valid during time period on Fridays
-    saturday = 13  # Valid during time period on Saturdays
-    sunday = 14  # Valid during time period on Sundays
+    one_time = 1  # Only valid for once within 6 hours from the Start Time
+    permanent = 2  # Must be used at least once within 24 hours after Start Time
+    period = 3  # Must be used at least once within 24 hours after Start Time
+    delete = 4  # This code will delete all other codes
+    weekend_cyclic = 5  # Valid during time period at the weekend
+    daily_cyclic = 6  # Valid during time period everyday
+    workday_cyclic = 7  # Valid during time period on workdays
+    monday_cyclic = 8  # Valid during time period on Mondays
+    tuesday_cyclic = 9  # Valid during time period on Tuesdays
+    wednesday_cyclic = 10  # Valid during time period on Wednesdays
+    thursday_cyclic = 11  # Valid during time period on Thursdays
+    friday_cyclic = 12  # Valid during time period on Fridays
+    saturday_cyclic = 13  # Valid during time period on Saturdays
+    sunday_cyclic = 14  # Valid during time period on Sundays
+
+    # Backward compatibility aliases
+    temporary = 3  # Alias for period
+    cyclic = 4  # Alias for delete
+    custom = 6  # Alias for daily_cyclic
+    monday = 8  # Alias for monday_cyclic
+    tuesday = 9  # Alias for tuesday_cyclic
+    wednesday = 10  # Alias for wednesday_cyclic
+    thursday = 11  # Alias for thursday_cyclic
+    friday = 12  # Alias for friday_cyclic
+    saturday = 13  # Alias for saturday_cyclic
+    sunday = 14  # Alias for sunday_cyclic
 
 
 class Passcode(BaseModel):
@@ -162,16 +174,19 @@ class Passcode(BaseModel):
         """True if the passcode expired."""
         # Time-bounded passcode types that can expire
         time_bounded_types = (
-            PasscodeType.temporary,
+            PasscodeType.period,
             PasscodeType.one_time,
-            PasscodeType.cyclic,
-            PasscodeType.monday,
-            PasscodeType.tuesday,
-            PasscodeType.wednesday,
-            PasscodeType.thursday,
-            PasscodeType.friday,
-            PasscodeType.saturday,
-            PasscodeType.sunday,
+            PasscodeType.delete,
+            PasscodeType.weekend_cyclic,
+            PasscodeType.daily_cyclic,
+            PasscodeType.workday_cyclic,
+            PasscodeType.monday_cyclic,
+            PasscodeType.tuesday_cyclic,
+            PasscodeType.wednesday_cyclic,
+            PasscodeType.thursday_cyclic,
+            PasscodeType.friday_cyclic,
+            PasscodeType.saturday_cyclic,
+            PasscodeType.sunday_cyclic,
         )
         if self.type in time_bounded_types and self.end_date:
             return self.end_date < dt.now()
