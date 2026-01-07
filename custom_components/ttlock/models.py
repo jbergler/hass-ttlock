@@ -125,11 +125,24 @@ class PassageModeConfig(BaseModel):
 
 
 class PasscodeType(IntEnum):
-    """Type of passcode."""
+    """Type of passcode.
+    
+    Reference: https://euopen.ttlock.com/document/doc?urlName=cloud%2Fpasscode%2FgetEn.html
+    """
 
     unknown = 0
+    one_time = 1  # Erase code (delete after use)
     permanent = 2
-    temporary = 3
+    temporary = 3  # Period passcode
+    cyclic = 4  # Recurring passcode
+    custom = 6  # Custom (for random passcode generation)
+    monday = 8  # Valid during time period on Mondays
+    tuesday = 9  # Valid during time period on Tuesdays
+    wednesday = 10  # Valid during time period on Wednesdays
+    thursday = 11  # Valid during time period on Thursdays
+    friday = 12  # Valid during time period on Fridays
+    saturday = 13  # Valid during time period on Saturdays
+    sunday = 14  # Valid during time period on Sundays
 
 
 class Passcode(BaseModel):
@@ -145,10 +158,23 @@ class Passcode(BaseModel):
     @property
     def expired(self) -> bool:
         """True if the passcode expired."""
-        if self.type == PasscodeType.temporary:
+        # Time-bounded passcode types that can expire
+        time_bounded_types = (
+            PasscodeType.temporary,
+            PasscodeType.one_time,
+            PasscodeType.cyclic,
+            PasscodeType.monday,
+            PasscodeType.tuesday,
+            PasscodeType.wednesday,
+            PasscodeType.thursday,
+            PasscodeType.friday,
+            PasscodeType.saturday,
+            PasscodeType.sunday,
+        )
+        if self.type in time_bounded_types and self.end_date:
             return self.end_date < dt.now()
 
-        # Assume not
+        # Assume not expired for other types
         return False
 
 
