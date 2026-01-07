@@ -135,7 +135,9 @@ class PasscodeType(IntEnum):
     permanent = 2
     temporary = 3  # Period passcode
     cyclic = 4  # Recurring passcode
+    # Type 5 is not documented/reserved
     custom = 6  # Custom (for random passcode generation)
+    # Type 7 is not documented/reserved
     monday = 8  # Valid during time period on Mondays
     tuesday = 9  # Valid during time period on Tuesdays
     wednesday = 10  # Valid during time period on Wednesdays
