@@ -145,6 +145,58 @@ class TestPasscode:
         )
         assert code.expired == expired
 
+    def test_friday_code(self):
+        """Test Friday-specific passcode (type 12)."""
+        code = Passcode.parse_obj(
+            {
+                "endDate": 1704495600000,
+                "sendDate": 1704314923000,
+                "keyboardPwdId": 398584274,
+                "nickName": "Test User",
+                "keyboardPwdType": 12,
+                "lockId": 12345,
+                "keyboardPwdVersion": 4,
+                "isCustom": 0,
+                "keyboardPwdName": "Friday Code",
+                "keyboardPwd": "123456",
+                "startDate": 1704456000000,
+                "senderUsername": "test@example.com",
+                "receiverUsername": "",
+                "status": 2,
+            }
+        )
+        assert code.expired is True  # endDate 1704495600000 is in the past
+
+    @pytest.mark.parametrize(
+        ("passcode_type", "offset", "expired"),
+        [
+            (8, timedelta(weeks=-1), True),  # Monday
+            (9, timedelta(weeks=1), False),  # Tuesday
+            (10, timedelta(weeks=-1), True),  # Wednesday
+            (11, timedelta(weeks=1), False),  # Thursday
+            (12, timedelta(weeks=-1), True),  # Friday
+            (13, timedelta(weeks=1), False),  # Saturday
+            (14, timedelta(weeks=-1), True),  # Sunday
+            (1, timedelta(weeks=-1), True),  # One-time
+            (4, timedelta(weeks=1), False),  # Cyclic
+            (5, timedelta(weeks=-1), True),  # Weekend cyclic
+            (7, timedelta(weeks=1), False),  # Workday cyclic
+        ],
+    )
+    def test_time_bounded_codes(self, passcode_type, offset, expired):
+        """Test day-specific and other time-bounded passcodes."""
+        code = Passcode.parse_obj(
+            {
+                "startDate": 1690408800000,
+                "endDate": round((datetime.now() + offset).timestamp() * 1000),
+                "keyboardPwdId": 311183184,
+                "keyboardPwdType": passcode_type,
+                "keyboardPwdName": "Test Code",
+                "keyboardPwd": "1234",
+            }
+        )
+        assert code.expired == expired
+
 
 # All the required fields
 MINIMAL_LOCK = {

@@ -125,11 +125,29 @@ class PassageModeConfig(BaseModel):
 
 
 class PasscodeType(IntEnum):
-    """Type of passcode."""
+    """Type of passcode.
+
+    Reference: https://euopen.ttlock.com/document/doc?urlName=cloud%2Fpasscode%2FgetEn.html
+    """
 
     unknown = 0
-    permanent = 2
-    temporary = 3
+    one_time = 1  # Only valid for once within 6 hours from the Start Time
+    permanent = 2  # Must be used at least once within 24 hours after Start Time
+    period = 3  # Must be used at least once within 24 hours after Start Time
+    delete = 4  # This code will delete all other codes
+    weekends = 5  # Valid during time period at the weekend
+    daily = 6  # Valid during time period everyday
+    weekdays = 7  # Valid during time period on workdays
+    mondays = 8  # Valid during time period on Mondays
+    tuesdays = 9  # Valid during time period on Tuesdays
+    wednesdays = 10  # Valid during time period on Wednesdays
+    thursdays = 11  # Valid during time period on Thursdays
+    fridays = 12  # Valid during time period on Fridays
+    saturdays = 13  # Valid during time period on Saturdays
+    sundays = 14  # Valid during time period on Sundays
+
+    # Backward compatibility alias
+    temporary = 3  # Alias for period
 
 
 class Passcode(BaseModel):
@@ -145,10 +163,26 @@ class Passcode(BaseModel):
     @property
     def expired(self) -> bool:
         """True if the passcode expired."""
-        if self.type == PasscodeType.temporary:
+        # Time-bounded passcode types that can expire
+        time_bounded_types = (
+            PasscodeType.period,
+            PasscodeType.one_time,
+            PasscodeType.delete,
+            PasscodeType.weekends,
+            PasscodeType.daily,
+            PasscodeType.weekdays,
+            PasscodeType.mondays,
+            PasscodeType.tuesdays,
+            PasscodeType.wednesdays,
+            PasscodeType.thursdays,
+            PasscodeType.fridays,
+            PasscodeType.saturdays,
+            PasscodeType.sundays,
+        )
+        if self.type in time_bounded_types and self.end_date:
             return self.end_date < dt.now()
 
-        # Assume not
+        # Assume not expired for other types
         return False
 
 
