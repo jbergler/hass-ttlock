@@ -15,6 +15,7 @@ from custom_components.ttlock.const import (
     SVC_LIST_PASSCODES,
     SVC_LIST_RECORDS,
     SVC_MODIFY_PASSCODE,
+    SVC_UPDATE_STATE,
 )
 from custom_components.ttlock.models import (
     AddPasscodeConfig,
@@ -773,3 +774,24 @@ class Test_cleanup_passcodes:
             assert mock.call_args_list == [call(coordinator.lock_id, 123)]
 
         assert response == {"removed": {entity_id: ["Test"]}}
+
+
+class Test_update_state:
+    async def test_update_state(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test update_state service."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        with patch.object(coordinator, "async_refresh") as mock_refresh:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_UPDATE_STATE,
+                {ATTR_ENTITY_ID: entity_id},
+                blocking=True,
+            )
+            await hass.async_block_till_done()
+            assert mock_refresh.called
+            assert coordinator.data.locked is None

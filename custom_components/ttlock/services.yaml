@@ -246,3 +246,11 @@ configure_autolock:
           min: 0
           max: 60
           unit_of_measurement: secs
+
+update_state:
+  name: Update State
+  description: Forces a refresh of the lock state from the API.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
