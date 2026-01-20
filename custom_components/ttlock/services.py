@@ -403,7 +403,7 @@ class Services:
         return {"records": records}
 
     async def handle_update_state(self, call: ServiceCall):
-        """Refreshes the lock state by calling the coordinator's refresh method."""
+        """Refresh the lock state by calling the coordinator's refresh method."""
         for _entity_id, coordinator in self._get_coordinators(call).items():
             # Set the locked state to none to force the API call.
             coordinator.data.locked = None

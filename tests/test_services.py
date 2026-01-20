@@ -773,7 +773,6 @@ class Test_cleanup_passcodes:
             await hass.async_block_till_done()
             assert mock.call_args_list == [call(coordinator.lock_id, 123)]
 
-
         assert response == {"removed": {entity_id: ["Test"]}}
 
 
