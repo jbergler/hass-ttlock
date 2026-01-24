@@ -18,6 +18,7 @@ from homeassistant.helpers import config_entry_oauth2_flow
 from .models import (
     AddPasscodeConfig,
     Features,
+    Gateway,
     Lock,
     LockRecord,
     LockState,
@@ -153,6 +154,11 @@ class TTLockApi:
             return has_gateway or has_wifi
 
         return [lock["lockId"] for lock in res["list"] if lock_connectable(lock)]
+
+    async def get_gateways(self) -> list[Gateway]:
+        """Enumerate all gateways in the account."""
+        res = await self.get("plug/list", pageNo=1, pageSize=1000)
+        return [Gateway.parse_obj(gateway) for gateway in res["list"]]
 
     async def get_lock(self, lock_id: int) -> Lock:
         """Get a lock by ID."""
