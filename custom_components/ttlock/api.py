@@ -157,7 +157,7 @@ class TTLockApi:
 
     async def get_gateways(self) -> list[Gateway]:
         """Enumerate all gateways in the account."""
-        res = await self.get("plug/list", pageNo=1, pageSize=1000)
+        res = await self.get("gateway/list", pageNo=1, pageSize=1000)
         return [Gateway.parse_obj(gateway) for gateway in res["list"]]
 
     async def get_lock(self, lock_id: int) -> Lock:

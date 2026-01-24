@@ -10,18 +10,11 @@ from homeassistant.const import STATE_ON, STATE_OFF
 from homeassistant.core import HomeAssistant
 
 GATEWAY_DETAILS = {
-    "deviceNum": 1,
-    "serialNumber": "G2_2b8b93",
-    "lockNum": 1,
-    "plugName": "Test Gateway",
-    "electricMeterCount": 0,
-    "plugMac": "05:F6:1E:93:8B:2B",
-    "networkName": "Battat2",
-    "waterMeterCount": 0,
+    "gatewayId": 1461158,
+    "gatewayName": "Test Gateway",
+    "gatewayMac": "05:F6:1E:93:8B:2B",
     "isOnline": 1,
-    "plugVersion": 2,
-    "plugId": 1461158,
-    "networkMac": "cc:7b:5c:4f:b7:17",
+    "networkName": "Battat2",
 }
 
 @pytest.fixture

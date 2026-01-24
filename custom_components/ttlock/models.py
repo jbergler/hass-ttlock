@@ -101,9 +101,9 @@ class Sensor(BaseModel):
 class Gateway(BaseModel):
     """Gateway details."""
 
-    id: int = Field(..., alias="plugId")
-    name: str = Field(..., alias="plugName")
-    mac: str = Field(..., alias="plugMac")
+    id: int = Field(..., alias="gatewayId")
+    name: str = Field(..., alias="gatewayName")
+    mac: str = Field(..., alias="gatewayMac")
     is_online: bool = Field(..., alias="isOnline")
     network_name: str = Field(None, alias="networkName")
 
