@@ -28,10 +28,19 @@ def mock_gateway_response(monkeypatch):
     )
 
 async def test_gateway_sensor_setup(
-    hass: HomeAssistant, component_setup, mock_api_responses, mock_gateway_response
+    hass: HomeAssistant, component_setup, mock_api_responses, monkeypatch
 ):
     """Test that the gateway binary sensor is set up correctly."""
     mock_api_responses("default")
+    
+    # Override the default empty gateway mock
+    async def mock_get_gateways(*args, **kwargs):
+        return [Gateway.parse_obj(GATEWAY_DETAILS)]
+
+    monkeypatch.setattr(
+        "custom_components.ttlock.api.TTLockApi.get_gateways", mock_get_gateways
+    )
+
     await component_setup()
 
     # Get the gateway coordinator from hass.data to verify it's there
@@ -59,6 +68,8 @@ async def test_gateway_sensor_offline(
     hass: HomeAssistant, component_setup, mock_api_responses, monkeypatch
 ):
     """Test that the gateway binary sensor reports offline."""
+    mock_api_responses("default")
+
     offline_gateway = GATEWAY_DETAILS.copy()
     offline_gateway["isOnline"] = 0
     
@@ -69,7 +80,6 @@ async def test_gateway_sensor_offline(
         "custom_components.ttlock.api.TTLockApi.get_gateways", mock_get_gateways_offline
     )
     
-    mock_api_responses("default")
     await component_setup()
 
     entity_id = "binary_sensor.test_gateway_status"
