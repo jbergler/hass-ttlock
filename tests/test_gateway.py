@@ -77,3 +77,33 @@ async def test_gateway_sensor_offline(
     
     assert state is not None
     assert state.state == STATE_OFF
+
+async def test_setup_with_no_gateways(
+    hass: HomeAssistant, component_setup, mock_api_responses, monkeypatch
+):
+    """Test setup when account has no gateways."""
+    async def mock_get_gateways_empty(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "custom_components.ttlock.api.TTLockApi.get_gateways", mock_get_gateways_empty
+    )
+    
+    mock_api_responses("default")
+    await component_setup()
+
+    # Verify coordinator exists but has empty data
+    entries = hass.config_entries.async_entries(DOMAIN)
+    entry = entries[0]
+    assert TT_GATEWAYS in hass.data[DOMAIN][entry.entry_id]
+    coordinator = hass.data[DOMAIN][entry.entry_id][TT_GATEWAYS]
+    assert coordinator.data == {}
+    
+    # Verify no gateway entities created
+    # We can check specific naming pattern or simply that no binary_sensor.gateway* exists
+    states = hass.states.async_all()
+    gateway_sensors = [
+        state.entity_id for state in states 
+        if state.entity_id.startswith("binary_sensor.") and "gateway" in state.entity_id
+    ]
+    assert len(gateway_sensors) == 0
