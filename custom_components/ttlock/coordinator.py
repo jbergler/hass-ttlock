@@ -18,8 +18,15 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt
 
 from .api import TTLockApi
-from .const import DOMAIN, SIGNAL_NEW_DATA, TT_LOCKS, TT_GATEWAYS
-from .models import Features, PassageModeConfig, SensorState, State, WebhookEvent, Gateway
+from .const import DOMAIN, SIGNAL_NEW_DATA, TT_GATEWAYS, TT_LOCKS
+from .models import (
+    Features,
+    Gateway,
+    PassageModeConfig,
+    SensorState,
+    State,
+    WebhookEvent,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,7 +121,9 @@ def lock_coordinators(hass: HomeAssistant, entry: ConfigEntry):
     yield from coordinators
 
 
-def gateway_coordinator(hass: HomeAssistant, entry: ConfigEntry) -> GatewaysUpdateCoordinator:
+def gateway_coordinator(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> GatewaysUpdateCoordinator:
     """Get the gateway coordinator."""
     return hass.data[DOMAIN][entry.entry_id][TT_GATEWAYS]
 
@@ -366,4 +375,3 @@ class GatewaysUpdateCoordinator(DataUpdateCoordinator[dict[int, Gateway]]):
             return {gateway.id: gateway for gateway in gateways}
         except Exception as err:
             raise UpdateFailed(err) from err
-

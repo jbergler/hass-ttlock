@@ -11,8 +11,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 
 from .api import TTLockApi
-from .const import DOMAIN, TT_API, TT_LOCKS, TT_GATEWAYS
-from .coordinator import LockUpdateCoordinator, GatewaysUpdateCoordinator
+from .const import DOMAIN, TT_API, TT_GATEWAYS, TT_LOCKS
+from .coordinator import GatewaysUpdateCoordinator, LockUpdateCoordinator
 from .services import Services
 from .webhook import WebhookHandler
 

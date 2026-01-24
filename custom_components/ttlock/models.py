@@ -108,7 +108,6 @@ class Gateway(BaseModel):
     network_name: str = Field(None, alias="networkName")
 
 
-
 class LockState(BaseModel):
     """Lock state."""
 
