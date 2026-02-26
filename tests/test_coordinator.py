@@ -45,7 +45,7 @@ class TestLockState:
             ],
         )
         def test_is_true_during_set_passage_mode_times(self, lock_state, time):
-            lock_state.passage_mode_config = PassageModeConfig.parse_obj(
+            lock_state.passage_mode_config = PassageModeConfig.model_validate(
                 PASSAGE_MODE_6_TO_6_7_DAYS
             )
             assert lock_state.passage_mode_active(ts(time)) is True
@@ -60,7 +60,7 @@ class TestLockState:
             ],
         )
         def test_is_false_outside_set_passage_mode_times(self, lock_state, time):
-            lock_state.passage_mode_config = PassageModeConfig.parse_obj(
+            lock_state.passage_mode_config = PassageModeConfig.model_validate(
                 PASSAGE_MODE_6_TO_6_7_DAYS
             )
             assert lock_state.passage_mode_active(ts(time)) is False
@@ -85,7 +85,7 @@ class TestLockState:
             ],
         )
         def test_is_auto_lock_outside_set_passage_mode_times(self, lock_state, time):
-            lock_state.passage_mode_config = PassageModeConfig.parse_obj(
+            lock_state.passage_mode_config = PassageModeConfig.model_validate(
                 PASSAGE_MODE_6_TO_6_7_DAYS
             )
             assert lock_state.auto_lock_delay(ts(time)) == lock_state.auto_lock_seconds
@@ -99,7 +99,7 @@ class TestLockState:
             ],
         )
         def test_is_none_during_set_passage_mode_times(self, lock_state, time):
-            lock_state.passage_mode_config = PassageModeConfig.parse_obj(
+            lock_state.passage_mode_config = PassageModeConfig.model_validate(
                 PASSAGE_MODE_6_TO_6_7_DAYS
             )
             assert lock_state.auto_lock_delay(ts(time)) is None
@@ -113,7 +113,7 @@ class TestLockState:
             ],
         )
         def test_is_none_when_passage_mode_is_all_day(self, lock_state, time):
-            lock_state.passage_mode_config = PassageModeConfig.parse_obj(
+            lock_state.passage_mode_config = PassageModeConfig.model_validate(
                 PASSAGE_MODE_ALL_DAY_WEEKDAYS
             )
             assert lock_state.auto_lock_delay(ts(time)) is None
@@ -179,7 +179,7 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
             coordinator.data.locked = False
 
-            event = WebhookEvent.parse_obj(WEBHOOK_LOCK_10AM_UTC)
+            event = WebhookEvent.model_validate(WEBHOOK_LOCK_10AM_UTC)
 
             coordinator._process_webhook_data(event)
 
@@ -194,7 +194,7 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
             coordinator.data.locked = True
             coordinator.data.auto_lock_seconds = -1
-            event = WebhookEvent.parse_obj(WEBHOOK_UNLOCK_10AM_UTC)
+            event = WebhookEvent.model_validate(WEBHOOK_UNLOCK_10AM_UTC)
 
             coordinator._process_webhook_data(event)
 
@@ -209,11 +209,11 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
             coordinator.data.locked = True
             coordinator.data.auto_lock_seconds = 1
-            coordinator.data.passage_mode_config = PassageModeConfig.parse_obj(
+            coordinator.data.passage_mode_config = PassageModeConfig.model_validate(
                 PASSAGE_MODE_6_TO_6_7_DAYS
             )
 
-            event = WebhookEvent.parse_obj(WEBHOOK_UNLOCK_10AM_UTC)
+            event = WebhookEvent.model_validate(WEBHOOK_UNLOCK_10AM_UTC)
 
             assert coordinator.data.auto_lock_delay(event.lock_ts) == 1
 
@@ -239,7 +239,7 @@ class TestLockUpdateCoordinator:
             coordinator.data.auto_lock_seconds = -1
             coordinator.data.sensor.opened is False
 
-            event = WebhookEvent.parse_obj(WEBHOOK_SENSOR_OPEN)
+            event = WebhookEvent.model_validate(WEBHOOK_SENSOR_OPEN)
             coordinator._process_webhook_data(event)
 
             assert coordinator.data.locked is True
@@ -255,7 +255,7 @@ class TestLockUpdateCoordinator:
             coordinator.data.auto_lock_seconds = -1
             coordinator.data.sensor.opened is True
 
-            event = WebhookEvent.parse_obj(WEBHOOK_SENSOR_CLOSE)
+            event = WebhookEvent.model_validate(WEBHOOK_SENSOR_CLOSE)
             coordinator._process_webhook_data(event)
 
             assert coordinator.data.locked is True

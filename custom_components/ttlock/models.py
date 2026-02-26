@@ -4,10 +4,8 @@ from collections import namedtuple
 from datetime import datetime
 from enum import Enum, IntEnum, IntFlag, auto
 
-try:
-    from pydantic.v1 import BaseModel, Field, validator
-except ImportError:
-    from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, GetCoreSchemaHandler, field_validator
+from pydantic_core import core_schema
 
 from homeassistant.util import dt
 
@@ -16,9 +14,9 @@ class EpochMs(datetime):
     """Parse millisecond epoch into a local datetime."""
 
     @classmethod
-    def __get_validators__(cls):
-        """Return validator."""
-        yield cls.validate
+    def __get_pydantic_core_schema__(cls, source_type, handler: GetCoreSchemaHandler):
+        """Return pydantic core schema."""
+        return core_schema.no_info_plain_validator_function(cls.validate)
 
     @classmethod
     def validate(cls, v):
@@ -115,11 +113,13 @@ class PassageModeConfig(BaseModel):
     week_days: list[int] = Field([], alias="weekDays")  # monday = 1, sunday = 7
     auto_unlock: OnOff = Field(OnOff.unknown, alias="autoUnlock")
 
-    @validator("start_minute", pre=True, always=True)
+    @field_validator("start_minute", mode="before")
+    @classmethod
     def _set_start_minute(cls, start_minute: int | None) -> int:
         return start_minute or 0
 
-    @validator("end_minute", pre=True, always=True)
+    @field_validator("end_minute", mode="before")
+    @classmethod
     def _set_end_minute(cls, end_minute: int | None) -> int:
         return end_minute or 0
 
@@ -153,12 +153,12 @@ class PasscodeType(IntEnum):
 class Passcode(BaseModel):
     """A single passcode on a lock."""
 
-    id: int = Field(None, alias="keyboardPwdId")
-    passcode: str = Field(None, alias="keyboardPwd")
-    name: str = Field(None, alias="keyboardPwdName")
-    type: PasscodeType = Field(None, alias="keyboardPwdType")
-    start_date: EpochMs = Field(None, alias="startDate")
-    end_date: EpochMs = Field(None, alias="endDate")
+    id: int | None = Field(None, alias="keyboardPwdId")
+    passcode: str | None = Field(None, alias="keyboardPwd")
+    name: str | None = Field(None, alias="keyboardPwdName")
+    type: PasscodeType | None = Field(None, alias="keyboardPwdType")
+    start_date: EpochMs | None = Field(None, alias="startDate")
+    end_date: EpochMs | None = Field(None, alias="endDate")
 
     @property
     def expired(self) -> bool:
@@ -256,21 +256,21 @@ class RecordType(IntEnum):
 class LockRecord(BaseModel):
     """A single record entry from a lock."""
 
-    id: int = Field(None, alias="recordId")
-    lock_id: int = Field(None, alias="lockId")
-    record_type: RecordType = Field(None, alias="recordType")
+    id: int | None = Field(None, alias="recordId")
+    lock_id: int | None = Field(None, alias="lockId")
+    record_type: RecordType | None = Field(None, alias="recordType")
     success: bool = Field(...)
     username: str | None = Field(None)
     keyboard_pwd: str | None = Field(None, alias="keyboardPwd")
-    lock_date: EpochMs = Field(None, alias="lockDate")
-    server_date: EpochMs = Field(None, alias="serverDate")
+    lock_date: EpochMs | None = Field(None, alias="lockDate")
+    server_date: EpochMs | None = Field(None, alias="serverDate")
 
 
 class AddPasscodeConfig(BaseModel):
     """The passcode creation configuration."""
 
-    passcode: str = Field(None, alias="passcode")
-    passcode_name: str = Field(None, alias="passcodeName")
+    passcode: str | None = Field(None, alias="passcode")
+    passcode_name: str | None = Field(None, alias="passcodeName")
     start_minute: int | None = Field(None, alias="startDate")
     end_minute: int | None = Field(None, alias="endDate")
 
@@ -364,9 +364,9 @@ class Event:
         return self._info.description
 
     @classmethod
-    def __get_validators__(cls):
-        """Validate generator for pydantic type."""
-        yield cls.validate
+    def __get_pydantic_core_schema__(cls, source_type, handler: GetCoreSchemaHandler):
+        """Return pydantic core schema."""
+        return core_schema.no_info_plain_validator_function(cls.validate)
 
     @classmethod
     def validate(cls, v):
@@ -393,7 +393,7 @@ class WebhookEvent(BaseModel):
     server_ts: EpochMs = Field(..., alias="serverDate")
     lock_ts: EpochMs = Field(..., alias="lockDate")
     event: Event = Field(..., alias="recordType")
-    user: str = Field(None, alias="username")
+    user: str | None = Field(None, alias="username")
     success: bool
 
     # keyboardPwd - ignore for now
