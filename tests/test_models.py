@@ -1,8 +1,7 @@
 from datetime import datetime, timedelta
 
-import pytest
-
 from pydantic import BaseModel
+import pytest
 
 from custom_components.ttlock.models import (
     EpochMs,

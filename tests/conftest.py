@@ -129,7 +129,9 @@ def mock_data_factory():
             "default": MockApiData(
                 lock=Lock.model_validate(BASIC_LOCK_DETAILS),
                 state=LockState.model_validate(LOCK_STATE_UNLOCKED),
-                passage_mode=PassageModeConfig.model_validate(PASSAGE_MODE_6_TO_6_7_DAYS),
+                passage_mode=PassageModeConfig.model_validate(
+                    PASSAGE_MODE_6_TO_6_7_DAYS
+                ),
             ),
             "with_sensor": MockApiData(
                 lock=Lock.model_validate(LOCK_DETAILS_WITH_SENSOR),
@@ -143,7 +145,9 @@ def mock_data_factory():
             "locked": MockApiData(
                 lock=Lock.model_validate(BASIC_LOCK_DETAILS),
                 state=LockState.model_validate(LOCK_STATE_LOCKED),
-                passage_mode=PassageModeConfig.model_validate(PASSAGE_MODE_6_TO_6_7_DAYS),
+                passage_mode=PassageModeConfig.model_validate(
+                    PASSAGE_MODE_6_TO_6_7_DAYS
+                ),
             ),
             "no_passage_mode": MockApiData(
                 lock=Lock.model_validate(BASIC_LOCK_DETAILS),
