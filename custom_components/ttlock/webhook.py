@@ -130,7 +130,7 @@ class WebhookHandler:
                 for raw_records in data.getall("records", []):
                     for record in json.loads(raw_records):
                         async_dispatcher_send(
-                            hass, SIGNAL_NEW_DATA, WebhookEvent.parse_obj(record)
+                            hass, SIGNAL_NEW_DATA, WebhookEvent.model_validate(record)
                         )
                         success = True
             else:

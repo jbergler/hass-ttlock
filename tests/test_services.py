@@ -199,7 +199,9 @@ class Test_list_records:
                     {
                         "id": record.id,
                         "lock_id": record.lock_id,
-                        "record_type": record.record_type.name,
+                        "record_type": record.record_type.name
+                        if record.record_type is not None
+                        else None,
                         "success": record.success,
                         "username": record.username,
                         "keyboard_pwd": record.keyboard_pwd,
