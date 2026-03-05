@@ -149,6 +149,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         )
 
         async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._process_webhook_data)
+        # Provide placeholder data so platforms/entities can be set up without waiting for the cloud.
+        # Real values will be populated on the first successful refresh.
+        self.data = LockState(name=f"TTLock {lock_id}", mac=str(lock_id))
 
     async def _async_update_data(self) -> LockState:
         try:
@@ -275,15 +278,16 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     @property
     def device_info(self) -> DeviceInfo:
         """Device info for the lock."""
+        data = self.data
         return DeviceInfo(
-            identifiers={(DOMAIN, self.data.mac)},
+            # Use lock_id as stable identifier so startup does not depend on cloud data.
+            identifiers={(DOMAIN, str(self.lock_id))},
             manufacturer="TT Lock",
-            model=self.data.model,
-            name=self.data.name,
-            sw_version=self.data.firmware_version,
-            hw_version=self.data.hardware_version,
+            model=getattr(data, 'model', None) if data else None,
+            name=getattr(data, 'name', f"TTLock {self.lock_id}") if data else f"TTLock {self.lock_id}",
+            sw_version=getattr(data, 'firmware_version', None) if data else None,
+            hw_version=getattr(data, 'hardware_version', None) if data else None,
         )
-
     @property
     def entities(self) -> list[Entity]:
         """Entities belonging to this co-ordinator."""
