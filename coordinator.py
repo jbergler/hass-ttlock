@@ -288,7 +288,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             identifiers={(DOMAIN, str(self.lock_id))},
             manufacturer="TT Lock",
             model=getattr(data, "model", None) if data else None,
-            name=getattr(data, "name", f"TTLock {self.lock_id}") if data else f"TTLock {self.lock_id}",
+            name=getattr(data, "name", f"TTLock {self.lock_id}")
+            if data
+            else f"TTLock {self.lock_id}",
             sw_version=getattr(data, "firmware_version", None) if data else None,
             hw_version=getattr(data, "hardware_version", None) if data else None,
         )
