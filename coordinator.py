@@ -65,6 +65,7 @@ class LockState:
             if current_day in self.passage_mode_config.week_days:
                 if self.passage_mode_config.all_day:
                     return True
+
                 current_minute = current_date.hour * 60 + current_date.minute
                 if (
                     self.passage_mode_config.start_minute
@@ -73,6 +74,7 @@ class LockState:
                 ):
                     # Active by schedule
                     return True
+
         return False
 
     def auto_lock_delay(self, current_date: datetime) -> int | None:
@@ -183,7 +185,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                     if sensor:
                         new_data.sensor.battery = sensor.battery_level
                     else:
-                        # Sensor not installed / no data returned: keep object so tests can read .present/.last_fetched
+                        # Sensor not installed / no data returned:
+                        # keep object so tests can read .present/.last_fetched
                         new_data.sensor.battery = None
             else:
                 # Lock does not support a door sensor
