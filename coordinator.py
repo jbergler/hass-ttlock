@@ -40,7 +40,7 @@ class SensorData:
 
 @dataclass
 class LockState:
-    """Internal state of the lock as managed by the coordinator."""
+    """Internal state of the lock as managed by the co-oridinator."""
 
     name: str
     mac: str
@@ -65,7 +65,6 @@ class LockState:
             if current_day in self.passage_mode_config.week_days:
                 if self.passage_mode_config.all_day:
                     return True
-
                 current_minute = current_date.hour * 60 + current_date.minute
                 if (
                     self.passage_mode_config.start_minute
@@ -74,7 +73,6 @@ class LockState:
                 ):
                     # Active by schedule
                     return True
-
         return False
 
     def auto_lock_delay(self, current_date: datetime) -> int | None:
@@ -144,14 +142,13 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._process_webhook_data)
 
         # CRITICAL: DataUpdateCoordinator starts with self.data = None.
-        # Give a placeholder so device_info and actions don't explode at startup.
+        # Give a placeholder so device_info and platform setup don't explode at startup.
         self.data = LockState(name=f"TTLock {lock_id}", mac=str(lock_id))
 
     async def _async_update_data(self) -> LockState:
         try:
             details = await self.api.get_lock(self.lock_id)
 
-            # Start from existing data (preserve last_user/last_reason, etc.)
             new_data = deepcopy(self.data) or LockState(
                 name=details.name,
                 mac=details.mac,
@@ -165,28 +162,28 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             new_data.model = details.model
             new_data.features = Features.from_feature_value(details.featureValue)
 
-            # Update mutable attributes
+            # update mutable attributes
             new_data.battery_level = details.battery_level
             new_data.hardware_version = details.hardwareRevision
             new_data.firmware_version = details.firmwareRevision
 
             if Features.door_sensor in new_data.features:
-                # Ensure placeholder sensor object exists for sensor-capable locks
+                # make sure we have a placeholder for sensor state if the lock supports it
                 if new_data.sensor is None:
                     new_data.sensor = SensorData()
 
-                # Only fetch sensor metadata once a day
+                # only fetch sensor metadata once a day
                 if (
                     new_data.sensor.last_fetched is None
                     or new_data.sensor.last_fetched < dt.now() - timedelta(days=1)
                 ):
                     sensor = await self.api.get_sensor(self.lock_id)
                     new_data.sensor.last_fetched = dt.now()
+
                     if sensor:
                         new_data.sensor.battery = sensor.battery_level
                     else:
-                        # Sensor not installed or no data returned:
-                        # keep object (tests expect .present False, not sensor=None)
+                        # Sensor not installed / no data returned: keep object so tests can read .present/.last_fetched
                         new_data.sensor.battery = None
             else:
                 # Lock does not support a door sensor
@@ -208,7 +205,6 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             )
 
             return new_data
-
         except Exception as err:
             raise UpdateFailed(err) from err
 
@@ -288,9 +284,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             identifiers={(DOMAIN, str(self.lock_id))},
             manufacturer="TT Lock",
             model=getattr(data, "model", None) if data else None,
-            name=getattr(data, "name", f"TTLock {self.lock_id}")
-            if data
-            else f"TTLock {self.lock_id}",
+            name=getattr(data, "name", f"TTLock {self.lock_id}") if data else f"TTLock {self.lock_id}",
             sw_version=getattr(data, "firmware_version", None) if data else None,
             hw_version=getattr(data, "hardware_version", None) if data else None,
         )
