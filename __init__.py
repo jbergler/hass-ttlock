@@ -11,11 +11,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 
-from .api import TTLockApi
-from .const import DOMAIN, TT_API, TT_LOCKS
-from .coordinator import LockUpdateCoordinator
-from .services import Services
-from .webhook import WebhookHandler
+# 🔧 FIX: imports absolutos (pytest no soporta imports relativos)
+from custom_components.ttlock.api import TTLockApi
+from custom_components.ttlock.const import DOMAIN, TT_API, TT_LOCKS
+from custom_components.ttlock.coordinator import LockUpdateCoordinator
+from custom_components.ttlock.services import Services
+from custom_components.ttlock.webhook import WebhookHandler
 
 PLATFORMS: list[Platform] = [
     Platform.LOCK,
@@ -26,7 +27,6 @@ PLATFORMS: list[Platform] = [
 
 _LOGGER = logging.getLogger(__name__)
 
-# Keep startup responsive: do not block Home Assistant indefinitely on cloud calls.
 _LOCK_LIST_TIMEOUT = 15  # seconds
 
 
@@ -46,7 +46,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {TT_API: client, TT_LOCKS: []}
 
-    # Discover locks with a hard timeout so startup can't hang forever.
     try:
         lock_ids = await asyncio.wait_for(client.get_locks(), timeout=_LOCK_LIST_TIMEOUT)
     except (TimeoutError, OSError) as err:
@@ -60,13 +59,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         LockUpdateCoordinator(hass, entry, client, lock_id) for lock_id in lock_ids
     ]
 
-    # CRITICAL: save coordinators before forwarding platforms (tests expect TT_LOCKS[0] to exist)
     hass.data[DOMAIN][entry.entry_id][TT_LOCKS] = coordinators
 
-    # Forward platforms immediately; first refresh happens in the background.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Webhook setup should not block startup.
     async def _setup_webhook() -> None:
         try:
             await WebhookHandler(hass, entry).setup()
@@ -75,7 +71,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.async_create_task(_setup_webhook(), name=f"ttlock_webhook_{entry.entry_id}")
 
-    # Kick off first refresh in the background to avoid blocking Home Assistant startup.
     async def _first_refresh(coordinator: LockUpdateCoordinator) -> None:
         try:
             await coordinator.async_config_entry_first_refresh()
