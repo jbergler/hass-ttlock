@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
+from typing import TypeGuard
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -53,11 +54,7 @@ class LockState:
     last_user: str | None = None
     last_reason: str | None = None
     lock_sound: bool | None = None
-
-    # Always keep a SensorData placeholder to avoid NoneType errors in tests/runtime.
-    # If the sensor is not installed, battery stays None and present == False.
-    sensor: SensorData = field(default_factory=SensorData)
-
+    sensor: SensorData | None = None
     auto_lock_seconds: int | None = None
     passage_mode_config: PassageModeConfig | None = None
 
@@ -89,13 +86,13 @@ class LockState:
         return self.auto_lock_seconds
 
 
-def sensor_present(instance: SensorData) -> bool:
+def sensor_present(instance: SensorData | None) -> TypeGuard[SensorData]:
     """Check if a sensor is present."""
-    return instance.present
+    return instance is not None and instance.present
 
 
 @contextmanager
-def lock_action(controller: "LockUpdateCoordinator"):
+def lock_action(controller: LockUpdateCoordinator):
     """Wrap a lock action so that in-progress state is managed correctly."""
     controller.data.action_pending = True
     controller.async_update_listeners()
@@ -112,7 +109,7 @@ def lock_coordinators(hass: HomeAssistant, entry: ConfigEntry):
     yield from coordinators
 
 
-def coordinator_for(hass: HomeAssistant, entity_id: str) -> "LockUpdateCoordinator" | None:
+def coordinator_for(hass: HomeAssistant, entity_id: str) -> LockUpdateCoordinator | None:
     """Given an entity_id, return the coordinator for that entity."""
     for entry in hass.config_entries.async_entries(DOMAIN):
         for coordinator in lock_coordinators(hass, entry):
@@ -146,15 +143,13 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
         async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._process_webhook_data)
 
-        # Provide placeholder data so platforms/entities can be set up without waiting for the cloud.
-        # Real values will be populated on the first successful refresh.
+        # Placeholder: allows platform setup without waiting for the cloud.
         self.data = LockState(name=f"TTLock {lock_id}", mac=str(lock_id))
 
     async def _async_update_data(self) -> LockState:
         try:
             details = await self.api.get_lock(self.lock_id)
 
-            # Start from existing state to preserve derived fields (e.g. locked/opened) where needed.
             new_data = deepcopy(self.data) or LockState(
                 name=details.name,
                 mac=details.mac,
@@ -162,7 +157,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 features=Features.from_feature_value(details.featureValue),
             )
 
-            # Always refresh identity + features from cloud details.
+            # Always refresh identity + features from details.
             new_data.mac = details.mac
             new_data.model = details.model
             new_data.features = Features.from_feature_value(details.featureValue)
@@ -174,6 +169,10 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             new_data.firmware_version = details.firmwareRevision
 
             if Features.door_sensor in new_data.features:
+                # Ensure sensor object exists for sensor-capable locks.
+                if new_data.sensor is None:
+                    new_data.sensor = SensorData()
+
                 # Only fetch sensor metadata once a day.
                 if (
                     new_data.sensor.last_fetched is None
@@ -184,11 +183,11 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                     if sensor:
                         new_data.sensor.battery = sensor.battery_level
                     else:
-                        # Sensor not installed or no data returned; keep placeholder as “not present”.
+                        # Sensor not installed or no data returned; keep object but mark not present.
                         new_data.sensor.battery = None
             else:
-                # Lock does not support a door sensor; keep placeholder as “not present”.
-                new_data.sensor.battery = None
+                # Lock does not support a door sensor.
+                new_data.sensor = None
 
             if new_data.locked is None:
                 try:
@@ -239,8 +238,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 new_data.last_user = event.user
                 new_data.last_reason = event.event.description
 
-        # Only handle door open/close when sensor is actually present.
-        if new_data.sensor.present and event.sensorState:
+        # Only if sensor exists and is present.
+        if sensor_present(new_data.sensor) and event.sensorState:
             if event.sensorState.opened == SensorState.opened:
                 new_data.sensor.opened = True
             if event.sensorState.opened == SensorState.closed:
@@ -267,7 +266,6 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             new_data = deepcopy(self.data)
             new_data.locked = True
             new_data.last_reason = "Auto Lock"
-
             _LOGGER.debug("Assuming lock auto locked after %s seconds", auto_lock_delay)
             self.async_set_updated_data(new_data)
 
