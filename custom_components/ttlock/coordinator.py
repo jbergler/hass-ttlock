@@ -12,6 +12,7 @@ from typing import TypeGuard
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -92,7 +93,7 @@ def sensor_present(instance: SensorData | None) -> TypeGuard[SensorData]:
 
 
 @contextmanager
-def lock_action(controller: LockUpdateCoordinator):
+def lock_action(controller: "LockUpdateCoordinator"):
     """Wrap a lock action so that in-progress state is managed correctly."""
     controller.data.action_pending = True
     controller.async_update_listeners()
@@ -109,7 +110,7 @@ def lock_coordinators(hass: HomeAssistant, entry: ConfigEntry):
     yield from coordinators
 
 
-def coordinator_for(hass: HomeAssistant, entity_id: str) -> LockUpdateCoordinator | None:
+def coordinator_for(hass: HomeAssistant, entity_id: str) -> "LockUpdateCoordinator" | None:
     """Given an entity_id, return the coordinator for that entity."""
     for entry in hass.config_entries.async_entries(DOMAIN):
         for coordinator in lock_coordinators(hass, entry):
@@ -132,6 +133,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         """Initialize the update coordinator for a single lock."""
         self.api = api
         self.lock_id = lock_id
+        self._device_registry_updated = False
 
         super().__init__(
             hass,
@@ -145,6 +147,27 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
         # Placeholder: allows platform setup without waiting for the cloud.
         self.data = LockState(name=f"TTLock {lock_id}", mac=str(lock_id))
+
+    def _update_device_registry(self, data: LockState) -> None:
+        """Update the device registry once we have real metadata."""
+        if self._device_registry_updated:
+            return
+
+        # Only update once we have meaningful values.
+        if not data.name or not data.model:
+            return
+
+        device_reg = dr.async_get(self.hass)
+        device_reg.async_get_or_create(
+            config_entry_id=self.config_entry.entry_id,
+            identifiers={(DOMAIN, str(self.lock_id))},
+            manufacturer="TT Lock",
+            name=data.name,
+            model=data.model,
+            sw_version=data.firmware_version,
+            hw_version=data.hardware_version,
+        )
+        self._device_registry_updated = True
 
     async def _async_update_data(self) -> LockState:
         try:
@@ -167,6 +190,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             new_data.battery_level = details.battery_level
             new_data.hardware_version = details.hardwareRevision
             new_data.firmware_version = details.firmwareRevision
+
+            # Ensure device registry gets the real name/model once we have them.
+            self._update_device_registry(new_data)
 
             if Features.door_sensor in new_data.features:
                 # Ensure sensor object exists for sensor-capable locks.
