@@ -12,7 +12,6 @@ from typing import TypeGuard
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -73,17 +72,17 @@ class LockState:
                     <= current_minute
                     < self.passage_mode_config.end_minute
                 ):
+                    # Active by schedule
                     return True
+
         return False
 
     def auto_lock_delay(self, current_date: datetime) -> int | None:
         """Return the auto-lock delay in seconds, or None if auto-lock is currently disabled."""
         if self.auto_lock_seconds is None or self.auto_lock_seconds <= 0:
             return None
-
         if self.passage_mode_active(current_date):
             return None
-
         return self.auto_lock_seconds
 
 
@@ -93,7 +92,7 @@ def sensor_present(instance: SensorData | None) -> TypeGuard[SensorData]:
 
 
 @contextmanager
-def lock_action(controller: LockUpdateCoordinator):
+def lock_action(controller: "LockUpdateCoordinator"):
     """Wrap a lock action so that in-progress state is managed correctly."""
     controller.data.action_pending = True
     controller.async_update_listeners()
@@ -110,7 +109,7 @@ def lock_coordinators(hass: HomeAssistant, entry: ConfigEntry):
     yield from coordinators
 
 
-def coordinator_for(hass: HomeAssistant, entity_id: str) -> LockUpdateCoordinator | None:
+def coordinator_for(hass: HomeAssistant, entity_id: str) -> "LockUpdateCoordinator" | None:
     """Given an entity_id, return the coordinator for that entity."""
     for entry in hass.config_entries.async_entries(DOMAIN):
         for coordinator in lock_coordinators(hass, entry):
@@ -121,7 +120,7 @@ def coordinator_for(hass: HomeAssistant, entity_id: str) -> LockUpdateCoordinato
 
 
 class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
-    """Class to manage fetching lock data."""
+    """Class to manage fetching Toon data from single endpoint."""
 
     def __init__(
         self,
@@ -130,10 +129,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         api: TTLockApi,
         lock_id: int,
     ) -> None:
-        """Initialize the update coordinator for a single lock."""
+        """Initialize the update co-ordinator for a single lock."""
         self.api = api
         self.lock_id = lock_id
-        self._device_registry_updated = False
 
         super().__init__(
             hass,
@@ -145,47 +143,15 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
         async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._process_webhook_data)
 
-        # Placeholder: allows platform setup without waiting for the cloud.
-        # NOTE: name/model will be updated on first successful refresh.
+        # CRITICAL: DataUpdateCoordinator starts with self.data = None.
+        # Give a placeholder so device_info and actions don't explode at startup.
         self.data = LockState(name=f"TTLock {lock_id}", mac=str(lock_id))
-
-    def _update_device_registry(self, data: LockState) -> None:
-        """Update the device registry once we have real metadata.
-
-        In unit tests, the ConfigEntry may not be registered in hass.config_entries;
-        in that case we skip to avoid breaking refresh.
-        """
-        if self._device_registry_updated:
-            return
-
-        if not data.name or not data.model:
-            return
-
-        entry_id = getattr(self.config_entry, "entry_id", None)
-        if not entry_id or self.hass.config_entries.async_get_entry(entry_id) is None:
-            return
-
-        try:
-            device_reg = dr.async_get(self.hass)
-            device_reg.async_get_or_create(
-                config_entry_id=entry_id,
-                identifiers={(DOMAIN, str(self.lock_id))},
-                manufacturer="TT Lock",
-                name=data.name,
-                model=data.model,
-                sw_version=data.firmware_version,
-                hw_version=data.hardware_version,
-            )
-        except Exception:
-            _LOGGER.debug("Skipping device registry update", exc_info=True)
-            return
-
-        self._device_registry_updated = True
 
     async def _async_update_data(self) -> LockState:
         try:
             details = await self.api.get_lock(self.lock_id)
 
+            # Start from existing data (preserve last_user/last_reason, etc.)
             new_data = deepcopy(self.data) or LockState(
                 name=details.name,
                 mac=details.mac,
@@ -193,26 +159,23 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 features=Features.from_feature_value(details.featureValue),
             )
 
-            # Always refresh identity + features from details.
+            # Always refresh identity + features from details (important if we started from placeholder)
+            new_data.name = details.name
             new_data.mac = details.mac
             new_data.model = details.model
             new_data.features = Features.from_feature_value(details.featureValue)
 
-            # Update mutable attributes.
-            new_data.name = details.name
+            # Update mutable attributes
             new_data.battery_level = details.battery_level
             new_data.hardware_version = details.hardwareRevision
             new_data.firmware_version = details.firmwareRevision
 
-            # Update device registry (only when safe to do so).
-            self._update_device_registry(new_data)
-
             if Features.door_sensor in new_data.features:
-                # Ensure sensor object exists for sensor-capable locks.
+                # Ensure placeholder sensor object exists for sensor-capable locks
                 if new_data.sensor is None:
                     new_data.sensor = SensorData()
 
-                # Only fetch sensor metadata once a day.
+                # Only fetch sensor metadata once a day
                 if (
                     new_data.sensor.last_fetched is None
                     or new_data.sensor.last_fetched < dt.now() - timedelta(days=1)
@@ -222,10 +185,11 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                     if sensor:
                         new_data.sensor.battery = sensor.battery_level
                     else:
-                        # Sensor not installed or no data returned; keep object but mark not present.
+                        # Sensor not installed or no data returned:
+                        # keep object (tests expect .present False, not sensor=None)
                         new_data.sensor.battery = None
             else:
-                # Lock does not support a door sensor.
+                # Lock does not support a door sensor
                 new_data.sensor = None
 
             if new_data.locked is None:
@@ -250,7 +214,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
     @callback
     def _process_webhook_data(self, event: WebhookEvent):
-        """Update data from webhook."""
+        """Update data."""
         if event.id != self.lock_id:
             return
 
@@ -277,8 +241,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 new_data.last_user = event.user
                 new_data.last_reason = event.event.description
 
-        # Only if sensor exists and is present.
-        if sensor_present(new_data.sensor) and event.sensorState:
+        if new_data.sensor and new_data.sensor.present and event.sensorState:
             if event.sensorState.opened == SensorState.opened:
                 new_data.sensor.opened = True
             if event.sensorState.opened == SensorState.closed:
@@ -301,7 +264,6 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         async def _auto_locked(seconds: int, offset: float = 0):
             if seconds > 0 and (seconds - offset) > 0:
                 await asyncio.sleep(seconds - offset)
-
             new_data = deepcopy(self.data)
             new_data.locked = True
             new_data.last_reason = "Auto Lock"
@@ -319,24 +281,21 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     def device_info(self) -> DeviceInfo:
         """Device info for the lock.
 
-        IMPORTANT: Home Assistant may query device_info before first refresh,
-        so we must not depend on self.data being fully populated.
+        IMPORTANT: must NOT depend on self.data.mac; HA queries device_info before first refresh.
         """
         data = getattr(self, "data", None)
         return DeviceInfo(
             identifiers={(DOMAIN, str(self.lock_id))},
             manufacturer="TT Lock",
             model=getattr(data, "model", None) if data else None,
-            name=getattr(data, "name", f"TTLock {self.lock_id}")
-            if data
-            else f"TTLock {self.lock_id}",
+            name=getattr(data, "name", f"TTLock {self.lock_id}") if data else f"TTLock {self.lock_id}",
             sw_version=getattr(data, "firmware_version", None) if data else None,
             hw_version=getattr(data, "hardware_version", None) if data else None,
         )
 
     @property
     def entities(self) -> list[Entity]:
-        """Entities belonging to this coordinator."""
+        """Entities belonging to this co-ordinator."""
         return [
             callback.__self__
             for callback, _ in list(self._listeners.values())
