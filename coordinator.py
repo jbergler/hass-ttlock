@@ -1,0 +1,386 @@
+"""Provides the TTLock LockUpdateCoordinator."""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import contextmanager
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+import logging
+from typing import TypeGuard
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity import DeviceInfo, Entity
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt
+
+from .api import TTLockApi
+from .const import DOMAIN, SIGNAL_NEW_DATA, TT_LOCKS
+from .models import Features, PassageModeConfig, SensorState, State, WebhookEvent
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class SensorData:
+    """Internal state of the optional door sensor."""
+
+    opened: bool | None = None
+    battery: int | None = None
+    last_fetched: datetime | None = None
+
+    @property
+    def present(self) -> bool:
+        """To indicate if a sensor is installed."""
+        return self.battery is not None
+
+
+@dataclass
+class LockState:
+    """Internal state of the lock as managed by the coordinator."""
+
+    name: str
+    mac: str
+    model: str | None = None
+    battery_level: int | None = None
+    hardware_version: str | None = None
+    firmware_version: str | None = None
+    features: Features = Features.from_feature_value(None)
+    locked: bool | None = None
+    action_pending: bool = False
+    last_user: str | None = None
+    last_reason: str | None = None
+    lock_sound: bool | None = None
+    sensor: SensorData | None = None
+    auto_lock_seconds: int | None = None
+    passage_mode_config: PassageModeConfig | None = None
+
+    def passage_mode_active(self, current_date: datetime = dt.now()) -> bool:
+        """Check if passage mode is currently active."""
+        if self.passage_mode_config and self.passage_mode_config.enabled:
+            current_day = current_date.isoweekday()
+            if current_day in self.passage_mode_config.week_days:
+                if self.passage_mode_config.all_day:
+                    return True
+
+                current_minute = current_date.hour * 60 + current_date.minute
+                if (
+                    self.passage_mode_config.start_minute
+                    <= current_minute
+                    < self.passage_mode_config.end_minute
+                ):
+                    return True
+        return False
+
+    def auto_lock_delay(self, current_date: datetime) -> int | None:
+        """Return the auto-lock delay in seconds, or None if auto-lock is currently disabled."""
+        if self.auto_lock_seconds is None or self.auto_lock_seconds <= 0:
+            return None
+
+        if self.passage_mode_active(current_date):
+            return None
+
+        return self.auto_lock_seconds
+
+
+def sensor_present(instance: SensorData | None) -> TypeGuard[SensorData]:
+    """Check if a sensor is present."""
+    return instance is not None and instance.present
+
+
+@contextmanager
+def lock_action(controller: LockUpdateCoordinator):
+    """Wrap a lock action so that in-progress state is managed correctly."""
+    controller.data.action_pending = True
+    controller.async_update_listeners()
+    try:
+        yield
+    finally:
+        controller.data.action_pending = False
+        controller.async_update_listeners()
+
+
+def lock_coordinators(hass: HomeAssistant, entry: ConfigEntry):
+    """Help with entity setup."""
+    coordinators: list[LockUpdateCoordinator] = hass.data[DOMAIN][entry.entry_id][TT_LOCKS]
+    yield from coordinators
+
+
+def coordinator_for(hass: HomeAssistant, entity_id: str) -> LockUpdateCoordinator | None:
+    """Given an entity_id, return the coordinator for that entity."""
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        for coordinator in lock_coordinators(hass, entry):
+            for entity in coordinator.entities:
+                if entity.entity_id == entity_id:
+                    return coordinator
+    return None
+
+
+class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
+    """Class to manage fetching lock data."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config_entry: ConfigEntry,
+        api: TTLockApi,
+        lock_id: int,
+    ) -> None:
+        """Initialize the update coordinator for a single lock."""
+        self.api = api
+        self.lock_id = lock_id
+        self._device_registry_updated = False
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=DOMAIN,
+            config_entry=config_entry,
+            update_interval=timedelta(minutes=15),
+        )
+
+        async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._process_webhook_data)
+
+        # Placeholder: allows platform setup without waiting for the cloud.
+        # NOTE: name/model will be updated on first successful refresh.
+        self.data = LockState(name=f"TTLock {lock_id}", mac=str(lock_id))
+
+    def _update_device_registry(self, data: LockState) -> None:
+        """Update the device registry once we have real metadata.
+
+        In unit tests, the ConfigEntry may not be registered in hass.config_entries;
+        in that case we skip to avoid breaking refresh.
+        """
+        if self._device_registry_updated:
+            return
+
+        if not data.name or not data.model:
+            return
+
+        entry_id = getattr(self.config_entry, "entry_id", None)
+        if not entry_id or self.hass.config_entries.async_get_entry(entry_id) is None:
+            return
+
+        try:
+            device_reg = dr.async_get(self.hass)
+            device_reg.async_get_or_create(
+                config_entry_id=entry_id,
+                identifiers={(DOMAIN, str(self.lock_id))},
+                manufacturer="TT Lock",
+                name=data.name,
+                model=data.model,
+                sw_version=data.firmware_version,
+                hw_version=data.hardware_version,
+            )
+        except Exception:
+            _LOGGER.debug("Skipping device registry update", exc_info=True)
+            return
+
+        self._device_registry_updated = True
+
+    async def _async_update_data(self) -> LockState:
+        try:
+            details = await self.api.get_lock(self.lock_id)
+
+            new_data = deepcopy(self.data) or LockState(
+                name=details.name,
+                mac=details.mac,
+                model=details.model,
+                features=Features.from_feature_value(details.featureValue),
+            )
+
+            # Always refresh identity + features from details.
+            new_data.mac = details.mac
+            new_data.model = details.model
+            new_data.features = Features.from_feature_value(details.featureValue)
+
+            # Update mutable attributes.
+            new_data.name = details.name
+            new_data.battery_level = details.battery_level
+            new_data.hardware_version = details.hardwareRevision
+            new_data.firmware_version = details.firmwareRevision
+
+            # Update device registry (only when safe to do so).
+            self._update_device_registry(new_data)
+
+            if Features.door_sensor in new_data.features:
+                # Ensure sensor object exists for sensor-capable locks.
+                if new_data.sensor is None:
+                    new_data.sensor = SensorData()
+
+                # Only fetch sensor metadata once a day.
+                if (
+                    new_data.sensor.last_fetched is None
+                    or new_data.sensor.last_fetched < dt.now() - timedelta(days=1)
+                ):
+                    sensor = await self.api.get_sensor(self.lock_id)
+                    new_data.sensor.last_fetched = dt.now()
+                    if sensor:
+                        new_data.sensor.battery = sensor.battery_level
+                    else:
+                        # Sensor not installed or no data returned; keep object but mark not present.
+                        new_data.sensor.battery = None
+            else:
+                # Lock does not support a door sensor.
+                new_data.sensor = None
+
+            if new_data.locked is None:
+                try:
+                    state = await self.api.get_lock_state(self.lock_id)
+                    new_data.locked = state.locked == State.locked
+                    if sensor_present(new_data.sensor):
+                        new_data.sensor.opened = state.opened == SensorState.opened
+                except Exception:
+                    pass
+
+            new_data.auto_lock_seconds = details.autoLockTime
+            new_data.lock_sound = bool(details.lockSound)
+            new_data.passage_mode_config = await self.api.get_lock_passage_mode_config(
+                self.lock_id
+            )
+
+            return new_data
+
+        except Exception as err:
+            raise UpdateFailed(err) from err
+
+    @callback
+    def _process_webhook_data(self, event: WebhookEvent):
+        """Update data from webhook."""
+        if event.id != self.lock_id:
+            return
+
+        _LOGGER.debug("Lock %s received %s", self.unique_id, event)
+
+        if not event.success:
+            return
+
+        if not self.data:
+            return
+
+        new_data = deepcopy(self.data)
+        new_data.battery_level = event.battery_level
+
+        if state := event.state:
+            if state.locked == State.locked:
+                new_data.locked = True
+            elif state.locked == State.unlocked:
+                new_data.locked = False
+
+            self._handle_auto_lock(event.lock_ts, event.server_ts)
+
+            if state.locked is not None:
+                new_data.last_user = event.user
+                new_data.last_reason = event.event.description
+
+        # Only if sensor exists and is present.
+        if sensor_present(new_data.sensor) and event.sensorState:
+            if event.sensorState.opened == SensorState.opened:
+                new_data.sensor.opened = True
+            if event.sensorState.opened == SensorState.closed:
+                new_data.sensor.opened = False
+                new_data.locked = True
+                new_data.last_reason = "Door Closed"
+                _LOGGER.debug("Assuming auto-locked via sensor")
+
+        self.async_set_updated_data(new_data)
+
+    def _handle_auto_lock(self, lock_ts: datetime, server_ts: datetime):
+        """Handle auto-locking the lock."""
+        auto_lock_delay = self.data.auto_lock_delay(lock_ts)
+        computed_msg_delay = max(0, (server_ts - lock_ts).total_seconds())
+
+        if auto_lock_delay is None:
+            _LOGGER.debug("Auto-lock is disabled")
+            return
+
+        async def _auto_locked(seconds: int, offset: float = 0):
+            if seconds > 0 and (seconds - offset) > 0:
+                await asyncio.sleep(seconds - offset)
+
+            new_data = deepcopy(self.data)
+            new_data.locked = True
+            new_data.last_reason = "Auto Lock"
+            _LOGGER.debug("Assuming lock auto locked after %s seconds", auto_lock_delay)
+            self.async_set_updated_data(new_data)
+
+        self.hass.create_task(_auto_locked(auto_lock_delay, computed_msg_delay))
+
+    @property
+    def unique_id(self) -> str:
+        """Unique ID prefix for all entities for the lock."""
+        return f"{DOMAIN}-{self.lock_id}"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Device info for the lock.
+
+        IMPORTANT: Home Assistant may query device_info before first refresh,
+        so we must not depend on self.data being fully populated.
+        """
+        data = getattr(self, "data", None)
+        return DeviceInfo(
+            identifiers={(DOMAIN, str(self.lock_id))},
+            manufacturer="TT Lock",
+            model=getattr(data, "model", None) if data else None,
+            name=getattr(data, "name", f"TTLock {self.lock_id}")
+            if data
+            else f"TTLock {self.lock_id}",
+            sw_version=getattr(data, "firmware_version", None) if data else None,
+            hw_version=getattr(data, "hardware_version", None) if data else None,
+        )
+
+    @property
+    def entities(self) -> list[Entity]:
+        """Entities belonging to this coordinator."""
+        return [
+            callback.__self__
+            for callback, _ in list(self._listeners.values())
+            if isinstance(callback.__self__, Entity)
+        ]
+
+    def as_dict(self) -> dict:
+        """Serialize for diagnostics."""
+        return {
+            "unique_id": self.unique_id,
+            "device": self.data,
+            "entities": [
+                self.hass.states.get(entity.entity_id).as_dict()
+                for entity in self.entities
+                if self.hass.states.get(entity.entity_id) is not None
+            ],
+        }
+
+    async def lock(self) -> None:
+        """Try to lock the lock."""
+        with lock_action(self):
+            res = await self.api.lock(self.lock_id)
+            if res:
+                self.data.locked = True
+
+    async def unlock(self) -> None:
+        """Try to unlock the lock."""
+        with lock_action(self):
+            res = await self.api.unlock(self.lock_id)
+            if res:
+                self.data.locked = False
+
+    async def set_auto_lock(self, on: bool) -> None:
+        """Turn on/off Autolock."""
+        seconds = 10 if on else 0
+        res = await self.api.set_auto_lock(self.lock_id, seconds)
+        if res:
+            self.data.auto_lock_seconds = seconds
+            self.async_update_listeners()
+
+    async def set_lock_sound(self, on: bool) -> None:
+        """Turn on/off lock sound."""
+        value = 1 if on else 2
+        res = await self.api.set_lock_sound(self.lock_id, value)
+        if res:
+            self.data.lock_sound = on
+            self.async_update_listeners()
