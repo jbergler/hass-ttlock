@@ -17,9 +17,16 @@ from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt
 
-from .api import TTLockApi
-from .const import DOMAIN, SIGNAL_NEW_DATA, TT_LOCKS
-from .models import Features, PassageModeConfig, SensorState, State, WebhookEvent
+# 🔧 FIX: imports absolutos para que pytest no falle
+from custom_components.ttlock.api import TTLockApi
+from custom_components.ttlock.const import DOMAIN, SIGNAL_NEW_DATA, TT_LOCKS
+from custom_components.ttlock.models import (
+    Features,
+    PassageModeConfig,
+    SensorState,
+    State,
+    WebhookEvent,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,7 +79,6 @@ class LockState:
                     <= current_minute
                     < self.passage_mode_config.end_minute
                 ):
-                    # Active by schedule
                     return True
 
         return False
@@ -143,8 +149,6 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
         async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._process_webhook_data)
 
-        # CRITICAL: DataUpdateCoordinator starts with self.data = None.
-        # Give a placeholder so device_info and platform setup don't explode at startup.
         self.data = LockState(name=f"TTLock {lock_id}", mac=str(lock_id))
 
     async def _async_update_data(self) -> LockState:
@@ -158,23 +162,19 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 features=Features.from_feature_value(details.featureValue),
             )
 
-            # Always refresh identity + features from details (important if we started from placeholder)
             new_data.name = details.name
             new_data.mac = details.mac
             new_data.model = details.model
             new_data.features = Features.from_feature_value(details.featureValue)
 
-            # update mutable attributes
             new_data.battery_level = details.battery_level
             new_data.hardware_version = details.hardwareRevision
             new_data.firmware_version = details.firmwareRevision
 
             if Features.door_sensor in new_data.features:
-                # make sure we have a placeholder for sensor state if the lock supports it
                 if new_data.sensor is None:
                     new_data.sensor = SensorData()
 
-                # only fetch sensor metadata once a day
                 if (
                     new_data.sensor.last_fetched is None
                     or new_data.sensor.last_fetched < dt.now() - timedelta(days=1)
@@ -185,11 +185,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                     if sensor:
                         new_data.sensor.battery = sensor.battery_level
                     else:
-                        # Sensor not installed / no data returned:
-                        # keep object so tests can read .present/.last_fetched
                         new_data.sensor.battery = None
             else:
-                # Lock does not support a door sensor
                 new_data.sensor = None
 
             if new_data.locked is None:
@@ -273,15 +270,10 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
     @property
     def unique_id(self) -> str:
-        """Unique ID prefix for all entities for the lock."""
         return f"{DOMAIN}-{self.lock_id}"
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Device info for the lock.
-
-        IMPORTANT: must NOT depend on self.data.mac; HA queries device_info before first refresh.
-        """
         data = getattr(self, "data", None)
         return DeviceInfo(
             identifiers={(DOMAIN, str(self.lock_id))},
@@ -294,7 +286,6 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
     @property
     def entities(self) -> list[Entity]:
-        """Entities belonging to this co-ordinator."""
         return [
             callback.__self__
             for callback, _ in list(self._listeners.values())
@@ -302,7 +293,6 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         ]
 
     def as_dict(self) -> dict:
-        """Serialize for diagnostics."""
         return {
             "unique_id": self.unique_id,
             "device": self.data,
@@ -314,21 +304,18 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         }
 
     async def lock(self) -> None:
-        """Try to lock the lock."""
         with lock_action(self):
             res = await self.api.lock(self.lock_id)
             if res:
                 self.data.locked = True
 
     async def unlock(self) -> None:
-        """Try to unlock the lock."""
         with lock_action(self):
             res = await self.api.unlock(self.lock_id)
             if res:
                 self.data.locked = False
 
     async def set_auto_lock(self, on: bool) -> None:
-        """Turn on/off Autolock."""
         seconds = 10 if on else 0
         res = await self.api.set_auto_lock(self.lock_id, seconds)
         if res:
@@ -336,7 +323,6 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             self.async_update_listeners()
 
     async def set_lock_sound(self, on: bool) -> None:
-        """Turn on/off lock sound."""
         value = 1 if on else 2
         res = await self.api.set_lock_sound(self.lock_id, value)
         if res:
