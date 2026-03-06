@@ -164,6 +164,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 features=Features.from_feature_value(details.featureValue),
             )
 
+            new_data.mac = details.mac
+            new_data.model = details.model
+            new_data.features = Features.from_feature_value(details.featureValue)
             # update mutable attributes
             new_data.name = details.name
             new_data.battery_level = details.battery_level
@@ -185,7 +188,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                     if sensor:
                         new_data.sensor.battery = sensor.battery_level
             else:
-                new_data.sensor = None
+                        # Sensor not installed or no data returned; keep placeholder.
+                        new_data.sensor.battery = None
 
             if new_data.locked is None:
                 try:
@@ -278,16 +282,15 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     @property
     def device_info(self) -> DeviceInfo:
         """Device info for the lock."""
-        data = self.data
         return DeviceInfo(
-            # Use lock_id as stable identifier so startup does not depend on cloud data.
             identifiers={(DOMAIN, str(self.lock_id))},
             manufacturer="TT Lock",
-            model=getattr(data, 'model', None) if data else None,
-            name=getattr(data, 'name', f"TTLock {self.lock_id}") if data else f"TTLock {self.lock_id}",
-            sw_version=getattr(data, 'firmware_version', None) if data else None,
-            hw_version=getattr(data, 'hardware_version', None) if data else None,
+            model=getattr(self.data, 'model', None),
+            name=getattr(self.data, 'name', f'TTLock {self.lock_id}'),
+            sw_version=getattr(self.data, 'firmware_version', None),
+            hw_version=getattr(self.data, 'hardware_version', None),
         )
+
     @property
     def entities(self) -> list[Entity]:
         """Entities belonging to this co-ordinator."""
