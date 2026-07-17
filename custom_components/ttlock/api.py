@@ -33,8 +33,6 @@ GW_LOCK = asyncio.Lock()
 class RequestFailed(Exception):
     """Exception when TTLock API returns an error."""
 
-    pass
-
 
 class TTLockAuthImplementation(
     AuthImplementation,
@@ -329,7 +327,7 @@ class TTLockApi:
 
         if "errcode" in res and res["errcode"] != 0:
             _LOGGER.error(
-                "Failed to update autolock",
+                "Failed to update autolock for %s: %s",
                 lock_id,
                 res["errmsg"],
             )
@@ -351,7 +349,7 @@ class TTLockApi:
 
         if "errcode" in res and res["errcode"] != 0:
             _LOGGER.error(
-                "Failed to update sound setting",
+                "Failed to update sound setting for %s: %s",
                 lock_id,
                 res["errmsg"],
             )

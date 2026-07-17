@@ -265,7 +265,7 @@ class Services:
             weekDays=days,
         )
 
-        for _entity_id, coordinator in self._get_coordinators(call).items():
+        for coordinator in self._get_coordinators(call).values():
             if await coordinator.api.set_passage_mode(coordinator.lock_id, config):
                 coordinator.data.passage_mode_config = config
                 coordinator.async_update_listeners()
@@ -294,7 +294,7 @@ class Services:
             endDate=end_time,
         )
 
-        for _entity_id, coordinator in self._get_coordinators(call).items():
+        for coordinator in self._get_coordinators(call).values():
             await coordinator.api.add_passcode(coordinator.lock_id, config)
 
     async def handle_modify_passcode(self, call: ServiceCall):
@@ -323,7 +323,7 @@ class Services:
 
         passcode_id = call.data.get("passcode_id")
 
-        for _entity_id, coordinator in self._get_coordinators(call).items():
+        for coordinator in self._get_coordinators(call).values():
             await coordinator.api.modify_passcode(
                 coordinator.lock_id, passcode_id, config
             )
@@ -333,7 +333,7 @@ class Services:
 
         passcode_id = call.data.get("passcode_id")
 
-        for _entity_id, coordinator in self._get_coordinators(call).items():
+        for coordinator in self._get_coordinators(call).values():
             await coordinator.api.delete_passcode(coordinator.lock_id, passcode_id)
 
     async def handle_cleanup_passcodes(self, call: ServiceCall) -> ServiceResponse:
@@ -406,7 +406,7 @@ class Services:
 
     async def handle_update_state(self, call: ServiceCall):
         """Refresh the lock state by calling the coordinator's refresh method."""
-        for _entity_id, coordinator in self._get_coordinators(call).items():
+        for coordinator in self._get_coordinators(call).values():
             # Set the locked state to none to force the API call.
             coordinator.data.locked = None
             await coordinator.async_refresh()

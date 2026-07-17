@@ -43,7 +43,7 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
 
-    diagnostics_data = async_redact_data(
+    return async_redact_data(
         {
             "config_entry": config_entry.as_dict(),
             "locks": [
@@ -53,5 +53,3 @@ async def async_get_config_entry_diagnostics(
         },
         TO_REDACT,
     )
-
-    return diagnostics_data

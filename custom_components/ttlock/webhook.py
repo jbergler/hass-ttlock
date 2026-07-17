@@ -49,8 +49,9 @@ class WebhookHandler:
 
     async def try_generate_cloudhook(self) -> str | None:
         """Create a cloudhook if possible."""
-        # separate function so we can mock
-        from homeassistant.components import cloud
+        # deferred: cloud pulls in optional heavy dependencies we don't want to
+        # require at module import time, and this also lets tests mock it easily
+        from homeassistant.components import cloud  # noqa: PLC0415
 
         if cloud.async_active_subscription(self.hass):
             try:
@@ -67,10 +68,7 @@ class WebhookHandler:
             return self.entry.data[CONF_WEBHOOK_URL]
         if cloudhook := await self.try_generate_cloudhook():
             return cloudhook
-        else:
-            return webhook.async_generate_url(
-                self.hass, self.entry.data[CONF_WEBHOOK_ID]
-            )
+        return webhook.async_generate_url(self.hass, self.entry.data[CONF_WEBHOOK_ID])
 
     async def register_webhook(self, event: Event | None = None) -> None:
         """Set up a webhook to receive pushed data."""
@@ -135,8 +133,8 @@ class WebhookHandler:
                         success = True
             else:
                 _LOGGER.debug("handle_webhook, empty payload: %s", await request.text())
-        except ValueError as ex:
-            _LOGGER.exception("Exception parsing webhook data: %s", ex)
+        except ValueError:
+            _LOGGER.exception("Exception parsing webhook data")
             return
 
         if success and CONF_WEBHOOK_STATUS not in self.entry.data:
