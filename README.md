@@ -70,6 +70,10 @@ This integration uses the TTLock Cloud to communicate with your lock. It support
    - The username/password for the ttlock (or 3rd party branded) mobile app. This is the account that will work.
 1. "Failed to execute the action lock/lock." or "The function is not supported for this lock"
    - This is most likely because you haven't enabled remote unlock, please follow the instructions in the requirements section.
+1. Entities are unavailable and debug logs show `hasGateway: 0`
+   - TTLock cloud can occasionally lose the gateway association for a lock.
+   - First, reboot your TTLock gateway/hub (for example, G2) and re-check the integration.
+   - If that does not fix it, remove and re-add the lock in the TTLock app.
 
 ## Reporting issues
 
