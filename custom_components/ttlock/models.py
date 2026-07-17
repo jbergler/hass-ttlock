@@ -1,13 +1,13 @@
 """Models for parsing the TTLock API data."""
 
-from collections import namedtuple
 from datetime import datetime
 from enum import Enum, IntEnum, IntFlag, auto
+from typing import ClassVar, NamedTuple
 
 from pydantic import BaseModel, Field, GetCoreSchemaHandler, field_validator
 from pydantic_core import core_schema
 
-from homeassistant.util import dt
+from homeassistant.util import dt as dt_util
 
 
 class EpochMs(datetime):
@@ -21,7 +21,7 @@ class EpochMs(datetime):
     @classmethod
     def validate(cls, v):
         """Use homeassistant time helpers to parse epoch."""
-        return dt.as_local(dt.utc_from_timestamp(v / 1000))
+        return dt_util.as_local(dt_util.utc_from_timestamp(v / 1000))
 
 
 class OnOff(Enum):
@@ -180,7 +180,7 @@ class Passcode(BaseModel):
             PasscodeType.sundays,
         )
         if self.type in time_bounded_types and self.end_date:
-            return self.end_date < dt.now()
+            return self.end_date < dt_util.now()
 
         # Assume not expired for other types
         return False
@@ -285,7 +285,11 @@ class Action(Enum):
     close = auto()
 
 
-EventDescription = namedtuple("EventDescription", ["action", "description"])
+class EventDescription(NamedTuple):
+    """Human-readable description of a lock event."""
+
+    action: Action
+    description: str
 
 
 class Event:
@@ -295,7 +299,7 @@ class Event:
         """Initialize from int event id."""
         self._value_ = event_id
 
-    EVENTS: dict[int, EventDescription] = {
+    EVENTS: ClassVar[dict[int, EventDescription]] = {
         1: EventDescription(Action.unlock, "unlock by app"),
         4: EventDescription(Action.unlock, "unlock by passcode"),
         7: EventDescription(Action.unlock, "unlock by IC card"),
@@ -403,7 +407,7 @@ class WebhookEvent(BaseModel):
         """The end state of the lock after this event."""
         if self.success and self.event.action == Action.lock:
             return LockState(state=State.locked)
-        elif self.success and self.event.action == Action.unlock:
+        if self.success and self.event.action == Action.unlock:
             return LockState(state=State.unlocked)
         return LockState(state=None)
 
@@ -412,7 +416,7 @@ class WebhookEvent(BaseModel):
         """The end state of the sensor after this event."""
         if self.success and self.event.action == Action.close:
             return LockState(state=State.locked, sensorState=SensorState.closed)
-        elif self.success and self.event.action == Action.open:
+        if self.success and self.event.action == Action.open:
             return LockState(sensorState=SensorState.opened)
         return LockState(sensorState=None)
 

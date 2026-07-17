@@ -42,7 +42,7 @@ pytest_plugins = "pytest_homeassistant_custom_component"
 @pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations):
     """Enable loading custom integrations in all tests."""
-    yield
+    return enable_custom_integrations
 
 
 # persistent_notification doesn't exist during tests, patch it so we don't get stuck
@@ -59,7 +59,7 @@ def skip_notifications_fixture():
 @pytest.fixture
 def config_entry():
     """Mock a config entry."""
-    mock_entry = MockConfigEntry(
+    return MockConfigEntry(
         domain=DOMAIN,
         data={
             "auth_implementation": "mocked",
@@ -73,7 +73,6 @@ def config_entry():
             },
         },
     )
-    return mock_entry
 
 
 @pytest.fixture
@@ -117,7 +116,7 @@ class MockApiData(NamedTuple):
     state: LockState
     sensor: Sensor | None = None
     passage_mode: PassageModeConfig | None = None
-    records: list[LockRecord] = []
+    records: tuple[LockRecord, ...] = ()
 
 
 @pytest.fixture

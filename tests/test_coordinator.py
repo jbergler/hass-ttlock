@@ -8,7 +8,7 @@ import pytest
 
 from custom_components.ttlock.coordinator import LockState, LockUpdateCoordinator
 from custom_components.ttlock.models import PassageModeConfig, WebhookEvent
-from homeassistant.util import dt
+from homeassistant.util import dt as dt_util
 
 from .const import (
     BASIC_LOCK_DETAILS,
@@ -143,7 +143,7 @@ class TestLockUpdateCoordinator:
 
             assert coordinator.data.sensor.opened is False
             assert coordinator.data.sensor.battery == 85
-            assert coordinator.data.sensor.last_fetched > dt.now() - timedelta(
+            assert coordinator.data.sensor.last_fetched > dt_util.now() - timedelta(
                 seconds=3
             )
 
@@ -154,7 +154,7 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
 
             assert coordinator.data.sensor.present is False
-            assert coordinator.data.sensor.last_fetched > dt.now() - timedelta(
+            assert coordinator.data.sensor.last_fetched > dt_util.now() - timedelta(
                 seconds=3
             )
 
@@ -237,7 +237,7 @@ class TestLockUpdateCoordinator:
 
             coordinator.data.locked = True
             coordinator.data.auto_lock_seconds = -1
-            coordinator.data.sensor.opened is False
+            coordinator.data.sensor.opened = False
 
             event = WebhookEvent.model_validate(WEBHOOK_SENSOR_OPEN)
             coordinator._process_webhook_data(event)
@@ -253,7 +253,7 @@ class TestLockUpdateCoordinator:
 
             coordinator.data.locked = False
             coordinator.data.auto_lock_seconds = -1
-            coordinator.data.sensor.opened is True
+            coordinator.data.sensor.opened = True
 
             event = WebhookEvent.model_validate(WEBHOOK_SENSOR_CLOSE)
             coordinator._process_webhook_data(event)
