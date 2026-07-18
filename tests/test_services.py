@@ -117,6 +117,8 @@ class Test_list_passcodes:
             await hass.async_block_till_done()
             assert mock.called
 
+        assert passcode.start_date is not None
+        assert passcode.end_date is not None
         assert response == {
             "passcodes": {
                 entity_id: [
@@ -125,8 +127,8 @@ class Test_list_passcodes:
                         "id": 123,
                         "passcode": "123456",
                         "type": "period",
-                        "start_date": passcode.start_date,
-                        "end_date": passcode.end_date,
+                        "start_date": passcode.start_date.isoformat(),
+                        "end_date": passcode.end_date.isoformat(),
                         "expired": False,
                     }
                 ]
@@ -171,7 +173,6 @@ class Test_list_records:
             recordId=123,
             lockId=15450395,
             recordType=RecordType.PASSWORD_UNLOCK,
-            recordTypeFromLock=7,
             success=False,
             username="test",
             keyboardPwd="123456",
@@ -205,8 +206,12 @@ class Test_list_records:
                         "success": record.success,
                         "username": record.username,
                         "keyboard_pwd": record.keyboard_pwd,
-                        "lock_date": record.lock_date,
-                        "server_date": record.server_date,
+                        "lock_date": record.lock_date.isoformat()
+                        if record.lock_date
+                        else None,
+                        "server_date": record.server_date.isoformat()
+                        if record.server_date
+                        else None,
                     }
                 ]
             }

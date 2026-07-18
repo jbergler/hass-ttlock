@@ -99,7 +99,7 @@ def component_setup(hass: HomeAssistant, config_entry: MockConfigEntry):
 async def api():
     """TTLockApi instance for use in tests."""
     session = ClientSession()
-    return TTLockApi(session, None)
+    return TTLockApi(session, None)  # ty: ignore[invalid-argument-type] - unused by the tests that consume this fixture
 
 
 @pytest.fixture
