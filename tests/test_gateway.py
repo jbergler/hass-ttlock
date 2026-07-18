@@ -1,7 +1,5 @@
 """Test the TTLock Gateway Binary Sensor."""
 
-import pytest
-
 from custom_components.ttlock.const import DOMAIN, TT_GATEWAYS
 from custom_components.ttlock.models import Gateway
 from homeassistant.const import STATE_OFF, STATE_ON
@@ -16,12 +14,15 @@ GATEWAY_DETAILS = {
 }
 
 
-@pytest.fixture
-def mock_gateway_response(monkeypatch):
-    """Mock the get_gateways API response."""
+def _mock_gateways(monkeypatch, *gateways: dict) -> None:
+    """Override the get_gateways API response.
+
+    Must be called after mock_api_responses(), which otherwise resets
+    get_gateways back to its empty-list default.
+    """
 
     async def mock_get_gateways(*args, **kwargs):
-        return [Gateway.parse_obj(GATEWAY_DETAILS)]
+        return [Gateway.model_validate(gateway) for gateway in gateways]
 
     monkeypatch.setattr(
         "custom_components.ttlock.api.TTLockApi.get_gateways", mock_get_gateways
@@ -33,14 +34,7 @@ async def test_gateway_sensor_setup(
 ):
     """Test that the gateway binary sensor is set up correctly."""
     mock_api_responses("default")
-
-    # Override the default empty gateway mock
-    async def mock_get_gateways(*args, **kwargs):
-        return [Gateway.parse_obj(GATEWAY_DETAILS)]
-
-    monkeypatch.setattr(
-        "custom_components.ttlock.api.TTLockApi.get_gateways", mock_get_gateways
-    )
+    _mock_gateways(monkeypatch, GATEWAY_DETAILS)
 
     await component_setup()
 
@@ -74,13 +68,7 @@ async def test_gateway_sensor_offline(
 
     offline_gateway = GATEWAY_DETAILS.copy()
     offline_gateway["isOnline"] = 0
-
-    async def mock_get_gateways_offline(*args, **kwargs):
-        return [Gateway.parse_obj(offline_gateway)]
-
-    monkeypatch.setattr(
-        "custom_components.ttlock.api.TTLockApi.get_gateways", mock_get_gateways_offline
-    )
+    _mock_gateways(monkeypatch, offline_gateway)
 
     await component_setup()
 
@@ -95,15 +83,8 @@ async def test_setup_with_no_gateways(
     hass: HomeAssistant, component_setup, mock_api_responses, monkeypatch
 ):
     """Test setup when account has no gateways."""
-
-    async def mock_get_gateways_empty(*args, **kwargs):
-        return []
-
-    monkeypatch.setattr(
-        "custom_components.ttlock.api.TTLockApi.get_gateways", mock_get_gateways_empty
-    )
-
     mock_api_responses("default")
+
     await component_setup()
 
     # Verify coordinator exists but has empty data

@@ -90,9 +90,16 @@ class GatewaySensor(CoordinatorEntity[GatewaysUpdateCoordinator], BinarySensorEn
         self._update_from_coordinator()
 
     @property
-    def device_info(self) -> DeviceInfo:
+    def available(self) -> bool:
+        """Return whether the gateway is still known to the coordinator."""
+        return super().available and self.gateway_id in self.coordinator.data
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
         """Device info for the gateway."""
-        gateway = self.coordinator.data[self.gateway_id]
+        gateway = self.coordinator.data.get(self.gateway_id)
+        if gateway is None:
+            return None
         return DeviceInfo(
             identifiers={(DOMAIN, gateway.mac)},
             manufacturer="TT Lock",
@@ -101,14 +108,17 @@ class GatewaySensor(CoordinatorEntity[GatewaysUpdateCoordinator], BinarySensorEn
         )
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         """Return true if the binary sensor is on."""
-        return self.coordinator.data[self.gateway_id].is_online
+        gateway = self.coordinator.data.get(self.gateway_id)
+        return gateway.is_online if gateway else None
 
     @property
     def extra_state_attributes(self):
         """Return the state attributes."""
-        gateway = self.coordinator.data[self.gateway_id]
+        gateway = self.coordinator.data.get(self.gateway_id)
+        if gateway is None:
+            return None
         return {
             "network_name": gateway.network_name,
             "mac": gateway.mac,
@@ -121,7 +131,6 @@ class GatewaySensor(CoordinatorEntity[GatewaysUpdateCoordinator], BinarySensorEn
 
     def _update_from_coordinator(self) -> None:
         """Fetch state from the device."""
-        if self.gateway_id not in self.coordinator.data:
-            return
-        gateway = self.coordinator.data[self.gateway_id]
-        self._attr_name = f"{gateway.name} Status"
+        gateway = self.coordinator.data.get(self.gateway_id)
+        if gateway is not None:
+            self._attr_name = f"{gateway.name} Status"

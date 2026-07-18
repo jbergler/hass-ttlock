@@ -103,7 +103,7 @@ class Gateway(BaseModel):
     name: str = Field(..., alias="gatewayName")
     mac: str = Field(..., alias="gatewayMac")
     is_online: bool = Field(..., alias="isOnline")
-    network_name: str = Field(None, alias="networkName")
+    network_name: str | None = Field(None, alias="networkName")
 
 
 class LockState(BaseModel):
