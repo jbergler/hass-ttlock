@@ -303,11 +303,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     @property
     def entities(self) -> list[Entity]:
         """Entities belonging to this co-ordinator."""
-        return [
-            callback.__self__
-            for callback, _ in list(self._listeners.values())
-            if isinstance(callback.__self__, Entity)
-        ]
+        result: list[Entity] = []
+        for listener_callback, _ in list(self._listeners.values()):
+            owner = listener_callback.__self__  # ty: ignore[unresolved-attribute] - checking for bound-method listeners
+            if isinstance(owner, Entity):
+                result.append(owner)
+        return result
 
     def as_dict(self) -> dict:
         """Serialize for diagnostics."""
@@ -315,8 +316,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             "unique_id": self.unique_id,
             "device": self.data,
             "entities": [
-                self.hass.states.get(entity.entity_id).as_dict()
+                state.as_dict()
                 for entity in self.entities
+                if (state := self.hass.states.get(entity.entity_id)) is not None
             ],
         }
 

@@ -126,7 +126,7 @@ class WebhookHandler:
             if data := await request.post():
                 _LOGGER.debug("Got webhook data: %s", data)
                 for raw_records in data.getall("records", []):
-                    for record in json.loads(raw_records):
+                    for record in json.loads(raw_records):  # ty: ignore[invalid-argument-type] - always a JSON string, never a file upload
                         async_dispatcher_send(
                             hass, SIGNAL_NEW_DATA, WebhookEvent.model_validate(record)
                         )

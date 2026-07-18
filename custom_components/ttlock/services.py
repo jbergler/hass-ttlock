@@ -91,7 +91,7 @@ class Services:
             DOMAIN,
             SVC_CREATE_PASSCODE,
             self.handle_create_passcode,
-            schema=vol.All(
+            schema=vol.All(  # ty: ignore[invalid-argument-type] - vol.All is a valid voluptuous validator
                 vol.Schema(
                     {
                         vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
@@ -109,7 +109,7 @@ class Services:
             DOMAIN,
             SVC_MODIFY_PASSCODE,
             self.handle_modify_passcode,
-            schema=vol.All(
+            schema=vol.All(  # ty: ignore[invalid-argument-type] - vol.All is a valid voluptuous validator
                 vol.Schema(
                     {
                         vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
@@ -241,20 +241,24 @@ class Services:
                     "id": code.id,
                     "passcode": code.passcode,
                     "type": code.type.name if code.type is not None else None,
-                    "start_date": code.start_date,
-                    "end_date": code.end_date,
+                    "start_date": code.start_date.isoformat()
+                    if code.start_date
+                    else None,
+                    "end_date": code.end_date.isoformat() if code.end_date else None,
                     "expired": code.expired,
                 }
                 for code in codes
             ]
 
-        return {"passcodes": passcodes}
+        return {"passcodes": passcodes}  # ty: ignore[invalid-return-type] - dict/list generics are invariant, so this structurally-JSON-safe dict isn't recognized as a dict[str, JsonValueType] subtype
 
     async def handle_configure_passage_mode(self, call: ServiceCall):
         """Enable passage mode for the given entities."""
-        start_time = call.data.get(CONF_START_TIME)
-        end_time = call.data.get(CONF_END_TIME)
-        days = [WEEKDAYS.index(day) + 1 for day in call.data.get(CONF_WEEK_DAYS)]
+        start_time = call.data.get(CONF_START_TIME, time())
+        end_time = call.data.get(CONF_END_TIME, time())
+        days = [
+            WEEKDAYS.index(day) + 1 for day in call.data.get(CONF_WEEK_DAYS, WEEKDAYS)
+        ]
 
         config = PassageModeConfig(
             passageMode=OnOff.on if call.data.get(CONF_ENABLED) else OnOff.off,
@@ -321,7 +325,7 @@ class Services:
             endDate=end_time,
         )
 
-        passcode_id = call.data.get("passcode_id")
+        passcode_id = call.data["passcode_id"]
 
         for coordinator in self._get_coordinators(call).values():
             await coordinator.api.modify_passcode(
@@ -331,17 +335,17 @@ class Services:
     async def handle_delete_passcode(self, call: ServiceCall):
         """Delete a specific passcode from the given entities."""
 
-        passcode_id = call.data.get("passcode_id")
+        passcode_id = call.data["passcode_id"]
 
         for coordinator in self._get_coordinators(call).values():
             await coordinator.api.delete_passcode(coordinator.lock_id, passcode_id)
 
     async def handle_cleanup_passcodes(self, call: ServiceCall) -> ServiceResponse:
         """Clean up expired passcodes for the given entities."""
-        removed = {}
+        removed: dict[str, list[str | None]] = {}
 
         for entity_id, coordinator in self._get_coordinators(call).items():
-            removed_for_lock = []
+            removed_for_lock: list[str | None] = []
             codes = await coordinator.api.list_passcodes(coordinator.lock_id)
             for code in codes:
                 if code.expired and code.id is not None:
@@ -352,7 +356,7 @@ class Services:
             if removed_for_lock:
                 removed[entity_id] = removed_for_lock
 
-        return {"removed": removed}
+        return {"removed": removed}  # ty: ignore[invalid-return-type] - dict/list generics are invariant, so dict[str, list[str | None]] isn't recognized as a dict[str, JsonValueType] subtype even though every value is one
 
     async def handle_configure_autolock(self, call: ServiceCall):
         """Set the autolock seconds."""
@@ -396,13 +400,17 @@ class Services:
                     "success": record.success,
                     "username": record.username,
                     "keyboard_pwd": record.keyboard_pwd,
-                    "lock_date": record.lock_date,
-                    "server_date": record.server_date,
+                    "lock_date": record.lock_date.isoformat()
+                    if record.lock_date
+                    else None,
+                    "server_date": record.server_date.isoformat()
+                    if record.server_date
+                    else None,
                 }
                 for record in lock_records
             ]
 
-        return {"records": records}
+        return {"records": records}  # ty: ignore[invalid-return-type] - dict/list generics are invariant, so this structurally-JSON-safe dict isn't recognized as a dict[str, JsonValueType] subtype
 
     async def handle_update_state(self, call: ServiceCall):
         """Refresh the lock state by calling the coordinator's refresh method."""
