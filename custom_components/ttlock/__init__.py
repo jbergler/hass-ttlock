@@ -11,8 +11,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 
 from .api import TTLockApi
-from .const import DOMAIN, TT_API, TT_LOCKS
-from .coordinator import LockUpdateCoordinator
+from .const import DOMAIN, TT_API, TT_GATEWAYS, TT_LOCKS
+from .coordinator import GatewaysUpdateCoordinator, LockUpdateCoordinator
 from .services import Services
 from .webhook import WebhookHandler
 
@@ -55,6 +55,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         *[coordinator.async_config_entry_first_refresh() for coordinator in locks]
     )
     hass.data[DOMAIN][entry.entry_id][TT_LOCKS] = locks
+
+    gateway_coordinator = GatewaysUpdateCoordinator(hass, entry, client)
+    await gateway_coordinator.async_config_entry_first_refresh()
+    hass.data[DOMAIN][entry.entry_id][TT_GATEWAYS] = gateway_coordinator
 
     await WebhookHandler(hass, entry).setup()
 

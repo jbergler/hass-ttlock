@@ -3,6 +3,7 @@
 DOMAIN = "ttlock"
 TT_API = "api"
 TT_LOCKS = "locks"
+TT_GATEWAYS = "gateways"
 
 OAUTH2_TOKEN = "https://euapi.ttlock.com/oauth2/token"
 CONF_WEBHOOK_URL = "webhook_url"

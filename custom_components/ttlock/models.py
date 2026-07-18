@@ -96,6 +96,16 @@ class Sensor(BaseModel):
     mac: str = Field(..., alias="mac")
 
 
+class Gateway(BaseModel):
+    """Gateway details."""
+
+    id: int = Field(..., alias="gatewayId")
+    name: str = Field(..., alias="gatewayName")
+    mac: str = Field(..., alias="gatewayMac")
+    is_online: bool = Field(..., alias="isOnline")
+    network_name: str | None = Field(None, alias="networkName")
+
+
 class LockState(BaseModel):
     """Lock state."""
 
