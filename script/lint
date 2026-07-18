@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Format and auto-fix lint issues.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+uv run ruff format .
+uv run ruff check --fix .

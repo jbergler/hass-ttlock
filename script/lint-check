@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Check formatting and lint without writing any changes (CI-safe).
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+uv run ruff format --check .
+uv run ruff check .
