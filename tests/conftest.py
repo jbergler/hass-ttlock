@@ -42,7 +42,7 @@ pytest_plugins = "pytest_homeassistant_custom_component"
 @pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations):
     """Enable loading custom integrations in all tests."""
-    yield
+    return enable_custom_integrations
 
 
 # persistent_notification doesn't exist during tests, patch it so we don't get stuck
@@ -59,7 +59,7 @@ def skip_notifications_fixture():
 @pytest.fixture
 def config_entry():
     """Mock a config entry."""
-    mock_entry = MockConfigEntry(
+    return MockConfigEntry(
         domain=DOMAIN,
         data={
             "auth_implementation": "mocked",
@@ -73,7 +73,6 @@ def config_entry():
             },
         },
     )
-    return mock_entry
 
 
 @pytest.fixture
@@ -117,7 +116,7 @@ class MockApiData(NamedTuple):
     state: LockState
     sensor: Sensor | None = None
     passage_mode: PassageModeConfig | None = None
-    records: list[LockRecord] = []
+    records: tuple[LockRecord, ...] = ()
 
 
 @pytest.fixture
@@ -127,27 +126,31 @@ def mock_data_factory():
     def create_mock_data(scenario: str = "default") -> MockApiData:
         scenarios = {
             "default": MockApiData(
-                lock=Lock.parse_obj(BASIC_LOCK_DETAILS),
-                state=LockState.parse_obj(LOCK_STATE_UNLOCKED),
-                passage_mode=PassageModeConfig.parse_obj(PASSAGE_MODE_6_TO_6_7_DAYS),
+                lock=Lock.model_validate(BASIC_LOCK_DETAILS),
+                state=LockState.model_validate(LOCK_STATE_UNLOCKED),
+                passage_mode=PassageModeConfig.model_validate(
+                    PASSAGE_MODE_6_TO_6_7_DAYS
+                ),
             ),
             "with_sensor": MockApiData(
-                lock=Lock.parse_obj(LOCK_DETAILS_WITH_SENSOR),
-                sensor=Sensor.parse_obj(SENSOR_DETAILS),
-                state=LockState.parse_obj(LOCK_STATE_UNLOCKED),
+                lock=Lock.model_validate(LOCK_DETAILS_WITH_SENSOR),
+                sensor=Sensor.model_validate(SENSOR_DETAILS),
+                state=LockState.model_validate(LOCK_STATE_UNLOCKED),
             ),
             "sensor_not_installed": MockApiData(
-                lock=Lock.parse_obj(LOCK_DETAILS_WITH_SENSOR),
-                state=LockState.parse_obj(LOCK_STATE_UNLOCKED),
+                lock=Lock.model_validate(LOCK_DETAILS_WITH_SENSOR),
+                state=LockState.model_validate(LOCK_STATE_UNLOCKED),
             ),
             "locked": MockApiData(
-                lock=Lock.parse_obj(BASIC_LOCK_DETAILS),
-                state=LockState.parse_obj(LOCK_STATE_LOCKED),
-                passage_mode=PassageModeConfig.parse_obj(PASSAGE_MODE_6_TO_6_7_DAYS),
+                lock=Lock.model_validate(BASIC_LOCK_DETAILS),
+                state=LockState.model_validate(LOCK_STATE_LOCKED),
+                passage_mode=PassageModeConfig.model_validate(
+                    PASSAGE_MODE_6_TO_6_7_DAYS
+                ),
             ),
             "no_passage_mode": MockApiData(
-                lock=Lock.parse_obj(BASIC_LOCK_DETAILS),
-                state=LockState.parse_obj(LOCK_STATE_UNLOCKED),
+                lock=Lock.model_validate(BASIC_LOCK_DETAILS),
+                state=LockState.model_validate(LOCK_STATE_UNLOCKED),
                 passage_mode=None,
             ),
         }

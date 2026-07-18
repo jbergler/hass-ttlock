@@ -1,11 +1,7 @@
 from datetime import datetime, timedelta
 
+from pydantic import BaseModel
 import pytest
-
-try:
-    from pydantic.v1 import BaseModel
-except ImportError:
-    from pydantic import BaseModel
 
 from custom_components.ttlock.models import (
     EpochMs,
@@ -24,12 +20,12 @@ class TestEpochMs:
     @pytest.mark.parametrize(
         ("epoch", "tz", "day", "hour"),
         [
-            [1675400802000, "Europe/Amsterdam", 5, 6],
-            [1675400802000, "Pacific/Auckland", 5, 18],
-            [1675400802000, "America/Los_Angeles", 4, 21],
-            [1682244497000, "Europe/Amsterdam", 7, 12],
-            [1682244497000, "Pacific/Auckland", 7, 22],
-            [1682244497000, "America/Los_Angeles", 7, 3],
+            (1675400802000, "Europe/Amsterdam", 5, 6),
+            (1675400802000, "Pacific/Auckland", 5, 18),
+            (1675400802000, "America/Los_Angeles", 4, 21),
+            (1682244497000, "Europe/Amsterdam", 7, 12),
+            (1682244497000, "Pacific/Auckland", 7, 22),
+            (1682244497000, "America/Los_Angeles", 7, 3),
         ],
     )
     async def test_with_tz(self, hass, epoch, tz, day, hour):
@@ -41,7 +37,7 @@ class TestEpochMs:
 
 class TestPassageModeConfig:
     def test_passage_mode(self):
-        parsed = PassageModeConfig.parse_obj(
+        parsed = PassageModeConfig.model_validate(
             {
                 "autoUnlock": 2,
                 "isAllDay": 2,
@@ -56,7 +52,7 @@ class TestPassageModeConfig:
         assert not parsed.auto_unlock
 
     def test_null_start_end_date(self):
-        parsed = PassageModeConfig.parse_obj(
+        parsed = PassageModeConfig.model_validate(
             {
                 "autoUnlock": 2,
                 "isAllDay": 1,
@@ -71,14 +67,14 @@ class TestPassageModeConfig:
 
 
 class TestFeatures:
-    @pytest.fixture()
+    @pytest.fixture
     def features(self, feature_value):
         return Features.from_feature_value(feature_value)
 
     @pytest.mark.parametrize(
-        ["feature_value", "expected"],
-        (
-            [
+        ("feature_value", "expected"),
+        [
+            (
                 "10C2F44754CF5F7",
                 (
                     Features.lock_remotely,
@@ -87,16 +83,16 @@ class TestFeatures:
                     Features.wifi,
                     Features.door_sensor,
                 ),
-            ],
-            [
+            ),
+            (
                 "F44354CD5F3",
                 (
                     Features.lock_remotely,
                     Features.unlock_via_gateway,
                     Features.passage_mode,
                 ),
-            ],
-        ),
+            ),
+        ],
     )
     def test_flags(self, features: Features, expected):
         for feature in Features:
@@ -105,7 +101,7 @@ class TestFeatures:
 
 class TestPasscode:
     def test_permanent_code(self):
-        code = Passcode.parse_obj(
+        code = Passcode.model_validate(
             {
                 "endDate": 0,
                 "sendDate": 1690412306000,
@@ -133,7 +129,7 @@ class TestPasscode:
         ],
     )
     def test_temporary_code(self, offset, expired):
-        code = Passcode.parse_obj(
+        code = Passcode.model_validate(
             {
                 "startDate": 1690408800000,
                 "endDate": round((datetime.now() + offset).timestamp() * 1000),
@@ -147,7 +143,7 @@ class TestPasscode:
 
     def test_friday_code(self):
         """Test Friday-specific passcode (type 12)."""
-        code = Passcode.parse_obj(
+        code = Passcode.model_validate(
             {
                 "endDate": 1704495600000,
                 "sendDate": 1704314923000,
@@ -185,7 +181,7 @@ class TestPasscode:
     )
     def test_time_bounded_codes(self, passcode_type, offset, expired):
         """Test day-specific and other time-bounded passcodes."""
-        code = Passcode.parse_obj(
+        code = Passcode.model_validate(
             {
                 "startDate": 1690408800000,
                 "endDate": round((datetime.now() + offset).timestamp() * 1000),
@@ -211,7 +207,7 @@ MINIMAL_LOCK = {
 
 class TestLock:
     def test_basic_lock(self):
-        lock = Lock.parse_obj(
+        lock = Lock.model_validate(
             {
                 **MINIMAL_LOCK,
                 "lockId": 123,
@@ -227,7 +223,7 @@ class TestLock:
         ],
     )
     def test_lock_sound(self, value, expected):
-        lock = Lock.parse_obj(
+        lock = Lock.model_validate(
             {
                 **MINIMAL_LOCK,
                 "lockSound": value,

@@ -44,7 +44,7 @@ BASIC_LOCK_DETAILS = {
     "sensitivity": -1,
 }
 LOCK_DETAILS_WITH_SENSOR = {
-    **BASIC_LOCK_DETAILS,  # type: ignore
+    **BASIC_LOCK_DETAILS,
     "featureValue": "F44354CF5F3",
 }
 
@@ -86,28 +86,28 @@ _WEBHOOK_BASE = {
 }
 
 WEBHOOK_LOCK_10AM_UTC = {
-    **_WEBHOOK_BASE,  # type: ignore
+    **_WEBHOOK_BASE,
     "recordType": 47,
     "username": "test",
     "success": 1,
 }
 
 WEBHOOK_UNLOCK_10AM_UTC = {
-    **_WEBHOOK_BASE,  # type: ignore
+    **_WEBHOOK_BASE,
     "recordType": 7,
     "username": "test",
     "success": 1,
 }
 
 WEBHOOK_SENSOR_OPEN = {
-    **_WEBHOOK_BASE,  # type: ignore
+    **_WEBHOOK_BASE,
     "recordType": 31,
     "username": "test",
     "success": 1,
 }
 
 WEBHOOK_SENSOR_CLOSE = {
-    **_WEBHOOK_BASE,  # type: ignore
+    **_WEBHOOK_BASE,
     "recordType": 30,
     "username": "test",
     "success": 1,

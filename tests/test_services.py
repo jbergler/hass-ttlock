@@ -26,7 +26,7 @@ from custom_components.ttlock.models import (
 )
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
-from homeassistant.util import dt
+from homeassistant.util import dt as dt_util
 
 
 @pytest.fixture
@@ -92,8 +92,8 @@ class Test_list_passcodes:
         coordinator = await component_setup()
         entity_id = coordinator.entities[0].entity_id
 
-        start_time = dt.now() - timedelta(days=1)
-        end_time = dt.now() + timedelta(weeks=2)
+        start_time = dt_util.now() - timedelta(days=1)
+        end_time = dt_util.now() + timedelta(weeks=2)
         passcode = Passcode(
             keyboardPwdId=123,
             keyboardPwdType=PasscodeType.temporary,
@@ -175,8 +175,8 @@ class Test_list_records:
             success=False,
             username="test",
             keyboardPwd="123456",
-            lockDate=int(dt.now().timestamp() * 1000),
-            serverDate=int(dt.now().timestamp() * 1000),
+            lockDate=int(dt_util.now().timestamp() * 1000),
+            serverDate=int(dt_util.now().timestamp() * 1000),
         )
 
         with patch(
@@ -199,7 +199,9 @@ class Test_list_records:
                     {
                         "id": record.id,
                         "lock_id": record.lock_id,
-                        "record_type": record.record_type.name,
+                        "record_type": record.record_type.name
+                        if record.record_type is not None
+                        else None,
                         "success": record.success,
                         "username": record.username,
                         "keyboard_pwd": record.keyboard_pwd,
@@ -242,8 +244,8 @@ class Test_list_records:
         coordinator = await component_setup()
         entity_id = coordinator.entities[0].entity_id
 
-        start_time = dt.now() - timedelta(days=1)
-        end_time = dt.now()
+        start_time = dt_util.now() - timedelta(days=1)
+        end_time = dt_util.now()
 
         with patch(
             "custom_components.ttlock.api.TTLockApi.get_lock_records",
@@ -277,8 +279,8 @@ class Test_list_records:
         coordinator = await component_setup()
         entity_id = coordinator.entities[0].entity_id
 
-        start_time = dt.now() - timedelta(days=1)
-        end_time = dt.now()
+        start_time = dt_util.now() - timedelta(days=1)
+        end_time = dt_util.now()
 
         with patch(
             "custom_components.ttlock.api.TTLockApi.get_lock_records",
@@ -318,8 +320,8 @@ class Test_create_passcode:
         attrs = {
             "passcode_name": "Test User",
             "passcode": "1234",
-            "start_time": dt.now() - timedelta(days=1),
-            "end_time": dt.now() + timedelta(weeks=2),
+            "start_time": dt_util.now() - timedelta(days=1),
+            "end_time": dt_util.now() + timedelta(weeks=2),
         }
         with patch(
             "custom_components.ttlock.api.TTLockApi.add_passcode", return_value=True
@@ -356,8 +358,8 @@ class Test_create_passcode:
         attrs = {
             "passcode_name": "Test User",
             "passcode": "1234",
-            "start_time": dt.now() - timedelta(days=1),
-            "end_time": dt.now() + timedelta(weeks=2),
+            "start_time": dt_util.now() - timedelta(days=1),
+            "end_time": dt_util.now() + timedelta(weeks=2),
         }
         with patch(
             "custom_components.ttlock.api.TTLockApi.add_passcode", return_value=False
@@ -421,7 +423,7 @@ class Test_create_passcode:
                     ATTR_ENTITY_ID: [single_lock_entity_id],
                     "passcode_name": "Test",
                     "passcode": "1234",
-                    "start_time": dt.now(),
+                    "start_time": dt_util.now(),
                 },
                 blocking=True,
             )
@@ -439,7 +441,7 @@ class Test_create_passcode:
                     ATTR_ENTITY_ID: [single_lock_entity_id],
                     "passcode_name": "Test",
                     "passcode": "1234",
-                    "end_time": dt.now(),
+                    "end_time": dt_util.now(),
                 },
                 blocking=True,
             )
@@ -458,8 +460,8 @@ class Test_modify_passcode:
             "passcode_id": 123,
             "passcode_name": "Updated User",
             "passcode": "5678",
-            "start_time": dt.now() - timedelta(days=1),
-            "end_time": dt.now() + timedelta(weeks=2),
+            "start_time": dt_util.now() - timedelta(days=1),
+            "end_time": dt_util.now() + timedelta(weeks=2),
         }
         with patch(
             "custom_components.ttlock.api.TTLockApi.modify_passcode", return_value=True
@@ -498,8 +500,8 @@ class Test_modify_passcode:
             "passcode_id": 123,
             "passcode_name": "Updated User",
             "passcode": "5678",
-            "start_time": dt.now() - timedelta(days=1),
-            "end_time": dt.now() + timedelta(weeks=2),
+            "start_time": dt_util.now() - timedelta(days=1),
+            "end_time": dt_util.now() + timedelta(weeks=2),
         }
         with patch(
             "custom_components.ttlock.api.TTLockApi.modify_passcode", return_value=False
@@ -526,8 +528,8 @@ class Test_modify_passcode:
             "passcode_id": 123,
             "passcode_name": "Updated User",
             "passcode": "5678",
-            "start_time": dt.now() - timedelta(days=1),
-            "end_time": dt.now() + timedelta(weeks=2),
+            "start_time": dt_util.now() - timedelta(days=1),
+            "end_time": dt_util.now() + timedelta(weeks=2),
         }
         with patch(
             "custom_components.ttlock.api.TTLockApi.modify_passcode", return_value=True
@@ -595,7 +597,7 @@ class Test_modify_passcode:
                     "passcode_id": 123,
                     "passcode_name": "Test",
                     "passcode": "1234",
-                    "start_time": dt.now(),
+                    "start_time": dt_util.now(),
                 },
                 blocking=True,
             )
@@ -614,7 +616,7 @@ class Test_modify_passcode:
                     "passcode_id": 123,
                     "passcode_name": "Test",
                     "passcode": "1234",
-                    "end_time": dt.now(),
+                    "end_time": dt_util.now(),
                 },
                 blocking=True,
             )
@@ -702,7 +704,7 @@ class Test_delete_passcode:
 
 
 class Test_cleanup_passcodes:
-    @pytest.mark.parametrize("return_response", (True, False))
+    @pytest.mark.parametrize("return_response", [True, False])
     async def test_works_when_there_is_nothing_to_do(
         self, hass: HomeAssistant, component_setup, mock_api_responses, return_response
     ) -> None:

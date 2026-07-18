@@ -34,8 +34,6 @@ GW_LOCK = asyncio.Lock()
 class RequestFailed(Exception):
     """Exception when TTLock API returns an error."""
 
-    pass
-
 
 class TTLockAuthImplementation(
     AuthImplementation,
@@ -163,14 +161,14 @@ class TTLockApi:
     async def get_lock(self, lock_id: int) -> Lock:
         """Get a lock by ID."""
         res = await self.get("lock/detail", lockId=lock_id)
-        return Lock.parse_obj(res)
+        return Lock.model_validate(res)
 
     async def get_sensor(self, lock_id: int) -> Sensor | None:
         """Get the Sensor."""
 
         try:
             res = await self.get("doorSensor/query", lockId=lock_id)
-            return Sensor.parse_obj(res)
+            return Sensor.model_validate(res)
         except RequestFailed:
             # Janky but the API doesn't return different errors if the sensor is missing or there's some other problem
             return None
@@ -179,12 +177,12 @@ class TTLockApi:
         """Get the state of a lock."""
         async with GW_LOCK:
             res = await self.get("lock/queryOpenState", lockId=lock_id)
-        return LockState.parse_obj(res)
+        return LockState.model_validate(res)
 
     async def get_lock_passage_mode_config(self, lock_id: int) -> PassageModeConfig:
         """Get the passage mode configuration of a lock."""
         res = await self.get("lock/getPassageModeConfig", lockId=lock_id)
-        return PassageModeConfig.parse_obj(res)
+        return PassageModeConfig.model_validate(res)
 
     async def lock(self, lock_id: int) -> bool:
         """Try to lock the lock."""
@@ -299,7 +297,7 @@ class TTLockApi:
         res = await self.get(
             "lock/listKeyboardPwd", lockId=lock_id, pageNo=1, pageSize=100
         )
-        return [Passcode.parse_obj(passcode) for passcode in res["list"]]
+        return [Passcode.model_validate(passcode) for passcode in res["list"]]
 
     async def delete_passcode(self, lock_id: int, passcode_id: int) -> bool:
         """Delete a passcode from lock."""
@@ -335,7 +333,7 @@ class TTLockApi:
 
         if "errcode" in res and res["errcode"] != 0:
             _LOGGER.error(
-                "Failed to update autolock",
+                "Failed to update autolock for %s: %s",
                 lock_id,
                 res["errmsg"],
             )
@@ -357,7 +355,7 @@ class TTLockApi:
 
         if "errcode" in res and res["errcode"] != 0:
             _LOGGER.error(
-                "Failed to update sound setting",
+                "Failed to update sound setting for %s: %s",
                 lock_id,
                 res["errmsg"],
             )
@@ -389,4 +387,4 @@ class TTLockApi:
         res = await self.get("lockRecord/list", **params)
 
         # Serialize each record to ensure datetime objects are handled
-        return [LockRecord.parse_obj(record) for record in res["list"]]
+        return [LockRecord.model_validate(record) for record in res["list"]]

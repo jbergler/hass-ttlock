@@ -32,7 +32,10 @@ jobs:
 
   test:
     runs-on: "ubuntu-latest"
-    name: Tests
+    name: "Tests (Python ${{ matrix.python-version }})"
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.14"]
     steps:
       - name: Check out code from GitHub
         uses: "actions/checkout@v6"
@@ -41,7 +44,7 @@ jobs:
       - name: "Set up Python"
         uses: actions/setup-python@v6
         with:
-          python-version-file: "pyproject.toml"
+          python-version: "${{ matrix.python-version }}"
       - name: Install the project
         run: uv sync --locked --all-extras --dev
       - name: Run tests

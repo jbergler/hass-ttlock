@@ -240,7 +240,7 @@ class Services:
                     "name": code.name,
                     "id": code.id,
                     "passcode": code.passcode,
-                    "type": code.type.name,
+                    "type": code.type.name if code.type is not None else None,
                     "start_date": code.start_date,
                     "end_date": code.end_date,
                     "expired": code.expired,
@@ -265,7 +265,7 @@ class Services:
             weekDays=days,
         )
 
-        for _entity_id, coordinator in self._get_coordinators(call).items():
+        for coordinator in self._get_coordinators(call).values():
             if await coordinator.api.set_passage_mode(coordinator.lock_id, config):
                 coordinator.data.passage_mode_config = config
                 coordinator.async_update_listeners()
@@ -294,7 +294,7 @@ class Services:
             endDate=end_time,
         )
 
-        for _entity_id, coordinator in self._get_coordinators(call).items():
+        for coordinator in self._get_coordinators(call).values():
             await coordinator.api.add_passcode(coordinator.lock_id, config)
 
     async def handle_modify_passcode(self, call: ServiceCall):
@@ -323,7 +323,7 @@ class Services:
 
         passcode_id = call.data.get("passcode_id")
 
-        for _entity_id, coordinator in self._get_coordinators(call).items():
+        for coordinator in self._get_coordinators(call).values():
             await coordinator.api.modify_passcode(
                 coordinator.lock_id, passcode_id, config
             )
@@ -333,7 +333,7 @@ class Services:
 
         passcode_id = call.data.get("passcode_id")
 
-        for _entity_id, coordinator in self._get_coordinators(call).items():
+        for coordinator in self._get_coordinators(call).values():
             await coordinator.api.delete_passcode(coordinator.lock_id, passcode_id)
 
     async def handle_cleanup_passcodes(self, call: ServiceCall) -> ServiceResponse:
@@ -344,7 +344,7 @@ class Services:
             removed_for_lock = []
             codes = await coordinator.api.list_passcodes(coordinator.lock_id)
             for code in codes:
-                if code.expired:
+                if code.expired and code.id is not None:
                     if await coordinator.api.delete_passcode(
                         coordinator.lock_id, code.id
                     ):
@@ -390,7 +390,9 @@ class Services:
                 {
                     "id": record.id,
                     "lock_id": record.lock_id,
-                    "record_type": record.record_type.name,
+                    "record_type": record.record_type.name
+                    if record.record_type is not None
+                    else None,
                     "success": record.success,
                     "username": record.username,
                     "keyboard_pwd": record.keyboard_pwd,
@@ -404,7 +406,7 @@ class Services:
 
     async def handle_update_state(self, call: ServiceCall):
         """Refresh the lock state by calling the coordinator's refresh method."""
-        for _entity_id, coordinator in self._get_coordinators(call).items():
+        for coordinator in self._get_coordinators(call).values():
             # Set the locked state to none to force the API call.
             coordinator.data.locked = None
             await coordinator.async_refresh()

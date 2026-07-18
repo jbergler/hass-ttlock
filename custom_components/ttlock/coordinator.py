@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
 from typing import TypeGuard
@@ -15,7 +15,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util import dt
+from homeassistant.util import dt as dt_util
 
 from .api import TTLockApi
 from .const import DOMAIN, SIGNAL_NEW_DATA, TT_GATEWAYS, TT_LOCKS
@@ -55,7 +55,7 @@ class LockState:
     battery_level: int | None = None
     hardware_version: str | None = None
     firmware_version: str | None = None
-    features: Features = Features.from_feature_value(None)
+    features: Features = field(default_factory=lambda: Features(0))
     locked: bool | None = None
     action_pending: bool = False
     last_user: str | None = None
@@ -65,8 +65,10 @@ class LockState:
     auto_lock_seconds: int | None = None
     passage_mode_config: PassageModeConfig | None = None
 
-    def passage_mode_active(self, current_date: datetime = dt.now()) -> bool:
+    def passage_mode_active(self, current_date: datetime | None = None) -> bool:
         """Check if passage mode is currently active."""
+        if current_date is None:
+            current_date = dt_util.now()
         if self.passage_mode_config and self.passage_mode_config.enabled:
             current_day = current_date.isoweekday()
 
@@ -189,10 +191,10 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 # only fetch sensor metadata once a day
                 if (
                     new_data.sensor.last_fetched is None
-                    or new_data.sensor.last_fetched < dt.now() - timedelta(days=1)
+                    or new_data.sensor.last_fetched < dt_util.now() - timedelta(days=1)
                 ):
                     sensor = await self.api.get_sensor(self.lock_id)
-                    new_data.sensor.last_fetched = dt.now()
+                    new_data.sensor.last_fetched = dt_util.now()
                     if sensor:
                         new_data.sensor.battery = sensor.battery_level
             else:
@@ -204,8 +206,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                     new_data.locked = state.locked == State.locked
                     if sensor_present(new_data.sensor):
                         new_data.sensor.opened = state.opened == SensorState.opened
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001 - lock/sensor state fetch is best-effort
+                    _LOGGER.debug("Failed to fetch lock state", exc_info=True)
 
             new_data.auto_lock_seconds = details.autoLockTime
             new_data.lock_sound = bool(details.lockSound)
@@ -213,10 +215,10 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             new_data.passage_mode_config = await self.api.get_lock_passage_mode_config(
                 self.lock_id
             )
-
-            return new_data
         except Exception as err:
             raise UpdateFailed(err) from err
+        else:
+            return new_data
 
     @callback
     def _process_webhook_data(self, event: WebhookEvent):
