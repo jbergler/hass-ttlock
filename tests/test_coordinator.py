@@ -141,8 +141,10 @@ class TestLockUpdateCoordinator:
             mock_api_responses("with_sensor")
             await coordinator.async_refresh()
 
+            assert coordinator.data.sensor is not None
             assert coordinator.data.sensor.opened is False
             assert coordinator.data.sensor.battery == 85
+            assert coordinator.data.sensor.last_fetched is not None
             assert coordinator.data.sensor.last_fetched > dt_util.now() - timedelta(
                 seconds=3
             )
@@ -153,7 +155,9 @@ class TestLockUpdateCoordinator:
             mock_api_responses("sensor_not_installed")
             await coordinator.async_refresh()
 
+            assert coordinator.data.sensor is not None
             assert coordinator.data.sensor.present is False
+            assert coordinator.data.sensor.last_fetched is not None
             assert coordinator.data.sensor.last_fetched > dt_util.now() - timedelta(
                 seconds=3
             )
@@ -164,9 +168,11 @@ class TestLockUpdateCoordinator:
             mock_api_responses("with_sensor")
 
             await coordinator.async_refresh()
+            assert coordinator.data.sensor is not None
             t0 = coordinator.data.sensor.last_fetched
 
             await coordinator.async_refresh()
+            assert coordinator.data.sensor is not None
             t1 = coordinator.data.sensor.last_fetched
 
             assert t0 == t1
@@ -237,6 +243,7 @@ class TestLockUpdateCoordinator:
 
             coordinator.data.locked = True
             coordinator.data.auto_lock_seconds = -1
+            assert coordinator.data.sensor is not None
             coordinator.data.sensor.opened = False
 
             event = WebhookEvent.model_validate(WEBHOOK_SENSOR_OPEN)
@@ -253,6 +260,7 @@ class TestLockUpdateCoordinator:
 
             coordinator.data.locked = False
             coordinator.data.auto_lock_seconds = -1
+            assert coordinator.data.sensor is not None
             coordinator.data.sensor.opened = True
 
             event = WebhookEvent.model_validate(WEBHOOK_SENSOR_CLOSE)

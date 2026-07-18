@@ -405,11 +405,12 @@ class WebhookEvent(BaseModel):
     @property
     def state(self) -> LockState:
         """The end state of the lock after this event."""
+        # pyright can't see the default on the other aliased field when only one is passed
         if self.success and self.event.action == Action.lock:
-            return LockState(state=State.locked)
+            return LockState(state=State.locked)  # pyright: ignore[reportCallIssue]
         if self.success and self.event.action == Action.unlock:
-            return LockState(state=State.unlocked)
-        return LockState(state=None)
+            return LockState(state=State.unlocked)  # pyright: ignore[reportCallIssue]
+        return LockState(state=None)  # pyright: ignore[reportCallIssue]
 
     @property
     def sensorState(self) -> LockState:
@@ -417,8 +418,8 @@ class WebhookEvent(BaseModel):
         if self.success and self.event.action == Action.close:
             return LockState(state=State.locked, sensorState=SensorState.closed)
         if self.success and self.event.action == Action.open:
-            return LockState(sensorState=SensorState.opened)
-        return LockState(sensorState=None)
+            return LockState(sensorState=SensorState.opened)  # pyright: ignore[reportCallIssue]
+        return LockState(sensorState=None)  # pyright: ignore[reportCallIssue]
 
 
 class Features(IntFlag):

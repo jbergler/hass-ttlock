@@ -91,7 +91,7 @@ class Services:
             DOMAIN,
             SVC_CREATE_PASSCODE,
             self.handle_create_passcode,
-            schema=vol.All(
+            schema=vol.All(  # pyright: ignore[reportArgumentType] - vol.All is a valid voluptuous validator
                 vol.Schema(
                     {
                         vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
@@ -109,7 +109,7 @@ class Services:
             DOMAIN,
             SVC_MODIFY_PASSCODE,
             self.handle_modify_passcode,
-            schema=vol.All(
+            schema=vol.All(  # pyright: ignore[reportArgumentType] - vol.All is a valid voluptuous validator
                 vol.Schema(
                     {
                         vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
@@ -252,9 +252,11 @@ class Services:
 
     async def handle_configure_passage_mode(self, call: ServiceCall):
         """Enable passage mode for the given entities."""
-        start_time = call.data.get(CONF_START_TIME)
-        end_time = call.data.get(CONF_END_TIME)
-        days = [WEEKDAYS.index(day) + 1 for day in call.data.get(CONF_WEEK_DAYS)]
+        start_time = call.data.get(CONF_START_TIME, time())
+        end_time = call.data.get(CONF_END_TIME, time())
+        days = [
+            WEEKDAYS.index(day) + 1 for day in call.data.get(CONF_WEEK_DAYS, WEEKDAYS)
+        ]
 
         config = PassageModeConfig(
             passageMode=OnOff.on if call.data.get(CONF_ENABLED) else OnOff.off,
@@ -321,7 +323,7 @@ class Services:
             endDate=end_time,
         )
 
-        passcode_id = call.data.get("passcode_id")
+        passcode_id = call.data["passcode_id"]
 
         for coordinator in self._get_coordinators(call).values():
             await coordinator.api.modify_passcode(
@@ -331,7 +333,7 @@ class Services:
     async def handle_delete_passcode(self, call: ServiceCall):
         """Delete a specific passcode from the given entities."""
 
-        passcode_id = call.data.get("passcode_id")
+        passcode_id = call.data["passcode_id"]
 
         for coordinator in self._get_coordinators(call).values():
             await coordinator.api.delete_passcode(coordinator.lock_id, passcode_id)

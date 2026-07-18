@@ -5,8 +5,8 @@ from typing import Any
 
 import voluptuous as vol
 
+from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import config_entry_oauth2_flow
 
 from .const import DOMAIN
@@ -26,12 +26,12 @@ class TTLockAuthFlowHandler(
 
     async def async_step_auth(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Create an entry for auth."""
         # Flow has been triggered by external data
         errors = {}
         if user_input is not None:
-            session = await self.flow_impl.login(
+            session = await self.flow_impl.login(  # pyright: ignore[reportAttributeAccessIssue] - flow_impl is a TTLockAuthImplementation
                 user_input[CONF_USERNAME], user_input[CONF_PASSWORD]
             )
             if "errmsg" in session:

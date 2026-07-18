@@ -1,0 +1,7 @@
+{
+  "name": "hass-ttlock",
+  "private": true,
+  "devDependencies": {
+    "pyright": "1.1.411"
+  }
+}

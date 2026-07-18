@@ -15,9 +15,12 @@ repos:
           - --skip="./.*,*.csv,*.json"
           - --quiet-level=2
         exclude_types: [csv, json]
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.19.1
+  - repo: local
     hooks:
-      - id: mypy
-        additional_dependencies:
-          - types-dateparser
+      - id: pyright
+        name: pyright
+        entry: npx pyright
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [manual]

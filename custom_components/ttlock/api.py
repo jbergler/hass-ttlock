@@ -87,7 +87,7 @@ class TTLockApi:
         return self._oauth_session.token["access_token"]
 
     async def _add_auth(self, **kwargs) -> dict:
-        kwargs["clientId"] = self._oauth_session.implementation.client_id
+        kwargs["clientId"] = self._oauth_session.implementation.client_id  # pyright: ignore[reportAttributeAccessIssue] - implementation is a TTLockAuthImplementation
         kwargs["accessToken"] = await self.async_get_access_token()
         kwargs["date"] = str(round(time.time() * 1000))
         return kwargs

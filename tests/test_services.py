@@ -99,8 +99,8 @@ class Test_list_passcodes:
             keyboardPwdType=PasscodeType.temporary,
             keyboardPwdName="Test Code",
             keyboardPwd="123456",
-            startDate=int(start_time.timestamp() * 1000),
-            endDate=int(end_time.timestamp() * 1000),
+            startDate=int(start_time.timestamp() * 1000),  # pyright: ignore[reportArgumentType] - EpochMs coerces from an int at runtime
+            endDate=int(end_time.timestamp() * 1000),  # pyright: ignore[reportArgumentType] - EpochMs coerces from an int at runtime
         )
 
         with patch(
@@ -171,12 +171,11 @@ class Test_list_records:
             recordId=123,
             lockId=15450395,
             recordType=RecordType.PASSWORD_UNLOCK,
-            recordTypeFromLock=7,
             success=False,
             username="test",
             keyboardPwd="123456",
-            lockDate=int(dt_util.now().timestamp() * 1000),
-            serverDate=int(dt_util.now().timestamp() * 1000),
+            lockDate=int(dt_util.now().timestamp() * 1000),  # pyright: ignore[reportArgumentType] - EpochMs coerces from an int at runtime
+            serverDate=int(dt_util.now().timestamp() * 1000),  # pyright: ignore[reportArgumentType] - EpochMs coerces from an int at runtime
         )
 
         with patch(
@@ -752,7 +751,7 @@ class Test_cleanup_passcodes:
             patch(
                 "custom_components.ttlock.api.TTLockApi.list_passcodes",
                 return_value=[
-                    Passcode(
+                    Passcode(  # pyright: ignore[reportCallIssue] - other aliased fields default to None
                         keyboardPwdId=123,
                         keyboardPwdType=PasscodeType.temporary,
                         keyboardPwdName="Test",

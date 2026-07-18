@@ -12,8 +12,9 @@ from typing import TypeGuard
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import DeviceInfo, Entity
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -301,8 +302,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             "unique_id": self.unique_id,
             "device": self.data,
             "entities": [
-                self.hass.states.get(entity.entity_id).as_dict()
+                state.as_dict()
                 for entity in self.entities
+                if (state := self.hass.states.get(entity.entity_id)) is not None
             ],
         }
 
