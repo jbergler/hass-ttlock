@@ -18,8 +18,15 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .api import TTLockApi
-from .const import DOMAIN, SIGNAL_NEW_DATA, TT_LOCKS
-from .models import Features, PassageModeConfig, SensorState, State, WebhookEvent
+from .const import DOMAIN, SIGNAL_NEW_DATA, TT_GATEWAYS, TT_LOCKS
+from .models import (
+    Features,
+    Gateway,
+    PassageModeConfig,
+    SensorState,
+    State,
+    WebhookEvent,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,6 +121,13 @@ def lock_coordinators(hass: HomeAssistant, entry: ConfigEntry):
         TT_LOCKS
     ]
     yield from coordinators
+
+
+def gateway_coordinator(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> GatewaysUpdateCoordinator:
+    """Get the gateway coordinator."""
+    return hass.data[DOMAIN][entry.entry_id][TT_GATEWAYS]
 
 
 def coordinator_for(
@@ -337,3 +351,31 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         if res:
             self.data.lock_sound = on
             self.async_update_listeners()
+
+
+class GatewaysUpdateCoordinator(DataUpdateCoordinator[dict[int, Gateway]]):
+    """Class to manage fetching Gateway data."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config_entry: ConfigEntry,
+        api: TTLockApi,
+    ) -> None:
+        """Initialize the update co-ordinator for gateways."""
+        self.api = api
+
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}-gateways",
+            config_entry=config_entry,
+            update_interval=timedelta(minutes=15),
+        )
+
+    async def _async_update_data(self) -> dict[int, Gateway]:
+        try:
+            gateways = await self.api.get_gateways()
+            return {gateway.id: gateway for gateway in gateways}
+        except Exception as err:
+            raise UpdateFailed(err) from err
