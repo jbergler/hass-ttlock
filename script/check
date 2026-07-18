@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Run every non-mutating check: lint, type-check, and tests. This is the one
+# command to run before considering a change done.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+script/lint-check
+script/type-check
+script/test
