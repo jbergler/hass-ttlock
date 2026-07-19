@@ -2,6 +2,20 @@
 
 Snapshot of the EU open-platform cloud API docs from <https://euopen.ttlock.com/document/doc?urlName=cloud%2FerrorCodeEn.html>, scraped for offline reference. Each page below mirrors one `documentPages/htmlPages/cloud/...` page; the original page for any doc can be reconstructed via `https://euopen.ttlock.com/document/doc?urlName=<urlencoded path>`.
 
+## Regenerating / updating this mirror
+
+The site (`euopen.ttlock.com`) is a client-rendered SPA, so the doc content itself is not reachable by just requesting the page URL you see in the browser (`/document/doc?urlName=...`) — that always returns the app shell, not the article. Two things make scraping it tractable without running a browser:
+
+1. **The full page tree is a static XML nav manifest**: <https://euopen.ttlock.com/documentPages/htmlPages/pathEng/newMenu.xml>. It's a nested `<group>`/`<item>` tree; every leaf `<item>` has a `file="..."` attribute, e.g. `file="cloud/passcode/addEn.html"`. Entries under the `cloud` group are the cloud API v3 pages this directory mirrors (other top-level groups cover the user guide, app SDK, etc. — not scraped here). Some entries are wrapped in HTML comments (`<!-- ... -->`) to hide them from the live nav; skip those, they're pages the vendor deliberately disabled.
+2. **Each `file` value maps directly to a static HTML page**, no API calls or JS execution needed: `https://euopen.ttlock.com/documentPages/htmlPages/<file>` (e.g. `.../documentPages/htmlPages/cloud/passcode/addEn.html`). That page is a plain Typora export — the actual content lives in a `<div id="write">`, with everything else being page chrome/CSS to ignore.
+
+So the process is: fetch `newMenu.xml` → parse out `file="cloud/...En.html"` entries (excluding commented-out ones) → fetch `documentPages/htmlPages/<file>` for each → pull out `#write` → convert to markdown.
+
+A couple of scraping-specific gotchas worth knowing before redoing this:
+- Code samples are rendered as a full CodeMirror editor widget, not a plain `<pre><code>`. Reconstruct each block's text by concatenating the `.get_text()` of its `<pre class="CodeMirror-line">` children in order — that reproduces the original source (including whitespace) faithfully.
+- A few pages embed images as inline `data:image/...;base64,...` `<img src>` — worth decoding and saving those to real image files instead of leaving giant base64 blobs in the markdown.
+- Internal cross-links use relative/short hrefs (e.g. `/document/doc?urlName=...`, `/CreateApplication`); resolve them to absolute `https://euopen.ttlock.com/...` URLs so links still work once the content is out of its original page.
+- Not every live page is linked from `newMenu.xml` — e.g. `cloud/lock/featureValueEn.html` (mirrored at [lock/featureValue.md](lock/featureValue.md)) is a real page referenced directly from this integration's `models.py` but absent from the nav tree. Worth checking known doc links from the codebase against the scraped set after a refresh.
 
 ## Cloud API V3
 
