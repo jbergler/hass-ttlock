@@ -15,6 +15,7 @@ repos:
           - --skip="./.*,*.csv,*.json"
           - --quiet-level=2
         exclude_types: [csv, json]
+        exclude: ^docs/ttlock-cloud-api/
   - repo: https://github.com/astral-sh/ty-pre-commit
     rev: v0.0.61
     hooks:
