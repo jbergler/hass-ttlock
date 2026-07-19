@@ -2,12 +2,21 @@
 
 import asyncio
 from datetime import timedelta
+from unittest.mock import AsyncMock
 
 import dateparser
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.ttlock.coordinator import LockState, LockUpdateCoordinator
+from custom_components.ttlock.api import RequestFailed
+from custom_components.ttlock.const import DOMAIN
+from custom_components.ttlock.coordinator import (
+    GatewaysUpdateCoordinator,
+    LockState,
+    LockUpdateCoordinator,
+)
 from custom_components.ttlock.models import PassageModeConfig, WebhookEvent
+from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -271,3 +280,205 @@ class TestLockUpdateCoordinator:
             assert coordinator.data.sensor is not None
             assert coordinator.data.sensor.opened is False
             assert coordinator.data.last_reason == "Door Closed"
+
+        async def test_ignores_events_for_other_locks(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.locked = False
+
+            event = WebhookEvent.model_validate(
+                {**WEBHOOK_LOCK_10AM_UTC, "lockId": coordinator.lock_id + 1}
+            )
+            coordinator._process_webhook_data(event)
+
+            assert coordinator.data.locked is False
+
+        async def test_ignores_unsuccessful_events(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.locked = False
+
+            event = WebhookEvent.model_validate({**WEBHOOK_LOCK_10AM_UTC, "success": 0})
+            coordinator._process_webhook_data(event)
+
+            assert coordinator.data.locked is False
+
+        async def test_ignores_events_before_first_refresh(
+            self, coordinator: LockUpdateCoordinator
+        ):
+            assert coordinator.data is None
+
+            event = WebhookEvent.model_validate(WEBHOOK_LOCK_10AM_UTC)
+            coordinator._process_webhook_data(event)
+
+            assert coordinator.data is None
+
+    class TestAsyncUpdateDataErrors:
+        async def test_wraps_api_errors_in_update_failed(
+            self, coordinator: LockUpdateCoordinator, monkeypatch
+        ):
+            monkeypatch.setattr(
+                coordinator.api,
+                "get_lock",
+                AsyncMock(side_effect=RequestFailed("boom")),
+            )
+
+            with pytest.raises(UpdateFailed):
+                await coordinator._async_update_data()
+
+    class TestLockUnlock:
+        async def test_lock_success_updates_state(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.locked = False
+
+            async def mock_lock(lock_id):
+                # verify action_pending is set for the duration of the call
+                assert coordinator.data.action_pending is True
+                return True
+
+            monkeypatch.setattr(coordinator.api, "lock", mock_lock)
+
+            await coordinator.lock()
+
+            assert coordinator.data.locked is True
+            assert coordinator.data.action_pending is False
+
+        async def test_lock_failure_leaves_state_unchanged(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.locked = False
+            monkeypatch.setattr(coordinator.api, "lock", AsyncMock(return_value=False))
+
+            await coordinator.lock()
+
+            assert coordinator.data.locked is False
+            assert coordinator.data.action_pending is False
+
+        async def test_unlock_success_updates_state(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.locked = True
+            monkeypatch.setattr(coordinator.api, "unlock", AsyncMock(return_value=True))
+
+            await coordinator.unlock()
+
+            assert coordinator.data.locked is False
+            assert coordinator.data.action_pending is False
+
+        async def test_unlock_failure_leaves_state_unchanged(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.locked = True
+            monkeypatch.setattr(
+                coordinator.api, "unlock", AsyncMock(return_value=False)
+            )
+
+            await coordinator.unlock()
+
+            assert coordinator.data.locked is True
+            assert coordinator.data.action_pending is False
+
+    class TestSetAutoLock:
+        async def test_turning_on_sets_default_delay(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            monkeypatch.setattr(
+                coordinator.api, "set_auto_lock", AsyncMock(return_value=True)
+            )
+
+            await coordinator.set_auto_lock(True)
+
+            assert coordinator.data.auto_lock_seconds == 10
+
+        async def test_turning_off_clears_delay(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            monkeypatch.setattr(
+                coordinator.api, "set_auto_lock", AsyncMock(return_value=True)
+            )
+
+            await coordinator.set_auto_lock(False)
+
+            assert coordinator.data.auto_lock_seconds == 0
+
+        async def test_failure_leaves_state_unchanged(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.auto_lock_seconds = 60
+            monkeypatch.setattr(
+                coordinator.api, "set_auto_lock", AsyncMock(return_value=False)
+            )
+
+            await coordinator.set_auto_lock(True)
+
+            assert coordinator.data.auto_lock_seconds == 60
+
+    class TestSetLockSound:
+        async def test_turning_on_updates_state(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            monkeypatch.setattr(
+                coordinator.api, "set_lock_sound", AsyncMock(return_value=True)
+            )
+
+            await coordinator.set_lock_sound(True)
+
+            assert coordinator.data.lock_sound is True
+
+        async def test_turning_off_updates_state(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            monkeypatch.setattr(
+                coordinator.api, "set_lock_sound", AsyncMock(return_value=True)
+            )
+
+            await coordinator.set_lock_sound(False)
+
+            assert coordinator.data.lock_sound is False
+
+        async def test_failure_leaves_state_unchanged(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.lock_sound = True
+            monkeypatch.setattr(
+                coordinator.api, "set_lock_sound", AsyncMock(return_value=False)
+            )
+
+            await coordinator.set_lock_sound(False)
+
+            assert coordinator.data.lock_sound is True
+
+
+class TestGatewaysUpdateCoordinator:
+    async def test_wraps_api_errors_in_update_failed(self, hass, api):
+        config_entry = MockConfigEntry(domain=DOMAIN)
+        gateways_coordinator = GatewaysUpdateCoordinator(hass, config_entry, api)
+        api.get_gateways = AsyncMock(side_effect=RequestFailed("boom"))
+
+        with pytest.raises(UpdateFailed):
+            await gateways_coordinator._async_update_data()
