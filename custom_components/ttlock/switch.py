@@ -40,7 +40,7 @@ class AutoLock(BaseLockEntity, SwitchEntity):
     @property
     def extra_state_attributes(self):
         """Define any extra state sttr."""
-        attributes = {}
+        attributes = dict(super().extra_state_attributes or {})
         attributes["seconds"] = self.coordinator.data.auto_lock_seconds
         return attributes
 

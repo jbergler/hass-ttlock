@@ -16,6 +16,7 @@ from custom_components.ttlock.models import (
     Lock,
     LockRecord,
     LockState,
+    LockSummary,
     PassageModeConfig,
     Sensor,
 )
@@ -89,6 +90,7 @@ def component_setup(hass: HomeAssistant, config_entry: MockConfigEntry):
         )
         config_entry.add_to_hass(hass)
         await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done(wait_background_tasks=True)
 
         return hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS][0]
 
@@ -106,7 +108,11 @@ async def api():
 async def coordinator(hass, api):
     """Co-ordinator instance for use in tests."""
     config_entry = MockConfigEntry(domain=DOMAIN)
-    return LockUpdateCoordinator(hass, config_entry, api, 7252408)
+    config_entry.add_to_hass(hass)
+    summary = LockSummary(
+        lockId=7252408, lockAlias="Test Lock", lockMac="00:00:00:00:00:00", hasGateway=1
+    )
+    return LockUpdateCoordinator(hass, config_entry, api, summary)
 
 
 class MockApiData(NamedTuple):
@@ -167,7 +173,15 @@ def mock_api_responses(monkeypatch, mock_data_factory):
         mock_data = mock_data_factory(scenario)
 
         async def mock_get_locks(*args, **kwargs):
-            return [mock_data.lock.id]
+            return [
+                LockSummary(
+                    lockId=mock_data.lock.id,
+                    lockAlias=mock_data.lock.name,
+                    lockMac=mock_data.lock.mac,
+                    featureValue=mock_data.lock.featureValue,
+                    hasGateway=1,
+                )
+            ]
 
         async def mock_get_lock(*args, **kwargs):
             return mock_data.lock

@@ -32,7 +32,7 @@ def build_diagnostics_dict(d: dict) -> dict[str, Any]:
         if isinstance(d[k], Enum):
             d[k] = f"{d[k].name} ({d[k].value})"
         elif isinstance(d[k], BaseModel):
-            d[k] = build_diagnostics_dict(d[k].dict())
+            d[k] = build_diagnostics_dict(d[k].model_dump())
         elif is_dataclass(d[k]):
             d[k] = build_diagnostics_dict(asdict(d[k]))
     return d
