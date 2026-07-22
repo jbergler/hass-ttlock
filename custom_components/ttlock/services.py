@@ -27,10 +27,16 @@ from .const import (
     SVC_CONFIG_AUTOLOCK,
     SVC_CONFIG_PASSAGE_MODE,
     SVC_CREATE_PASSCODE,
+    SVC_DELETE_CARD,
+    SVC_DELETE_FINGERPRINT,
     SVC_DELETE_PASSCODE,
+    SVC_LIST_CARDS,
+    SVC_LIST_FINGERPRINTS,
     SVC_LIST_PASSCODES,
     SVC_LIST_RECORDS,
     SVC_MODIFY_PASSCODE,
+    SVC_RENAME_CARD,
+    SVC_RENAME_FINGERPRINT,
     SVC_UPDATE_STATE,
 )
 from .coordinator import LockUpdateCoordinator, coordinator_for
@@ -202,6 +208,80 @@ class Services:
             schema=vol.Schema(
                 {
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                }
+            ),
+        )
+
+        self.hass.services.register(
+            DOMAIN,
+            SVC_LIST_CARDS,
+            self.handle_list_cards,
+            schema=vol.Schema(
+                {
+                    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                }
+            ),
+            supports_response=SupportsResponse.ONLY,
+        )
+
+        self.hass.services.register(
+            DOMAIN,
+            SVC_RENAME_CARD,
+            self.handle_rename_card,
+            schema=vol.Schema(
+                {
+                    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                    vol.Required("card_id"): cv.positive_int,
+                    vol.Required("name"): cv.string,
+                }
+            ),
+        )
+
+        self.hass.services.register(
+            DOMAIN,
+            SVC_DELETE_CARD,
+            self.handle_delete_card,
+            schema=vol.Schema(
+                {
+                    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                    vol.Required("card_id"): cv.positive_int,
+                }
+            ),
+        )
+
+        self.hass.services.register(
+            DOMAIN,
+            SVC_LIST_FINGERPRINTS,
+            self.handle_list_fingerprints,
+            schema=vol.Schema(
+                {
+                    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                }
+            ),
+            supports_response=SupportsResponse.ONLY,
+        )
+
+        self.hass.services.register(
+            DOMAIN,
+            SVC_RENAME_FINGERPRINT,
+            self.handle_rename_fingerprint,
+            schema=vol.Schema(
+                {
+                    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                    vol.Required("fingerprint_id"): cv.positive_int,
+                    vol.Required("name"): cv.string,
+                }
+            ),
+        )
+
+        self.hass.services.register(
+            DOMAIN,
+            SVC_DELETE_FINGERPRINT,
+            self.handle_delete_fingerprint,
+            schema=vol.Schema(
+                {
+                    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                    vol.Required("fingerprint_id"): cv.positive_int,
                 }
             ),
         )
@@ -418,3 +498,89 @@ class Services:
             # Set the locked state to none to force the API call.
             coordinator.data.locked = None
             await coordinator.async_refresh()
+
+    async def handle_list_cards(self, call: ServiceCall) -> ServiceResponse:
+        """List all IC cards for the selected locks."""
+        cards = {}
+
+        for entity_id, coordinator in self._get_coordinators(call).items():
+            enrolled = await coordinator.api.list_cards(coordinator.lock_id)
+            cards[entity_id] = [
+                {
+                    "id": card.id,
+                    "name": card.name,
+                    "number": card.number,
+                    "type": card.type.name if card.type is not None else None,
+                    "sender": card.sender,
+                    "start_date": card.start_date.isoformat()
+                    if card.start_date
+                    else None,
+                    "end_date": card.end_date.isoformat() if card.end_date else None,
+                    "expired": card.expired,
+                }
+                for card in enrolled
+            ]
+
+        return {"cards": cards}  # ty: ignore[invalid-return-type] - dict/list generics are invariant, so this structurally-JSON-safe dict isn't recognized as a dict[str, JsonValueType] subtype
+
+    async def handle_rename_card(self, call: ServiceCall):
+        """Rename an IC card for the given entities."""
+        card_id = call.data["card_id"]
+        name = call.data["name"]
+
+        for coordinator in self._get_coordinators(call).values():
+            await coordinator.api.rename_card(coordinator.lock_id, card_id, name)
+
+    async def handle_delete_card(self, call: ServiceCall):
+        """Delete an IC card from the given entities."""
+        card_id = call.data["card_id"]
+
+        for coordinator in self._get_coordinators(call).values():
+            await coordinator.api.delete_card(coordinator.lock_id, card_id)
+
+    async def handle_list_fingerprints(self, call: ServiceCall) -> ServiceResponse:
+        """List all fingerprints for the selected locks."""
+        fingerprints = {}
+
+        for entity_id, coordinator in self._get_coordinators(call).items():
+            enrolled = await coordinator.api.list_fingerprints(coordinator.lock_id)
+            fingerprints[entity_id] = [
+                {
+                    "id": fingerprint.id,
+                    "name": fingerprint.name,
+                    "number": fingerprint.number,
+                    "type": fingerprint.type.name
+                    if fingerprint.type is not None
+                    else None,
+                    "sender": fingerprint.sender,
+                    "start_date": fingerprint.start_date.isoformat()
+                    if fingerprint.start_date
+                    else None,
+                    "end_date": fingerprint.end_date.isoformat()
+                    if fingerprint.end_date
+                    else None,
+                    "expired": fingerprint.expired,
+                }
+                for fingerprint in enrolled
+            ]
+
+        return {"fingerprints": fingerprints}  # ty: ignore[invalid-return-type] - dict/list generics are invariant, so this structurally-JSON-safe dict isn't recognized as a dict[str, JsonValueType] subtype
+
+    async def handle_rename_fingerprint(self, call: ServiceCall):
+        """Rename a fingerprint for the given entities."""
+        fingerprint_id = call.data["fingerprint_id"]
+        name = call.data["name"]
+
+        for coordinator in self._get_coordinators(call).values():
+            await coordinator.api.rename_fingerprint(
+                coordinator.lock_id, fingerprint_id, name
+            )
+
+    async def handle_delete_fingerprint(self, call: ServiceCall):
+        """Delete a fingerprint from the given entities."""
+        fingerprint_id = call.data["fingerprint_id"]
+
+        for coordinator in self._get_coordinators(call).values():
+            await coordinator.api.delete_fingerprint(
+                coordinator.lock_id, fingerprint_id
+            )

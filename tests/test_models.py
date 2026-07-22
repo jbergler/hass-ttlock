@@ -4,8 +4,11 @@ from pydantic import BaseModel
 import pytest
 
 from custom_components.ttlock.models import (
+    Card,
+    CardType,
     EpochMs,
     Features,
+    Fingerprint,
     Lock,
     OnOff,
     PassageModeConfig,
@@ -230,3 +233,51 @@ class TestLock:
             }
         )
         assert lock.lockSound == expected
+
+
+class TestCard:
+    def test_permanent_card_has_no_dates(self):
+        card = Card.model_validate(
+            {
+                "cardId": 1,
+                "cardName": "Permanent",
+                "cardType": 1,
+                "startDate": 0,
+                "endDate": 0,
+            }
+        )
+        assert card.type == CardType.normal
+        assert card.start_date is None
+        assert card.end_date is None
+        assert card.expired is False
+
+    def test_expired_card(self):
+        past = int((datetime.now() - timedelta(days=1)).timestamp() * 1000)
+        card = Card.model_validate({"cardId": 1, "endDate": past})
+        assert card.expired is True
+
+    def test_active_card_not_expired(self):
+        future = int((datetime.now() + timedelta(days=1)).timestamp() * 1000)
+        card = Card.model_validate({"cardId": 1, "endDate": future})
+        assert card.expired is False
+
+
+class TestFingerprint:
+    def test_permanent_fingerprint_has_no_dates(self):
+        fingerprint = Fingerprint.model_validate(
+            {
+                "fingerprintId": 1,
+                "fingerprintName": "Permanent",
+                "fingerprintType": 1,
+                "startDate": 0,
+                "endDate": 0,
+            }
+        )
+        assert fingerprint.start_date is None
+        assert fingerprint.end_date is None
+        assert fingerprint.expired is False
+
+    def test_expired_fingerprint(self):
+        past = int((datetime.now() - timedelta(days=1)).timestamp() * 1000)
+        fingerprint = Fingerprint.model_validate({"fingerprintId": 1, "endDate": past})
+        assert fingerprint.expired is True
