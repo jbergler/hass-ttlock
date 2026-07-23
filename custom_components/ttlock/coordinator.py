@@ -12,6 +12,7 @@ from typing import TypeGuard
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -22,6 +23,7 @@ from .const import DOMAIN, SIGNAL_NEW_DATA, TT_GATEWAYS, TT_LOCKS
 from .models import (
     Features,
     Gateway,
+    LockSummary,
     PassageModeConfig,
     SensorState,
     State,
@@ -29,6 +31,11 @@ from .models import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+NOT_CONNECTABLE_REASON = (
+    "No gateway paired and no WiFi — TTLock's cloud can't reach this lock. "
+    "Live data isn't available until connectivity is restored."
+)
 
 
 @dataclass
@@ -150,35 +157,43 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         hass: HomeAssistant,
         config_entry: ConfigEntry,
         api: TTLockApi,
-        lock_id: int,
+        summary: LockSummary,
     ) -> None:
         """Initialize the update co-ordinator for a single lock."""
         self.api = api
-        self.lock_id = lock_id
+        self.lock_id = summary.id
+        self.connectable = summary.connectable
 
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             config_entry=config_entry,
-            update_interval=timedelta(minutes=15),
+            update_interval=timedelta(minutes=15) if self.connectable else None,
+        )
+
+        self.data = LockState(
+            name=summary.name, mac=summary.mac, features=summary.features
         )
 
         async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._process_webhook_data)
 
     async def _async_update_data(self) -> LockState:
+        if not self.connectable:
+            raise UpdateFailed(
+                f"Lock {self.lock_id} has no gateway or WiFi connectivity"
+            )
+
         try:
             details = await self.api.get_lock(self.lock_id)
 
-            new_data = deepcopy(self.data) or LockState(
-                name=details.name,
-                mac=details.mac,
-                model=details.model,
-                features=Features.from_feature_value(details.featureValue),
-            )
+            new_data = deepcopy(self.data)
 
             # update mutable attributes
             new_data.name = details.name
+            new_data.mac = details.mac
+            new_data.model = details.model
+            new_data.features = Features.from_feature_value(details.featureValue)
             new_data.battery_level = details.battery_level
             new_data.hardware_version = details.hardwareRevision
             new_data.firmware_version = details.firmwareRevision
@@ -200,14 +215,22 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             else:
                 new_data.sensor = None
 
-            if new_data.locked is None:
-                try:
-                    state = await self.api.get_lock_state(self.lock_id)
-                    new_data.locked = state.locked == State.locked
-                    if sensor_present(new_data.sensor):
-                        new_data.sensor.opened = state.opened == SensorState.opened
-                except Exception:  # noqa: BLE001 - lock/sensor state fetch is best-effort
-                    _LOGGER.debug("Failed to fetch lock state", exc_info=True)
+            try:
+                state = await self.api.get_lock_state(self.lock_id)
+                new_data.locked = state.locked == State.locked
+                if sensor_present(new_data.sensor):
+                    new_data.sensor.opened = state.opened == SensorState.opened
+            except Exception as err:
+                if new_data.locked is None:
+                    # first-ever fetch: tolerate failure, entity shows "unknown"
+                    _LOGGER.debug("Failed to fetch initial lock state", exc_info=True)
+                else:
+                    # we previously had a verified state - a failure to re-verify now
+                    # means we can no longer trust it (e.g. gateway/webhooks silently
+                    # died), so surface it via the standard unavailable path
+                    raise UpdateFailed(
+                        f"Failed to re-verify lock state for {self.lock_id}"
+                    ) from err
 
             new_data.auto_lock_seconds = details.autoLockTime
             new_data.lock_sound = bool(details.lockSound)
@@ -219,6 +242,20 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             raise UpdateFailed(err) from err
         else:
             return new_data
+
+    @callback
+    def _async_refresh_finished(self) -> None:
+        """Push refreshed device info back into the device registry.
+
+        Entities snapshot `coordinator.device_info` once at add time, so once
+        we start seeding placeholder data and filling it in progressively,
+        this is what keeps the device registry's model/sw_version/hw_version
+        in sync with later successful refreshes.
+        """
+        if self.last_update_success and self.config_entry is not None:
+            dr.async_get(self.hass).async_get_or_create(
+                config_entry_id=self.config_entry.entry_id, **self.device_info
+            )
 
     @callback
     def _process_webhook_data(self, event: WebhookEvent):
@@ -314,6 +351,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         """Serialize for diagnostics."""
         return {
             "unique_id": self.unique_id,
+            "connectable": self.connectable,
+            "last_update_success": self.last_update_success,
             "device": self.data,
             "entities": [
                 state.as_dict()

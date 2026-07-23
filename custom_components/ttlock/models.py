@@ -87,6 +87,26 @@ class Lock(BaseModel):
     noKeyPwd: str = Field(alias="adminPwd")
 
 
+class LockSummary(BaseModel):
+    """Cheap per-lock summary from lock/list, enough to build a device/entities without a detail fetch."""
+
+    id: int = Field(..., alias="lockId")
+    name: str = Field("Lock", alias="lockAlias")
+    mac: str = Field(..., alias="lockMac")
+    featureValue: str | None = None
+    hasGateway: int = 0
+
+    @property
+    def features(self) -> "Features":
+        """Parse the feature bitmask."""
+        return Features.from_feature_value(self.featureValue)
+
+    @property
+    def connectable(self) -> bool:
+        """True if the lock is reachable via a gateway or its own WiFi."""
+        return self.hasGateway != 0 or Features.wifi in self.features
+
+
 class Sensor(BaseModel):
     """sensor details."""
 
@@ -193,6 +213,76 @@ class Passcode(BaseModel):
             return self.end_date < dt_util.now()
 
         # Assume not expired for other types
+        return False
+
+
+class CardType(IntEnum):
+    """Type of IC card.
+
+    Reference: https://euopen.ttlock.com/document/doc?urlName=cloud%2Fcard%2FlistEn.html
+    """
+
+    normal = 1
+    cyclic = 4
+
+
+class Card(BaseModel):
+    """A single IC card enrolled on a lock."""
+
+    id: int | None = Field(None, alias="cardId")
+    number: str | None = Field(None, alias="cardNumber")
+    name: str | None = Field(None, alias="cardName")
+    type: CardType | None = Field(None, alias="cardType")
+    start_date: EpochMs | None = Field(None, alias="startDate")
+    end_date: EpochMs | None = Field(None, alias="endDate")
+    sender: str | None = Field(None, alias="senderUsername")
+
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def _zero_is_permanent(cls, value: int | None) -> int | None:
+        # The API uses startDate == endDate == 0 to mean a permanent credential.
+        return value or None
+
+    @property
+    def expired(self) -> bool:
+        """True if the card has an end date that is in the past."""
+        if self.end_date:
+            return self.end_date < dt_util.now()
+        return False
+
+
+class FingerprintType(IntEnum):
+    """Type of fingerprint.
+
+    Reference: https://euopen.ttlock.com/document/doc?urlName=cloud%2Ffingerprint%2FlistEn.html
+    """
+
+    normal = 1
+    cyclic = 4
+
+
+class Fingerprint(BaseModel):
+    """A single fingerprint enrolled on a lock."""
+
+    id: int | None = Field(None, alias="fingerprintId")
+    number: str | None = Field(None, alias="fingerprintNumber")
+    name: str | None = Field(None, alias="fingerprintName")
+    type: FingerprintType | None = Field(None, alias="fingerprintType")
+    start_date: EpochMs | None = Field(None, alias="startDate")
+    end_date: EpochMs | None = Field(None, alias="endDate")
+    sender: str | None = Field(None, alias="senderUsername")
+
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def _zero_is_permanent(cls, value: int | None) -> int | None:
+        # The API uses startDate == endDate == 0 to mean a permanent credential.
+        return value or None
+
+    @property
+    def expired(self) -> bool:
+        """True if the fingerprint has an end date that is in the past."""
+        if self.end_date:
+            return self.end_date < dt_util.now()
         return False
 
 

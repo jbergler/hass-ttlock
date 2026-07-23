@@ -15,12 +15,18 @@ from custom_components.ttlock.coordinator import (
     LockState,
     LockUpdateCoordinator,
 )
-from custom_components.ttlock.models import PassageModeConfig, WebhookEvent
+from custom_components.ttlock.models import (
+    LockState as WireLockState,
+    LockSummary,
+    PassageModeConfig,
+    WebhookEvent,
+)
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from .const import (
     BASIC_LOCK_DETAILS,
+    LOCK_STATE_LOCKED,
     PASSAGE_MODE_6_TO_6_7_DAYS,
     PASSAGE_MODE_ALL_DAY_WEEKDAYS,
     WEBHOOK_LOCK_10AM_UTC,
@@ -186,6 +192,89 @@ class TestLockUpdateCoordinator:
 
             assert t0 == t1
 
+        async def test_locked_state_reverified_every_refresh(
+            self,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            assert coordinator.data.locked is False
+
+            async def mock_get_lock_state_locked(*args, **kwargs):
+                return WireLockState.model_validate(LOCK_STATE_LOCKED)
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_lock_state",
+                mock_get_lock_state_locked,
+            )
+
+            await coordinator.async_refresh()
+            assert coordinator.data.locked is True
+
+        async def test_first_lock_state_fetch_failure_tolerated(
+            self,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            mock_api_responses("default")
+
+            async def mock_get_lock_state_fails(*args, **kwargs):
+                raise RequestFailed("boom")
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_lock_state",
+                mock_get_lock_state_fails,
+            )
+
+            await coordinator.async_refresh()
+
+            assert coordinator.data.locked is None
+            assert coordinator.last_update_success is True
+
+        async def test_lock_state_reverification_failure_marks_unavailable(
+            self,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            assert coordinator.data.locked is False
+            assert coordinator.last_update_success is True
+
+            async def mock_get_lock_state_fails(*args, **kwargs):
+                raise RequestFailed("boom")
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_lock_state",
+                mock_get_lock_state_fails,
+            )
+
+            await coordinator.async_refresh()
+
+            assert coordinator.last_update_success is False
+
+        async def test_non_connectable_lock_never_polled(self, hass, api):
+            config_entry = MockConfigEntry(domain=DOMAIN)
+            config_entry.add_to_hass(hass)
+            summary = LockSummary(
+                lockId=1,
+                lockAlias="No Gateway",
+                lockMac="00:00:00:00:00:01",
+                hasGateway=0,
+            )
+            coordinator = LockUpdateCoordinator(hass, config_entry, api, summary)
+
+            assert coordinator.connectable is False
+            assert coordinator.update_interval is None
+
+            await coordinator.async_refresh()
+
+            assert coordinator.last_update_success is False
+
     class TestProcessWebhookData:
         async def test_lock_works(
             self, coordinator: LockUpdateCoordinator, mock_api_responses
@@ -306,16 +395,6 @@ class TestLockUpdateCoordinator:
             coordinator._process_webhook_data(event)
 
             assert coordinator.data.locked is False
-
-        async def test_ignores_events_before_first_refresh(
-            self, coordinator: LockUpdateCoordinator
-        ):
-            assert coordinator.data is None
-
-            event = WebhookEvent.model_validate(WEBHOOK_LOCK_10AM_UTC)
-            coordinator._process_webhook_data(event)
-
-            assert coordinator.data is None
 
     class TestAsyncUpdateDataErrors:
         async def test_wraps_api_errors_in_update_failed(

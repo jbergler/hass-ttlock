@@ -17,11 +17,13 @@ from homeassistant.helpers import config_entry_oauth2_flow
 
 from .models import (
     AddPasscodeConfig,
-    Features,
+    Card,
+    Fingerprint,
     Gateway,
     Lock,
     LockRecord,
     LockState,
+    LockSummary,
     PassageModeConfig,
     Passcode,
     Sensor,
@@ -140,18 +142,10 @@ class TTLockApi:
         )
         return await self._parse_resp(resp, log_id)
 
-    async def get_locks(self) -> list[int]:
-        """Enumerate all locks in the account."""
+    async def get_locks(self) -> list[LockSummary]:
+        """Enumerate all locks in the account (connectable and not)."""
         res = await self.get("lock/list", pageNo=1, pageSize=1000)
-
-        def lock_connectable(lock) -> bool:
-            has_gateway = lock.get("hasGateway") != 0
-            has_wifi = Features.wifi in Features.from_feature_value(
-                lock.get("featureValue")
-            )
-            return has_gateway or has_wifi
-
-        return [lock["lockId"] for lock in res["list"] if lock_connectable(lock)]
+        return [LockSummary.model_validate(lock) for lock in res["list"]]
 
     async def get_gateways(self) -> list[Gateway]:
         """Enumerate all gateways in the account."""
@@ -315,6 +309,102 @@ class TTLockApi:
                 "Failed to delete passcode for %s: %s",
                 lock_id,
                 resDel["errmsg"],
+            )
+            return False
+
+        return True
+
+    async def list_cards(self, lock_id: int) -> list[Card]:
+        """Get currently enrolled IC cards from a lock."""
+
+        res = await self.get(
+            "identityCard/list",
+            lockId=lock_id,
+            pageNo=1,
+            pageSize=200,
+            orderBy=1,
+        )
+        return [Card.model_validate(card) for card in res["list"]]
+
+    async def rename_card(self, lock_id: int, card_id: int, name: str) -> bool:
+        """Rename an enrolled IC card."""
+
+        res = await self.post(
+            "identityCard/rename",
+            lockId=lock_id,
+            cardId=card_id,
+            cardName=name,
+        )
+
+        if "errcode" in res and res["errcode"] != 0:
+            _LOGGER.error("Failed to rename card for %s: %s", lock_id, res["errmsg"])
+            return False
+
+        return True
+
+    async def delete_card(self, lock_id: int, card_id: int) -> bool:
+        """Delete an IC card from a lock."""
+
+        async with GW_LOCK:
+            res = await self.post(
+                "identityCard/delete",
+                lockId=lock_id,
+                cardId=card_id,
+                deleteType=2,  # via gateway
+            )
+
+        if "errcode" in res and res["errcode"] != 0:
+            _LOGGER.error("Failed to delete card for %s: %s", lock_id, res["errmsg"])
+            return False
+
+        return True
+
+    async def list_fingerprints(self, lock_id: int) -> list[Fingerprint]:
+        """Get currently enrolled fingerprints from a lock."""
+
+        res = await self.get(
+            "fingerprint/list",
+            lockId=lock_id,
+            pageNo=1,
+            pageSize=200,
+            orderBy=1,
+        )
+        return [Fingerprint.model_validate(fingerprint) for fingerprint in res["list"]]
+
+    async def rename_fingerprint(
+        self, lock_id: int, fingerprint_id: int, name: str
+    ) -> bool:
+        """Rename an enrolled fingerprint."""
+
+        res = await self.post(
+            "fingerprint/rename",
+            lockId=lock_id,
+            fingerprintId=fingerprint_id,
+            fingerprintName=name,
+        )
+
+        if "errcode" in res and res["errcode"] != 0:
+            _LOGGER.error(
+                "Failed to rename fingerprint for %s: %s", lock_id, res["errmsg"]
+            )
+            return False
+
+        return True
+
+    async def delete_fingerprint(self, lock_id: int, fingerprint_id: int) -> bool:
+        """Delete a fingerprint from a lock."""
+
+        async with GW_LOCK:
+            res = await self.post(
+                "fingerprint/delete",
+                lockId=lock_id,
+                fingerprintId=fingerprint_id,
+                deleteType=2,  # via gateway
+            )
+
+        if "errcode" in res and res["errcode"] != 0:
+            _LOGGER.error(
+                "Failed to delete fingerprint for %s: %s", lock_id, res["errmsg"]
             )
             return False
 
