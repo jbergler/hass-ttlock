@@ -11,14 +11,22 @@ from custom_components.ttlock.const import (
     SVC_CLEANUP_PASSCODES,
     SVC_CONFIG_AUTOLOCK,
     SVC_CREATE_PASSCODE,
+    SVC_DELETE_CARD,
+    SVC_DELETE_FINGERPRINT,
     SVC_DELETE_PASSCODE,
+    SVC_LIST_CARDS,
+    SVC_LIST_FINGERPRINTS,
     SVC_LIST_PASSCODES,
     SVC_LIST_RECORDS,
     SVC_MODIFY_PASSCODE,
+    SVC_RENAME_CARD,
+    SVC_RENAME_FINGERPRINT,
     SVC_UPDATE_STATE,
 )
 from custom_components.ttlock.models import (
     AddPasscodeConfig,
+    Card,
+    Fingerprint,
     LockRecord,
     Passcode,
     PasscodeType,
@@ -802,3 +810,246 @@ class Test_update_state:
             await hass.async_block_till_done()
             assert mock_refresh.called
             assert coordinator.data.locked is None
+
+
+class Test_list_cards:
+    async def test_list_cards(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test list_cards service."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        start_time = dt_util.now() - timedelta(days=1)
+        end_time = dt_util.now() + timedelta(weeks=2)
+        card = Card(
+            cardId=124242,
+            cardNumber="1723612378",
+            cardName="Card for mom",
+            cardType=1,
+            senderUsername="alexa@google.com",
+            startDate=int(start_time.timestamp() * 1000),
+            endDate=int(end_time.timestamp() * 1000),
+        )
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.list_cards",
+            return_value=[card],
+        ) as mock:
+            response = await hass.services.async_call(
+                DOMAIN,
+                SVC_LIST_CARDS,
+                {ATTR_ENTITY_ID: entity_id},
+                blocking=True,
+                return_response=True,
+            )
+            await hass.async_block_till_done()
+            assert mock.called
+
+        assert card.start_date is not None
+        assert card.end_date is not None
+        assert response == {
+            "cards": {
+                entity_id: [
+                    {
+                        "id": 124242,
+                        "name": "Card for mom",
+                        "number": "1723612378",
+                        "type": "normal",
+                        "sender": "alexa@google.com",
+                        "start_date": card.start_date.isoformat(),
+                        "end_date": card.end_date.isoformat(),
+                        "expired": False,
+                    }
+                ]
+            }
+        }
+
+    async def test_list_cards_no_results(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test list_cards service with no cards."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.list_cards",
+            return_value=[],
+        ) as mock:
+            response = await hass.services.async_call(
+                DOMAIN,
+                SVC_LIST_CARDS,
+                {ATTR_ENTITY_ID: entity_id},
+                blocking=True,
+                return_response=True,
+            )
+            await hass.async_block_till_done()
+            assert mock.called
+
+        assert response == {"cards": {entity_id: []}}
+
+
+class Test_rename_card:
+    async def test_can_rename_card(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test renaming a card."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.rename_card", return_value=True
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_RENAME_CARD,
+                {ATTR_ENTITY_ID: entity_id, "card_id": 124242, "name": "New name"},
+            )
+            await hass.async_block_till_done()
+            assert mock.call_args_list == [
+                call(coordinator.lock_id, 124242, "New name")
+            ]
+
+
+class Test_delete_card:
+    async def test_can_delete_card(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test deleting a card."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.delete_card", return_value=True
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_DELETE_CARD,
+                {ATTR_ENTITY_ID: entity_id, "card_id": 124242},
+            )
+            await hass.async_block_till_done()
+            assert mock.call_args_list == [call(coordinator.lock_id, 124242)]
+
+    async def test_delete_card_invalid_entity(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test deleting a card with an invalid entity ID."""
+        mock_api_responses("default")
+        await component_setup()
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.delete_card", return_value=True
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_DELETE_CARD,
+                {ATTR_ENTITY_ID: "lock.invalid_entity", "card_id": 124242},
+            )
+            await hass.async_block_till_done()
+            assert not mock.called
+
+
+class Test_list_fingerprints:
+    async def test_list_fingerprints(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test list_fingerprints service."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        fingerprint = Fingerprint(
+            fingerprintId=224242,
+            fingerprintNumber="44668054142981",
+            fingerprintName="Thumb",
+            fingerprintType=1,
+            senderUsername="alexa@google.com",
+            startDate=0,
+            endDate=0,
+        )
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.list_fingerprints",
+            return_value=[fingerprint],
+        ) as mock:
+            response = await hass.services.async_call(
+                DOMAIN,
+                SVC_LIST_FINGERPRINTS,
+                {ATTR_ENTITY_ID: entity_id},
+                blocking=True,
+                return_response=True,
+            )
+            await hass.async_block_till_done()
+            assert mock.called
+
+        # startDate/endDate == 0 means a permanent credential, so no dates and never expired.
+        assert response == {
+            "fingerprints": {
+                entity_id: [
+                    {
+                        "id": 224242,
+                        "name": "Thumb",
+                        "number": "44668054142981",
+                        "type": "normal",
+                        "sender": "alexa@google.com",
+                        "start_date": None,
+                        "end_date": None,
+                        "expired": False,
+                    }
+                ]
+            }
+        }
+
+
+class Test_rename_fingerprint:
+    async def test_can_rename_fingerprint(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test renaming a fingerprint."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.rename_fingerprint",
+            return_value=True,
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_RENAME_FINGERPRINT,
+                {
+                    ATTR_ENTITY_ID: entity_id,
+                    "fingerprint_id": 224242,
+                    "name": "Left thumb",
+                },
+            )
+            await hass.async_block_till_done()
+            assert mock.call_args_list == [
+                call(coordinator.lock_id, 224242, "Left thumb")
+            ]
+
+
+class Test_delete_fingerprint:
+    async def test_can_delete_fingerprint(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test deleting a fingerprint."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.delete_fingerprint",
+            return_value=True,
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_DELETE_FINGERPRINT,
+                {ATTR_ENTITY_ID: entity_id, "fingerprint_id": 224242},
+            )
+            await hass.async_block_till_done()
+            assert mock.call_args_list == [call(coordinator.lock_id, 224242)]

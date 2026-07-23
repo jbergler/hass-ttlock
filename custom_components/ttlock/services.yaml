@@ -254,3 +254,99 @@ update_state:
     entity:
       integration: ttlock
       domain: lock
+
+list_cards:
+  name: List IC cards
+  description: Lists all IC cards enrolled on the selected lock, including their names, numbers, and validity periods.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+
+rename_card:
+  name: Rename an IC card
+  description: Renames an IC card enrolled on the selected lock.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    card_id:
+      name: Card ID
+      description: The ID of the card to rename (from the List IC cards action)
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    name:
+      name: Card name
+      description: The new name for this card
+      required: true
+      selector:
+        text:
+
+delete_card:
+  name: Delete an IC card
+  description: Deletes a specific IC card from the selected lock (via gateway or WiFi lock).
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    card_id:
+      name: Card ID
+      description: The ID of the card to delete (from the List IC cards action)
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+
+list_fingerprints:
+  name: List fingerprints
+  description: Lists all fingerprints enrolled on the selected lock, including their names and validity periods.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+
+rename_fingerprint:
+  name: Rename a fingerprint
+  description: Renames a fingerprint enrolled on the selected lock.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    fingerprint_id:
+      name: Fingerprint ID
+      description: The ID of the fingerprint to rename (from the List fingerprints action)
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    name:
+      name: Fingerprint name
+      description: The new name for this fingerprint
+      required: true
+      selector:
+        text:
+
+delete_fingerprint:
+  name: Delete a fingerprint
+  description: Deletes a specific fingerprint from the selected lock (via gateway or WiFi lock).
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    fingerprint_id:
+      name: Fingerprint ID
+      description: The ID of the fingerprint to delete (from the List fingerprints action)
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
