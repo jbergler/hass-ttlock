@@ -87,6 +87,26 @@ class Lock(BaseModel):
     noKeyPwd: str = Field(alias="adminPwd")
 
 
+class LockSummary(BaseModel):
+    """Cheap per-lock summary from lock/list, enough to build a device/entities without a detail fetch."""
+
+    id: int = Field(..., alias="lockId")
+    name: str = Field("Lock", alias="lockAlias")
+    mac: str = Field(..., alias="lockMac")
+    featureValue: str | None = None
+    hasGateway: int = 0
+
+    @property
+    def features(self) -> "Features":
+        """Parse the feature bitmask."""
+        return Features.from_feature_value(self.featureValue)
+
+    @property
+    def connectable(self) -> bool:
+        """True if the lock is reachable via a gateway or its own WiFi."""
+        return self.hasGateway != 0 or Features.wifi in self.features
+
+
 class Sensor(BaseModel):
     """sensor details."""
 
