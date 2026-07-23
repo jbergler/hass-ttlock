@@ -10,6 +10,7 @@ from custom_components.ttlock.models import (
     Features,
     Fingerprint,
     Lock,
+    LockSummary,
     OnOff,
     PassageModeConfig,
     Passcode,
@@ -281,3 +282,25 @@ class TestFingerprint:
         past = int((datetime.now() - timedelta(days=1)).timestamp() * 1000)
         fingerprint = Fingerprint.model_validate({"fingerprintId": 1, "endDate": past})
         assert fingerprint.expired is True
+
+
+class TestLockSummary:
+    def _summary(self, **overrides):
+        data = {
+            "lockId": 1,
+            "lockAlias": "Front Door",
+            "lockMac": "00:00:00:00:00:00",
+            "hasGateway": 0,
+            "featureValue": "0",
+        }
+        data.update(overrides)
+        return LockSummary.model_validate(data)
+
+    def test_connectable_via_gateway(self):
+        assert self._summary(hasGateway=1).connectable is True
+
+    def test_connectable_via_wifi(self):
+        assert self._summary(featureValue=f"{2**56:X}").connectable is True
+
+    def test_not_connectable_without_gateway_or_wifi(self):
+        assert self._summary(hasGateway=0, featureValue="0").connectable is False
