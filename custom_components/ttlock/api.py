@@ -24,6 +24,7 @@ from .models import (
     Lock,
     LockRecord,
     LockState,
+    LockSummary,
     PassageModeConfig,
     Passcode,
     Sensor,
@@ -142,18 +143,10 @@ class TTLockApi:
         )
         return await self._parse_resp(resp, log_id)
 
-    async def get_locks(self) -> list[int]:
-        """Enumerate all locks in the account."""
+    async def get_locks(self) -> list[LockSummary]:
+        """Enumerate all locks in the account (connectable and not)."""
         res = await self.get("lock/list", pageNo=1, pageSize=1000)
-
-        def lock_connectable(lock) -> bool:
-            has_gateway = lock.get("hasGateway") != 0
-            has_wifi = Features.wifi in Features.from_feature_value(
-                lock.get("featureValue")
-            )
-            return has_gateway or has_wifi
-
-        return [lock["lockId"] for lock in res["list"] if lock_connectable(lock)]
+        return [LockSummary.model_validate(lock) for lock in res["list"]]
 
     async def get_gateways(self) -> list[Gateway]:
         """Enumerate all gateways in the account."""
