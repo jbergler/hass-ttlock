@@ -18,7 +18,6 @@ from homeassistant.helpers import config_entry_oauth2_flow
 from .models import (
     AddPasscodeConfig,
     Card,
-    Features,
     Fingerprint,
     Gateway,
     Lock,
