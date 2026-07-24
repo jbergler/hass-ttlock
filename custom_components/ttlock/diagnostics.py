@@ -10,7 +10,7 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, TT_LOCKS
+from .const import DOMAIN, TT_GATEWAYS, TT_LOCKS
 from .models import BaseModel
 
 TO_REDACT = {
@@ -50,6 +50,7 @@ async def async_get_config_entry_diagnostics(
                 build_diagnostics_dict(coordinator.as_dict())
                 for coordinator in hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS]
             ],
+            "gateways": hass.data[DOMAIN][config_entry.entry_id][TT_GATEWAYS].as_dict(),
         },
         TO_REDACT,
     )
