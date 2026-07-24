@@ -25,21 +25,9 @@ Fast inner loop while editing one file: `uv run ruff check --fix <file>` / `uv r
 
 ## How the TTLock API works
 
-This integration talks to TTLock's cloud API, not the locks directly — locks connect via a TTLock gateway or WiFi, and the gateway/lock relays commands from TTLock's cloud. Everything goes through `TTLockApi` in `api.py`. Full API docs: https://euopen.ttlock.com/document (EU region — this integration is hardcoded to `https://euapi.ttlock.com`, there's no multi-region support).
+This integration talks to TTLock's cloud API, not the locks directly — locks connect via a TTLock gateway or WiFi, and the gateway/lock relays commands from TTLock's cloud. Everything goes through `TTLockApi` in `api.py` — see its module docstring for auth and per-request quirk detail. Full API docs: `docs/ttlock-cloud-api/` (mirrored from https://euopen.ttlock.com/document; EU region — this integration is hardcoded to `https://euapi.ttlock.com`, there's no multi-region support).
 
-**Auth** is OAuth2, wired up through HA's `application_credentials` component (`application_credentials.py`, `config_flow.py`), but TTLock's OAuth2 is non-standard: the initial grant is username + MD5-hashed password (`TTLockAuthImplementation.login` in `api.py`), not an authorization-code redirect. Token endpoint: `https://euapi.ttlock.com/oauth2/token` (`const.OAUTH2_TOKEN`). Docs: https://euopen.ttlock.com/document/doc?urlName=cloud%2Foauth2%2FgetAccessTokenEn.html
-
-**Every request** additionally carries `clientId`, `accessToken`, and a `date` (ms timestamp) as query/form params — this is TTLock's own scheme layered on top of the OAuth token, handled by `TTLockApi._add_auth`. Requests go through `TTLockApi.get`/`.post`, which centralize this plus response parsing: TTLock returns HTTP 200 with an `errcode`/`errmsg` pair even on failure, so `_parse_resp` checks `errcode` and raises `RequestFailed` — an HTTP-level success does not mean the call succeeded.
-
-**Two ways state gets into HA:**
-1. Polling — `LockUpdateCoordinator` (per lock) and `GatewaysUpdateCoordinator` (gateway online/offline) in `coordinator.py`, on a 15-minute interval.
-2. Push — TTLock calls a webhook registered with your account (`webhook.py`, set up via https://open.ttlock.com/manager) whenever a lock/passcode event happens. `WebhookHandler.handle_webhook` parses the payload into `WebhookEvent` models and dispatches `SIGNAL_NEW_DATA`, which `LockUpdateCoordinator._process_webhook_data` listens for. This is why lock state updates are close to real-time rather than poll-only — don't remove the webhook path in favor of "just poll faster."
-
-**Doc links for specific payload shapes**, useful when a field's meaning isn't obvious from its name:
-- Passcode types (`PasscodeType` in `models.py`): https://euopen.ttlock.com/document/doc?urlName=cloud%2Fpasscode%2FgetEn.html
-- Lock feature bitmask (`Features` in `models.py`): https://euopen.ttlock.com/document/doc?urlName=cloud%2Flock%2FfeatureValueEn.html
-
-Several write operations (lock/unlock, passcode add/modify/delete, passage mode, autolock, sound) are serialized behind a single `GW_LOCK = asyncio.Lock()` in `api.py` — these are gateway-relayed commands (`type=2`/`changeType=2`/`addType=2`/`deleteType=2` params, "via gateway" comments) and TTLock's gateway can't reliably handle concurrent commands. Don't remove this locking to "parallelize" lock operations.
+State reaches HA two ways — polling (`coordinator.py`, 15-minute interval) and webhook push (`webhook.py`, near-real-time) — both merging into `LockUpdateCoordinator`. See each module's docstring for mechanism detail. Don't remove the webhook path in favor of "just poll faster."
 
 ## File map
 
@@ -50,7 +38,7 @@ Several write operations (lock/unlock, passcode add/modify/delete, passage mode,
 - `coordinator.py` — `LockUpdateCoordinator` (per-lock polling `DataUpdateCoordinator`, also merges in push updates from the webhook) and `GatewaysUpdateCoordinator` (polls TTLock gateways for online/offline status)
 - `entity.py` — `BaseLockEntity`, the shared entity base most platform classes inherit from
 - `models.py` — pydantic v2 models for TTLock API payloads (`Lock`, `LockState`, `Passcode`, `LockRecord`, etc.). Migrated from pydantic v1 — don't reintroduce v1 patterns (`Config` class, `.dict()`, unparameterized `Optional`)
-- `webhook.py` — receives TTLock's push notifications; see "How the TTLock API works" above
+- `webhook.py` — receives TTLock's push notifications; see its module docstring
 - `services.py` / `services.yaml` — custom service actions (passcodes, passage mode, autolock, records, etc.)
 - `diagnostics.py` — HA diagnostics export
 - `lock.py`, `binary_sensor.py`, `sensor.py`, `switch.py` — entity platforms. `binary_sensor.py` includes both per-lock sensors (door sensor, passage mode) and `GatewaySensor` (per-gateway online/offline, from `GatewaysUpdateCoordinator`)
@@ -61,7 +49,7 @@ Several write operations (lock/unlock, passcode add/modify/delete, passage mode,
 
 - Model fields that mirror the TTLock API's camelCase wire format on purpose (see `models.py`) are exempt from ruff's `N815` — don't rename them to snake_case.
 - Tests live in `tests/`, mirroring `pytest_homeassistant_custom_component` conventions (`hass` fixture, `MockConfigEntry`, etc.). `conftest.py` has the shared fixtures — `mock_api_responses` mocks the whole `TTLockApi` surface via a scenario name, look there before adding a new one-off mock.
-- Never commit or push without being explicitly asked.
+- Never commit or push without being explicitly asked — **except** when running the `/implement` skill, see `docs/agents/implement.md`.
 
 ## Agent skills
 
