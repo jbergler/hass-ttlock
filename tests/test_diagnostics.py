@@ -1,16 +1,17 @@
 """Test ttlock diagnostics."""
 
 from custom_components.ttlock.const import DOMAIN
-from custom_components.ttlock.diagnostics import async_get_config_entry_diagnostics
+from custom_components.ttlock.diagnostics import (
+    async_get_config_entry_diagnostics,
+    async_get_device_diagnostics,
+)
 from custom_components.ttlock.models import Gateway, LockSummary
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 
 
-async def test_diagnostics_includes_connectable_and_health(
-    hass: HomeAssistant, component_setup, mock_api_responses, monkeypatch
-):
-    """Diagnostics surface connectable and last_update_success for troubleshooting."""
-    mock_api_responses("default")
+def _mock_connectable_and_gatewayless_lock(monkeypatch) -> None:
+    """Patch get_locks to return one connectable lock and one without a gateway."""
 
     async def mock_get_locks(*args, **kwargs):
         return [
@@ -31,6 +32,14 @@ async def test_diagnostics_includes_connectable_and_health(
     monkeypatch.setattr(
         "custom_components.ttlock.api.TTLockApi.get_locks", mock_get_locks
     )
+
+
+async def test_diagnostics_includes_connectable_and_health(
+    hass: HomeAssistant, component_setup, mock_api_responses, monkeypatch
+):
+    """Diagnostics surface connectable and last_update_success for troubleshooting."""
+    mock_api_responses("default")
+    _mock_connectable_and_gatewayless_lock(monkeypatch)
 
     await component_setup()
 
@@ -110,3 +119,34 @@ async def test_diagnostics_includes_raw_connectivity_fields_and_gateway_status(
     gateways = diagnostics["gateways"]
     assert gateways[0]["name"] == "Test Gateway"
     assert gateways[0]["is_online"] is True
+
+
+async def test_device_diagnostics_matches_config_entry_lock_entry(
+    hass: HomeAssistant, component_setup, mock_api_responses, monkeypatch
+):
+    """Device-scoped diagnostics return only the requested lock, matching the config-entry dump."""
+    mock_api_responses("default")
+    _mock_connectable_and_gatewayless_lock(monkeypatch)
+
+    await component_setup()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    device_registry = dr.async_get(hass)
+    device = device_registry.async_get_device(
+        identifiers={(DOMAIN, "00:00:00:00:00:02")}
+    )
+    assert device is not None
+
+    device_diagnostics = await async_get_device_diagnostics(hass, entry, device)
+    config_entry_diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+
+    expected = next(
+        lock
+        for lock in config_entry_diagnostics["locks"]
+        if lock["unique_id"] == f"{DOMAIN}-2"
+    )
+    assert device_diagnostics == expected
+    assert {lock["unique_id"] for lock in config_entry_diagnostics["locks"]} == {
+        f"{DOMAIN}-2",
+        f"{DOMAIN}-7252408",
+    }
