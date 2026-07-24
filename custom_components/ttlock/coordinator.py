@@ -163,6 +163,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self.api = api
         self.lock_id = summary.id
         self.connectable = summary.connectable
+        self.has_gateway = summary.hasGateway
+        self.feature_value = summary.featureValue
 
         super().__init__(
             hass,
@@ -352,6 +354,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         return {
             "unique_id": self.unique_id,
             "connectable": self.connectable,
+            "has_gateway": self.has_gateway,
+            "feature_value": self.feature_value,
             "last_update_success": self.last_update_success,
             "device": self.data,
             "entities": [
@@ -418,3 +422,14 @@ class GatewaysUpdateCoordinator(DataUpdateCoordinator[dict[int, Gateway]]):
             return {gateway.id: gateway for gateway in gateways}
         except Exception as err:
             raise UpdateFailed(err) from err
+
+    def as_dict(self) -> list[dict]:
+        """Serialize for diagnostics."""
+        return [
+            {
+                "id": gateway.id,
+                "name": gateway.name,
+                "is_online": gateway.is_online,
+            }
+            for gateway in (self.data or {}).values()
+        ]
