@@ -25,7 +25,7 @@ Fast inner loop while editing one file: `uv run ruff check --fix <file>` / `uv r
 
 ## How the TTLock API works
 
-This integration talks to TTLock's cloud API, not the locks directly — locks connect via a TTLock gateway or WiFi, and the gateway/lock relays commands from TTLock's cloud. Everything goes through `TTLockApi` in `api.py` — see its module docstring for auth and per-request quirk detail. Full API docs: https://euopen.ttlock.com/document (EU region — this integration is hardcoded to `https://euapi.ttlock.com`, there's no multi-region support).
+This integration talks to TTLock's cloud API, not the locks directly — locks connect via a TTLock gateway or WiFi, and the gateway/lock relays commands from TTLock's cloud. Everything goes through `TTLockApi` in `api.py` — see its module docstring for auth and per-request quirk detail. Full API docs: `docs/ttlock-cloud-api/` (mirrored from https://euopen.ttlock.com/document; EU region — this integration is hardcoded to `https://euapi.ttlock.com`, there's no multi-region support).
 
 State reaches HA two ways — polling (`coordinator.py`, 15-minute interval) and webhook push (`webhook.py`, near-real-time) — both merging into `LockUpdateCoordinator`. See each module's docstring for mechanism detail. Don't remove the webhook path in favor of "just poll faster."
 
@@ -64,7 +64,3 @@ Default canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`, `read
 ### Domain docs
 
 Single-context — `CONTEXT.md` + `docs/adr/` at the repo root, created lazily as needed. See `docs/agents/domain.md`.
-
-### Implement
-
-`/implement` ends with an open PR against `develop`, not just local commits — the one exception to "never commit or push without being asked" above. See `docs/agents/implement.md`.

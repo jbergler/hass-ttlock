@@ -2,15 +2,17 @@
 
 This integration talks to TTLock's cloud API, not the locks directly — locks
 connect via a TTLock gateway or WiFi, and the gateway/lock relays commands
-from TTLock's cloud. Full API docs: https://euopen.ttlock.com/document (EU
-region — hardcoded to https://euapi.ttlock.com, no multi-region support).
+from TTLock's cloud. Full API docs: docs/ttlock-cloud-api/ (mirrored from
+https://euopen.ttlock.com/document; EU region — hardcoded to
+https://euapi.ttlock.com, no multi-region support).
 
 Auth is OAuth2, wired up through HA's application_credentials component
 (application_credentials.py, config_flow.py), but TTLock's OAuth2 is
 non-standard: the initial grant is username + MD5-hashed password
 (TTLockAuthImplementation.login), not an authorization-code redirect. Token
 endpoint: https://euapi.ttlock.com/oauth2/token (const.OAUTH2_TOKEN). Docs:
-https://euopen.ttlock.com/document/doc?urlName=cloud%2Foauth2%2FgetAccessTokenEn.html
+docs/ttlock-cloud-api/oauth2/getAccessToken.md (mirrored from
+https://euopen.ttlock.com/document/doc?urlName=cloud%2Foauth2%2FgetAccessTokenEn.html)
 
 Every request additionally carries clientId, accessToken, and a date (ms
 timestamp) as query/form params — this is TTLock's own scheme layered on top
