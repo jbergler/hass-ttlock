@@ -44,3 +44,17 @@ async def test_diagnostics_includes_connectable_and_health(
     # excluded from the background detail fill), so last_update_success just sits at
     # its untouched default - `connectable` is the signal to look at for these.
     assert locks_by_id[f"{DOMAIN}-2"]["connectable"] is False
+
+
+async def test_diagnostics_redacts_oauth_token(
+    hass: HomeAssistant, component_setup, mock_api_responses
+):
+    """The config entry's OAuth access/refresh tokens must never appear in the clear."""
+    mock_api_responses("default")
+    await component_setup()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+
+    token = diagnostics["config_entry"]["data"]["token"]
+    assert token == "**REDACTED**"

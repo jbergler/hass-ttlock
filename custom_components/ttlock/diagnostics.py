@@ -1,4 +1,4 @@
-"""Diagnostics support for Tractive."""
+"""Diagnostics support for TTLock."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .const import DOMAIN, TT_LOCKS
 from .models import BaseModel
 
 TO_REDACT = {
-    "auth_implementationtoken",
+    "token",
     "lockKey",
     "aesKeyStr",
     "adminPwd",
