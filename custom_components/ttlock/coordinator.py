@@ -1,4 +1,13 @@
-"""Provides the TTLock LockUpdateCoordinator."""
+"""Provides the TTLock LockUpdateCoordinator.
+
+State reaches HA two ways: polling and webhook push, both merging into
+LockUpdateCoordinator. This module owns polling — LockUpdateCoordinator (per
+lock) and GatewaysUpdateCoordinator (gateway online/offline), each on a
+15-minute interval. LockUpdateCoordinator also listens for SIGNAL_NEW_DATA
+(dispatched from webhook.py) via _process_webhook_data, which is why lock
+state updates are close to real-time rather than poll-only — don't remove
+the webhook path in favor of "just poll faster."
+"""
 
 from __future__ import annotations
 

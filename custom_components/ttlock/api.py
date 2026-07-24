@@ -1,4 +1,25 @@
-"""API for TTLock bound to Home Assistant OAuth."""
+"""API for TTLock bound to Home Assistant OAuth.
+
+This integration talks to TTLock's cloud API, not the locks directly — locks
+connect via a TTLock gateway or WiFi, and the gateway/lock relays commands
+from TTLock's cloud. Full API docs: https://euopen.ttlock.com/document (EU
+region — hardcoded to https://euapi.ttlock.com, no multi-region support).
+
+Auth is OAuth2, wired up through HA's application_credentials component
+(application_credentials.py, config_flow.py), but TTLock's OAuth2 is
+non-standard: the initial grant is username + MD5-hashed password
+(TTLockAuthImplementation.login), not an authorization-code redirect. Token
+endpoint: https://euapi.ttlock.com/oauth2/token (const.OAUTH2_TOKEN). Docs:
+https://euopen.ttlock.com/document/doc?urlName=cloud%2Foauth2%2FgetAccessTokenEn.html
+
+Every request additionally carries clientId, accessToken, and a date (ms
+timestamp) as query/form params — this is TTLock's own scheme layered on top
+of the OAuth token, handled by TTLockApi._add_auth. Requests go through
+TTLockApi.get/.post, which centralize this plus response parsing: TTLock
+returns HTTP 200 with an errcode/errmsg pair even on failure, so
+_parse_resp checks errcode and raises RequestFailed — an HTTP-level success
+does not mean the call succeeded.
+"""
 
 import asyncio
 from collections.abc import Mapping
@@ -30,6 +51,12 @@ from .models import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Serializes gateway-relayed commands (lock/unlock, passcode add/modify/
+# delete, passage mode, autolock, sound — type=2/changeType=2/addType=2/
+# deleteType=2 params, "via gateway" comments). TTLock's gateway can't
+# reliably handle concurrent commands; don't remove this to "parallelize"
+# lock operations.
 GW_LOCK = asyncio.Lock()
 
 

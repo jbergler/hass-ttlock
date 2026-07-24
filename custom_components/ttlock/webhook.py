@@ -1,4 +1,11 @@
-"""The TTLock integration."""
+"""The TTLock integration.
+
+Receives TTLock's push notifications: this repo's webhook, registered with
+your TTLock account (see https://open.ttlock.com/manager), is called
+whenever a lock/passcode event happens. WebhookHandler.handle_webhook parses
+the payload into WebhookEvent models and dispatches SIGNAL_NEW_DATA, which
+LockUpdateCoordinator._process_webhook_data (coordinator.py) listens for.
+"""
 
 from __future__ import annotations
 
