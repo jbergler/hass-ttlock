@@ -1,6 +1,16 @@
 """Test ttlock diagnostics."""
 
-from custom_components.ttlock.const import DOMAIN
+import logging
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+
+from custom_components.ttlock.api import TTLockApi
+from custom_components.ttlock.capture import DebugCaptureHandler
+from custom_components.ttlock.const import DOMAIN, TT_GATEWAYS, TT_LOCKS
+from custom_components.ttlock.coordinator import LockUpdateCoordinator
 from custom_components.ttlock.diagnostics import (
     async_get_config_entry_diagnostics,
     async_get_device_diagnostics,
@@ -8,6 +18,10 @@ from custom_components.ttlock.diagnostics import (
 from custom_components.ttlock.models import Gateway, LockSummary
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+
+from .const import BASIC_LOCK_DETAILS, LOCK_STATE_UNLOCKED, PASSAGE_MODE_6_TO_6_7_DAYS
+
+API_BASE = "https://euapi.ttlock.com/v3/"
 
 
 def _mock_connectable_and_gatewayless_lock(monkeypatch) -> None:
@@ -150,3 +164,90 @@ async def test_device_diagnostics_matches_config_entry_lock_entry(
         f"{DOMAIN}-2",
         f"{DOMAIN}-7252408",
     }
+
+
+async def test_debug_capture_appears_redacted_in_diagnostics(
+    hass: HomeAssistant, caplog
+):
+    """A lock's captured debug traffic is redacted in diagnostics, but not in HA's live logs.
+
+    Deliberately bypasses the `mock_api_responses` fixture, which stubs out
+    TTLockApi's methods entirely and so never exercises the request/response
+    debug logging this test is about - instead it mocks at the HTTP layer
+    (like test_api.py) so the real TTLockApi.get/_parse_resp logging runs.
+    """
+    device_logger_name = "custom_components.ttlock.device.7252408"
+    caplog.set_level(logging.DEBUG, logger=device_logger_name)
+
+    mocker = AiohttpClientMocker()
+    mocker.get(f"{API_BASE}lock/detail", json=BASIC_LOCK_DETAILS)
+    mocker.get(f"{API_BASE}lock/queryOpenState", json=LOCK_STATE_UNLOCKED)
+    mocker.get(f"{API_BASE}lock/getPassageModeConfig", json=PASSAGE_MODE_6_TO_6_7_DAYS)
+
+    oauth_session = MagicMock()
+    oauth_session.valid_token = True
+    oauth_session.token = {"access_token": "mock-access-token"}
+    oauth_session.implementation.client_id = "mock-client-id"
+    oauth_session.async_ensure_token_valid = AsyncMock()
+
+    session = mocker.create_session(None)
+    capture_handler = DebugCaptureHandler()
+    package_logger = logging.getLogger("custom_components.ttlock")
+    package_logger.addHandler(capture_handler)
+
+    try:
+        api = TTLockApi(session, oauth_session)
+        config_entry = MockConfigEntry(domain=DOMAIN)
+        config_entry.add_to_hass(hass)
+        summary = LockSummary(
+            lockId=7252408,
+            lockAlias="Front Door",
+            lockMac="16:72:4C:CC:01:C4",
+            hasGateway=1,
+        )
+        coordinator = LockUpdateCoordinator(
+            hass, config_entry, api, summary, capture_handler
+        )
+        await coordinator.async_refresh()
+
+        hass.data.setdefault(DOMAIN, {})[config_entry.entry_id] = {
+            TT_LOCKS: [coordinator],
+            TT_GATEWAYS: SimpleNamespace(as_dict=list),
+        }
+
+        device_registry = dr.async_get(hass)
+        device = device_registry.async_get_or_create(
+            config_entry_id=config_entry.entry_id, **coordinator.device_info
+        )
+
+        diagnostics = await async_get_config_entry_diagnostics(hass, config_entry)
+        device_diagnostics = await async_get_device_diagnostics(
+            hass, config_entry, device
+        )
+    finally:
+        package_logger.removeHandler(capture_handler)
+        await session.close()
+
+    capture = diagnostics["locks"][0]["debug_capture"]
+    assert capture["active"] is True
+    assert capture["window"] is not None
+
+    # Per-device diagnostics carry the same capture content, not just the
+    # config-entry-level dump - both surfaces are required.
+    assert device_diagnostics["debug_capture"] == capture
+
+    captured_messages = [record["message"] for record in capture["records"]]
+    assert any("Received response" in message for message in captured_messages)
+
+    # lockKey is a known-sensitive field present in the real lock/detail response body.
+    sensitive_value = BASIC_LOCK_DETAILS["lockKey"]
+    assert not any(sensitive_value in message for message in captured_messages)
+    assert any("**REDACTED**" in message for message in captured_messages)
+
+    # HA's own live log output for the same records is unaffected by redaction.
+    live_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == device_logger_name
+    ]
+    assert any(sensitive_value in message for message in live_messages)

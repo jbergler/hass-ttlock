@@ -28,7 +28,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .api import TTLockApi
-from .const import DOMAIN, SIGNAL_NEW_DATA, TT_GATEWAYS, TT_LOCKS
+from .capture import DebugCaptureHandler
+from .const import DOMAIN, SIGNAL_NEW_DATA, TT_GATEWAYS, TT_LOCKS, get_device_logger
 from .models import (
     Features,
     Gateway,
@@ -167,6 +168,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         config_entry: ConfigEntry,
         api: TTLockApi,
         summary: LockSummary,
+        capture: DebugCaptureHandler,
     ) -> None:
         """Initialize the update co-ordinator for a single lock."""
         self.api = api
@@ -174,6 +176,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self.connectable = summary.connectable
         self.has_gateway = summary.hasGateway
         self.feature_value = summary.featureValue
+        self._capture = capture
 
         super().__init__(
             hass,
@@ -372,6 +375,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 for entity in self.entities
                 if (state := self.hass.states.get(entity.entity_id)) is not None
             ],
+            "debug_capture": self._capture.diagnostics_for(
+                get_device_logger(self.lock_id)
+            ),
         }
 
     async def lock(self) -> None:

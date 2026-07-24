@@ -9,6 +9,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ttlock.api import RequestFailed
+from custom_components.ttlock.capture import DebugCaptureHandler
 from custom_components.ttlock.const import DOMAIN
 from custom_components.ttlock.coordinator import (
     GatewaysUpdateCoordinator,
@@ -266,7 +267,9 @@ class TestLockUpdateCoordinator:
                 lockMac="00:00:00:00:00:01",
                 hasGateway=0,
             )
-            coordinator = LockUpdateCoordinator(hass, config_entry, api, summary)
+            coordinator = LockUpdateCoordinator(
+                hass, config_entry, api, summary, DebugCaptureHandler()
+            )
 
             assert coordinator.connectable is False
             assert coordinator.update_interval is None

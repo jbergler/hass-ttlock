@@ -6,12 +6,27 @@ DOMAIN = "ttlock"
 TT_API = "api"
 TT_LOCKS = "locks"
 TT_GATEWAYS = "gateways"
+TT_CAPTURE = "capture"
 
 OAUTH2_TOKEN = "https://euapi.ttlock.com/oauth2/token"
 CONF_WEBHOOK_URL = "webhook_url"
 CONF_WEBHOOK_STATUS = "webhook_status"
 
 SIGNAL_NEW_DATA = f"{DOMAIN}.data_received"
+
+DEVICE_LOGGER_PREFIX = f"{__package__}.device."
+
+TO_REDACT = {
+    "token",
+    "lockKey",
+    "aesKeyStr",
+    "adminPwd",
+    "deletePwd",
+    "noKeyPwd",
+    "lockData",
+    "webhook_id",
+    "webhook_url",
+}
 
 
 def get_device_logger(lock_id: int) -> logging.Logger:
@@ -22,7 +37,7 @@ def get_device_logger(lock_id: int) -> logging.Logger:
     debug logging still enables every lock's logger too (see
     docs/adr/0001-per-lock-debug-capture-via-logger-hierarchy.md).
     """
-    return logging.getLogger(__package__).getChild(f"device.{lock_id}")
+    return logging.getLogger(f"{DEVICE_LOGGER_PREFIX}{lock_id}")
 
 
 CONF_AUTO_UNLOCK = "auto_unlock"

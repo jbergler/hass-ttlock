@@ -11,21 +11,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
 
-from .const import DOMAIN, TT_GATEWAYS, TT_LOCKS
+from .const import DOMAIN, TO_REDACT, TT_GATEWAYS, TT_LOCKS
 from .coordinator import LockUpdateCoordinator
 from .models import BaseModel
-
-TO_REDACT = {
-    "token",
-    "lockKey",
-    "aesKeyStr",
-    "adminPwd",
-    "deletePwd",
-    "noKeyPwd",
-    "lockData",
-    "webhook_id",
-    "webhook_url",
-}
 
 
 def build_diagnostics_dict(d: dict) -> dict[str, Any]:

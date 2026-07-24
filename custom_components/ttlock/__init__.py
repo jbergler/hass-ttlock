@@ -11,7 +11,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 
 from .api import TTLockApi
-from .const import DOMAIN, TT_API, TT_GATEWAYS, TT_LOCKS
+from .capture import DebugCaptureHandler
+from .const import DOMAIN, TT_API, TT_CAPTURE, TT_GATEWAYS, TT_LOCKS
 from .coordinator import GatewaysUpdateCoordinator, LockUpdateCoordinator
 from .services import Services
 from .webhook import WebhookHandler
@@ -24,6 +25,12 @@ PLATFORMS: list[Platform] = [
 ]
 
 DETAIL_FILL_CONCURRENCY = 3
+
+# Not an entry_id (those are opaque hex strings from HA's entry-id
+# generator) - marks the one DebugCaptureHandler shared by every loaded
+# config entry, so a second TTLock account doesn't get a second handler
+# attached to the same shared logger.
+_CAPTURE_HANDLER_KEY = "_capture_handler"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,10 +69,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation)
     client = TTLockApi(aiohttp_client.async_get_clientsession(hass), session)
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {TT_API: client}
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    capture_handler = domain_data.get(_CAPTURE_HANDLER_KEY)
+    if capture_handler is None:
+        capture_handler = DebugCaptureHandler()
+        logging.getLogger(__package__).addHandler(capture_handler)
+        domain_data[_CAPTURE_HANDLER_KEY] = capture_handler
+
+    domain_data[entry.entry_id] = {
+        TT_API: client,
+        TT_CAPTURE: capture_handler,
+    }
 
     locks = [
-        LockUpdateCoordinator(hass, entry, client, summary)
+        LockUpdateCoordinator(hass, entry, client, summary, capture_handler)
         for summary in await client.get_locks()
     ]
     hass.data[DOMAIN][entry.entry_id][TT_LOCKS] = locks
@@ -104,6 +121,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        hass.data[DOMAIN].pop(entry.entry_id)
+        domain_data = hass.data[DOMAIN]
+        domain_data.pop(entry.entry_id)
+
+        # last entry gone - detach the shared capture handler too
+        if not any(key != _CAPTURE_HANDLER_KEY for key in domain_data):
+            handler = domain_data.pop(_CAPTURE_HANDLER_KEY)
+            logging.getLogger(__package__).removeHandler(handler)
 
     return unload_ok
