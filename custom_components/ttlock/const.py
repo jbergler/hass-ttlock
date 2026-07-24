@@ -1,5 +1,7 @@
 """Constants for the TTLock integration."""
 
+import logging
+
 DOMAIN = "ttlock"
 TT_API = "api"
 TT_LOCKS = "locks"
@@ -10,6 +12,17 @@ CONF_WEBHOOK_URL = "webhook_url"
 CONF_WEBHOOK_STATUS = "webhook_status"
 
 SIGNAL_NEW_DATA = f"{DOMAIN}.data_received"
+
+
+def get_device_logger(lock_id: int) -> logging.Logger:
+    """Return the per-lock child logger for lock_id.
+
+    Named `<integration logger>.device.<lockId>` - a child of the shared
+    integration logger, so enabling the integration's existing top-level
+    debug logging still enables every lock's logger too (see
+    docs/adr/0001-per-lock-debug-capture-via-logger-hierarchy.md).
+    """
+    return logging.getLogger(__package__).getChild(f"device.{lock_id}")
 
 
 CONF_AUTO_UNLOCK = "auto_unlock"

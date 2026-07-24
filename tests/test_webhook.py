@@ -1,6 +1,7 @@
 """Test the TTLock webhook handler."""
 
 import json
+import logging
 from typing import cast
 from unittest.mock import ANY, AsyncMock, patch
 
@@ -144,6 +145,50 @@ class TestHandleWebhook:
             await handler.handle_webhook(hass, "wh-id", _request(MultiDict()))
 
         mock_dismiss.assert_not_called()
+
+
+class TestPerLockLogging:
+    async def test_debug_on_one_locks_logger_does_not_capture_anothers_webhook_data(
+        self, hass: HomeAssistant, handler: WebhookHandler, caplog
+    ):
+        # See the equivalent test in tests/test_api.py for why the WARNING
+        # call must come first: caplog.set_level shares one handler whose
+        # level is overwritten by each call.
+        caplog.set_level(logging.WARNING, logger="custom_components.ttlock.device.2")
+        caplog.set_level(
+            logging.DEBUG, logger="custom_components.ttlock.device.7252408"
+        )
+
+        request = _request(
+            MultiDict(
+                {"lockId": "7252408", "records": json.dumps([WEBHOOK_LOCK_10AM_UTC])}
+            )
+        )
+        await handler.handle_webhook(hass, "wh-id", request)
+        await hass.async_block_till_done()
+
+        assert any(
+            record.name == "custom_components.ttlock.device.7252408"
+            for record in caplog.records
+        )
+        assert not any(
+            record.name == "custom_components.ttlock.device.2"
+            for record in caplog.records
+        )
+
+    async def test_webhook_data_without_lock_id_logs_via_shared_logger(
+        self, hass: HomeAssistant, handler: WebhookHandler, caplog
+    ):
+        caplog.set_level(logging.DEBUG, logger="custom_components.ttlock.webhook")
+
+        request = _request(MultiDict({"records": json.dumps([WEBHOOK_LOCK_10AM_UTC])}))
+        await handler.handle_webhook(hass, "wh-id", request)
+        await hass.async_block_till_done()
+
+        assert any(
+            record.name == "custom_components.ttlock.webhook"
+            for record in caplog.records
+        )
 
 
 class TestSetup:
