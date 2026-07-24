@@ -62,3 +62,17 @@ Several write operations (lock/unlock, passcode add/modify/delete, passage mode,
 - Model fields that mirror the TTLock API's camelCase wire format on purpose (see `models.py`) are exempt from ruff's `N815` — don't rename them to snake_case.
 - Tests live in `tests/`, mirroring `pytest_homeassistant_custom_component` conventions (`hass` fixture, `MockConfigEntry`, etc.). `conftest.py` has the shared fixtures — `mock_api_responses` mocks the whole `TTLockApi` surface via a scenario name, look there before adding a new one-off mock.
 - Never commit or push without being explicitly asked.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked as GitHub issues on `jbergler/hass-ttlock`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — `CONTEXT.md` + `docs/adr/` at the repo root, created lazily as needed. See `docs/agents/domain.md`.
