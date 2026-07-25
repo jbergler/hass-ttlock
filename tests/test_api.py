@@ -568,6 +568,34 @@ class TestGetLockAndGateways:
         assert len(gateways) == 1
         assert gateways[0].id == 1
 
+    async def test_get_gateways_for_lock(
+        self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker
+    ):
+        mocker.get(
+            f"{BASE}gateway/listByLock",
+            json={
+                "list": [
+                    {
+                        "gatewayId": 1,
+                        "gatewayName": "Weak",
+                        "gatewayMac": "00:00:00:00:00:01",
+                        "rssi": -85,
+                    },
+                    {
+                        "gatewayId": 2,
+                        "gatewayName": "Strong",
+                        "gatewayMac": "00:00:00:00:00:02",
+                        "rssi": -60,
+                    },
+                ]
+            },
+        )
+
+        gateways = await ttlock_api.get_gateways_for_lock(7252408)
+
+        assert [gateway.name for gateway in gateways] == ["Strong", "Weak"]
+        assert mocker.mock_calls[0][1].query["lockId"] == "7252408"
+
     async def test_get_lock_passage_mode_config(
         self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker
     ):

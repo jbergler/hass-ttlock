@@ -19,6 +19,7 @@ from custom_components.ttlock.coordinator import (
     async_add_when_sensor_present,
 )
 from custom_components.ttlock.models import (
+    GatewayLink,
     LockState as WireLockState,
     LockSummary,
     PassageModeConfig,
@@ -345,6 +346,102 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
 
             assert coordinator.last_update_success is False
+
+    class TestGatewayLinks:
+        """gateway/listByLock results feed LockState.gateways/best_gateway,
+        and device_info.via_device (see coordinator.py's device_info
+        docstring for why this matters)."""
+
+        async def test_best_gateway_by_rssi_and_via_device(
+            self,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            mock_api_responses("default")
+
+            async def mock_get_gateways_for_lock(*args, **kwargs):
+                return [
+                    GatewayLink(
+                        gatewayId=2,
+                        gatewayName="Strong",
+                        gatewayMac="00:00:00:00:00:02",
+                        rssi=-60,
+                    ),
+                    GatewayLink(
+                        gatewayId=1,
+                        gatewayName="Weak",
+                        gatewayMac="00:00:00:00:00:01",
+                        rssi=-85,
+                    ),
+                ]
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_gateways_for_lock",
+                mock_get_gateways_for_lock,
+            )
+
+            await coordinator.async_refresh()
+
+            assert coordinator.data.best_gateway is not None
+            assert coordinator.data.best_gateway.name == "Strong"
+            assert coordinator.device_info["via_device"] == (
+                DOMAIN,
+                "00:00:00:00:00:02",
+            )
+
+        async def test_no_gateways_in_range_omits_via_device(
+            self,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+        ):
+            mock_api_responses("default")
+
+            await coordinator.async_refresh()
+
+            assert coordinator.data.best_gateway is None
+            assert "via_device" not in coordinator.device_info
+
+        async def test_wifi_only_lock_never_fetches_gateways(
+            self, hass, api, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+
+            called = False
+
+            async def mock_get_gateways_for_lock(*args, **kwargs):
+                nonlocal called
+                called = True
+                return []
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_gateways_for_lock",
+                mock_get_gateways_for_lock,
+            )
+
+            config_entry = MockConfigEntry(domain=DOMAIN)
+            config_entry.add_to_hass(hass)
+            summary = LockSummary(
+                lockId=1,
+                lockAlias="WiFi Only",
+                lockMac="00:00:00:00:00:01",
+                hasGateway=0,
+                featureValue=f"{2**56:X}",  # Features.wifi
+            )
+            wifi_coordinator = LockUpdateCoordinator(
+                hass,
+                config_entry,
+                api,
+                summary,
+                LockTrafficCapture(),
+                LockStateStore(hass),
+            )
+
+            await wifi_coordinator.async_refresh()
+
+            assert wifi_coordinator.connectable is True
+            assert called is False
+            assert wifi_coordinator.data.gateways == []
 
     class TestSensorAbsenceTracking:
         """See coordinator.py's _check_for_sensor - the whole reason issue

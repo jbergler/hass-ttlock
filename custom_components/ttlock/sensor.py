@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, STATE_UNAVAILABLE
+from homeassistant.const import (
+    PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    STATE_UNAVAILABLE,
+    EntityCategory,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -34,6 +44,7 @@ async def async_setup_entry(
                 LockBattery(coordinator),
                 LockOperator(coordinator),
                 LockTrigger(coordinator),
+                *([LockGateway(coordinator)] if coordinator.has_gateway else []),
             )
         ]
     )
@@ -117,3 +128,40 @@ class SensorBattery(BaseLockEntity, SensorEntity):
             if self.coordinator.data.sensor
             else None
         )
+
+
+class LockGateway(BaseLockEntity, SensorEntity):
+    """RSSI of the gateway currently used to reach the lock.
+
+    Diagnostic and disabled by default - the same connectivity is already
+    surfaced via device_info.via_device (coordinator.py); this is for
+    troubleshooting placement/coverage, not everyday use.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
+    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def _update_from_coordinator(self) -> None:
+        """Fetch state from the device."""
+        self._attr_name = f"{self.coordinator.data.name} Gateway Signal"
+        best = self.coordinator.data.best_gateway
+        self._attr_native_value = best.rssi if best else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Name/mac of the connected gateway, plus any others in range."""
+        gateways = self.coordinator.data.gateways
+        if not gateways:
+            return None
+        best, *others = gateways
+        return {
+            "gateway": best.name,
+            "mac": best.mac,
+            "other_gateways": [
+                {"name": gateway.name, "mac": gateway.mac, "rssi": gateway.rssi}
+                for gateway in others
+            ],
+        }
