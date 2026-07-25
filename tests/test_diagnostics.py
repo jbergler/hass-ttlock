@@ -246,3 +246,73 @@ async def test_debug_capture_appears_redacted_in_diagnostics(
     # This lock's logger was never raised to DEBUG, so HA's live log output
     # stays silent - capture is independent of, not gated by, that opt-in.
     assert not any(record.name == device_logger_name for record in caplog.records)
+
+
+async def test_debug_capture_redaction_does_not_affect_live_log_output(
+    hass: HomeAssistant, caplog
+):
+    """Redaction is a diagnostics-surface concern only, not a change to live logging.
+
+    Companion to test_debug_capture_appears_redacted_in_diagnostics above, which
+    proves capture doesn't depend on the device logger's level by keeping it above
+    DEBUG (so nothing live is even emitted). This test does the opposite: it raises
+    the device logger to DEBUG so a live record *is* emitted, then asserts both
+    sides of the contrast - the live log record carries the sensitive field
+    unredacted, while the same field is redacted in that lock's captured
+    diagnostics output.
+    """
+    device_logger_name = "custom_components.ttlock.device.7252408"
+    caplog.set_level(logging.DEBUG, logger=device_logger_name)
+
+    mocker = AiohttpClientMocker()
+    mocker.get(f"{API_BASE}lock/detail", json=BASIC_LOCK_DETAILS)
+    mocker.get(f"{API_BASE}lock/queryOpenState", json=LOCK_STATE_UNLOCKED)
+    mocker.get(f"{API_BASE}lock/getPassageModeConfig", json=PASSAGE_MODE_6_TO_6_7_DAYS)
+
+    oauth_session = MagicMock()
+    oauth_session.valid_token = True
+    oauth_session.token = {"access_token": "mock-access-token"}
+    oauth_session.implementation.client_id = "mock-client-id"
+    oauth_session.async_ensure_token_valid = AsyncMock()
+
+    session = mocker.create_session(None)
+    capture = LockTrafficCapture()
+
+    try:
+        api = TTLockApi(session, oauth_session, capture)
+        config_entry = MockConfigEntry(domain=DOMAIN)
+        config_entry.add_to_hass(hass)
+        summary = LockSummary(
+            lockId=7252408,
+            lockAlias="Front Door",
+            lockMac="16:72:4C:CC:01:C4",
+            hasGateway=1,
+        )
+        coordinator = LockUpdateCoordinator(hass, config_entry, api, summary, capture)
+        await coordinator.async_refresh()
+
+        hass.data.setdefault(DOMAIN, {})[config_entry.entry_id] = {
+            TT_LOCKS: [coordinator],
+            TT_GATEWAYS: SimpleNamespace(as_dict=list),
+        }
+
+        diagnostics = await async_get_config_entry_diagnostics(hass, config_entry)
+    finally:
+        await session.close()
+
+    # lockKey is a known-sensitive field present in the real lock/detail response body.
+    sensitive_value = BASIC_LOCK_DETAILS["lockKey"]
+
+    live_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == device_logger_name
+    ]
+    assert any("Received response" in message for message in live_messages)
+    assert any(sensitive_value in message for message in live_messages)
+
+    capture_result = diagnostics["locks"][0]["debug_capture"]
+    captured_messages = [record["message"] for record in capture_result["records"]]
+    assert any("Received response" in message for message in captured_messages)
+    assert not any(sensitive_value in message for message in captured_messages)
+    assert any("**REDACTED**" in message for message in captured_messages)
