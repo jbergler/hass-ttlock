@@ -125,20 +125,20 @@ class TestHandleWebhook:
 
         assert received == []
 
-    async def test_dismisses_setup_message_on_first_success(
+    async def test_resolves_setup_issue_on_first_success(
         self, hass: HomeAssistant, handler: WebhookHandler, entry: MockConfigEntry
     ):
         assert CONF_WEBHOOK_STATUS not in entry.data
 
-        with patch.object(handler, "async_dismiss_setup_message") as mock_dismiss:
+        with patch.object(handler, "async_resolve_setup_issue") as mock_resolve:
             request = _request(
                 MultiDict({"records": json.dumps([WEBHOOK_LOCK_10AM_UTC])})
             )
             await handler.handle_webhook(hass, "wh-id", request)
 
-        mock_dismiss.assert_called_once()
+        mock_resolve.assert_called_once()
 
-    async def test_does_not_dismiss_setup_message_when_already_dismissed(
+    async def test_does_not_resolve_setup_issue_when_already_resolved(
         self, hass: HomeAssistant, entry: MockConfigEntry
     ):
         hass.config_entries.async_update_entry(
@@ -146,21 +146,21 @@ class TestHandleWebhook:
         )
         handler = WebhookHandler(hass, entry)
 
-        with patch.object(handler, "async_dismiss_setup_message") as mock_dismiss:
+        with patch.object(handler, "async_resolve_setup_issue") as mock_resolve:
             request = _request(
                 MultiDict({"records": json.dumps([WEBHOOK_LOCK_10AM_UTC])})
             )
             await handler.handle_webhook(hass, "wh-id", request)
 
-        mock_dismiss.assert_not_called()
+        mock_resolve.assert_not_called()
 
-    async def test_does_not_dismiss_setup_message_without_records(
+    async def test_does_not_resolve_setup_issue_without_records(
         self, hass: HomeAssistant, handler: WebhookHandler
     ):
-        with patch.object(handler, "async_dismiss_setup_message") as mock_dismiss:
+        with patch.object(handler, "async_resolve_setup_issue") as mock_resolve:
             await handler.handle_webhook(hass, "wh-id", _request(MultiDict()))
 
-        mock_dismiss.assert_not_called()
+        mock_resolve.assert_not_called()
 
 
 class TestPerLockLogging:
@@ -291,19 +291,19 @@ class TestGetUrl:
         mock_cloudhook.assert_not_called()
 
 
-class TestDismissSetupMessage:
-    async def test_marks_status_and_dismisses_notification(
+class TestResolveSetupIssue:
+    async def test_marks_status_and_resolves_issue(
         self, hass: HomeAssistant, handler: WebhookHandler, entry: MockConfigEntry
     ):
         assert CONF_WEBHOOK_STATUS not in entry.data
 
         with patch(
-            "homeassistant.components.persistent_notification.async_dismiss"
-        ) as mock_dismiss:
-            handler.async_dismiss_setup_message()
+            "homeassistant.helpers.issue_registry.async_delete_issue"
+        ) as mock_delete:
+            handler.async_resolve_setup_issue()
 
         assert entry.data[CONF_WEBHOOK_STATUS] is True
-        mock_dismiss.assert_called_once_with(hass, "ttlock_webhook_client-id")
+        mock_delete.assert_called_once_with(hass, DOMAIN, "webhook_setup_client-id")
 
 
 class TestResolveGroupWebhookId:

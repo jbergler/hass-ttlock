@@ -51,11 +51,11 @@ This integration uses the TTLock Cloud to communicate with your lock. It support
 1. Setup the integration [via Home Assistant UI](https://my.home-assistant.io/redirect/config_flow_start/?domain=ttlock)
    - The first credentials you will be prompted for are the Application Client ID & Secret that you created earlier.
    - The second credentials you will be prompted for are the username/password you use to login to the ttlock app on your phone.
-1. Once the integration is working you should receive a system notification with the webhook url
+1. Once the integration is working you should see a repair notice under Settings > Repairs with the webhook url
    - Go back to https://open.ttlock.com/manager
-   - Select your application, and edit the "callback url". Enter the webhook url from the notification
+   - Select your application, and edit the "callback url". Enter the webhook url from the repair notice
    - Test by unlocking your door
-   - If the event data was received by home assistant the notification will go away indicating that everything is working.
+   - If the event data was received by home assistant the repair notice will resolve itself, indicating that everything is working.
 
 # Troubleshooting
 

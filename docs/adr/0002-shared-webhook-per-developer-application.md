@@ -2,7 +2,7 @@
 
 Each config entry represents one TTLock account login, and TTLock lets several accounts sit under one developer application (`client_id`) — but TTLock's Management Center accepts only one callback URL per application, not per account. Before this change, `webhook.py` minted a distinct `webhook_id`/URL per config entry regardless, so a user with N accounts under one app (e.g. one config entry added per lock, not realising the first already enumerated the whole account) ended up with N webhook registrations to reconcile against a console that only holds one URL (issue #70).
 
-We key the shared webhook by `client_id` and refcount it across every config entry that authenticates via that `client_id`: registered on the group's first entry setup, unregistered on the last member's unload. No entry is a privileged "owner" — this avoids a hand-off problem when whichever entry registered it is later removed. Setup notifications and the `CONF_WEBHOOK_STATUS` dismissal are likewise scoped to the group (keyed by `client_id`), not the entry, so siblings don't each show a redundant "register this URL" notification.
+We key the shared webhook by `client_id` and refcount it across every config entry that authenticates via that `client_id`: registered on the group's first entry setup, unregistered on the last member's unload. No entry is a privileged "owner" — this avoids a hand-off problem when whichever entry registered it is later removed. The "register this URL" repair issue and its resolution (on `CONF_WEBHOOK_STATUS`) are likewise scoped to the group (keyed by `client_id`), not the entry, so siblings don't each raise a redundant issue.
 
 ## Migration for pre-existing duplicate entries
 

@@ -22,7 +22,7 @@ import secrets
 
 from aiohttp.web import Request
 
-from homeassistant.components import persistent_notification, webhook
+from homeassistant.components import webhook
 from homeassistant.components.webhook import (
     async_register as webhook_register,
     async_unregister as webhook_unregister,
@@ -63,8 +63,8 @@ _GROUPS_KEY = "_webhook_groups"
 _GROUPS_LOCK = asyncio.Lock()
 
 
-def _notification_id(client_id: str) -> str:
-    return f"ttlock_webhook_{client_id}"
+def _setup_issue_id(client_id: str) -> str:
+    return f"webhook_setup_{client_id}"
 
 
 class _WebhookGroup:
@@ -84,11 +84,11 @@ class _WebhookGroup:
         # sibling joining an already-working group later in the same
         # runtime doesn't get told to go register a URL that's already live.
         self.confirmed = confirmed
-        # Has the "register this URL" notification already been shown for
-        # this group this runtime? All members share one notification_id, so
-        # showing it again would just be a same-content no-op, but tracking
-        # this avoids the redundant call.
-        self.notified = False
+        # Has the "register this URL" repair issue already been raised for
+        # this group this runtime? All members share one issue_id, so raising
+        # it again would just be a same-content no-op, but tracking this
+        # avoids the redundant call.
+        self.issue_raised = False
 
 
 class WebhookHandler:
@@ -166,11 +166,10 @@ class WebhookHandler:
         traffic before (CONF_WEBHOOK_STATUS); if that's ambiguous (no
         confirmed value, or confirmed members disagree), falls back to entry
         order and raises a repair issue - with the guessed URL embedded
-        directly in it, since the separate "TTLock Setup" persistent
-        notification isn't a reliable place to point the user at: it gets
-        dismissed the moment any traffic arrives on the guessed webhook,
-        while the repair issue (which the user might not read until later)
-        stays open regardless.
+        directly in it, since the separate webhook-setup repair issue isn't a
+        reliable place to point the user at: it gets resolved the moment any
+        traffic arrives on the guessed webhook, while this one (which the
+        user might not read until later) stays open regardless.
 
         Returns the chosen webhook_id and whether the group is confirmed
         (some member has already received live traffic on it).
@@ -244,8 +243,8 @@ class WebhookHandler:
 
         Runs for every member, not just whoever resolved the group - a
         sibling joining an already-confirmed group later in the same
-        runtime still needs its own CONF_WEBHOOK_STATUS set, or it'll show a
-        "register this URL" notification for a webhook that's already live.
+        runtime still needs its own CONF_WEBHOOK_STATUS set, or it'll raise a
+        "register this URL" repair issue for a webhook that's already live.
         """
         data = dict(self.entry.data)
         changed = False
@@ -306,9 +305,9 @@ class WebhookHandler:
         else:
             ir.async_delete_issue(self.hass, DOMAIN, "no_webhook_url")
 
-        if CONF_WEBHOOK_STATUS not in self.entry.data and not group.notified:
-            self.async_show_setup_message(webhook_url)
-            group.notified = True
+        if CONF_WEBHOOK_STATUS not in self.entry.data and not group.issue_raised:
+            self.async_create_setup_issue(webhook_url)
+            group.issue_raised = True
 
         async with _GROUPS_LOCK:
             if not group.registered:
@@ -357,7 +356,7 @@ class WebhookHandler:
             return
 
         if success and CONF_WEBHOOK_STATUS not in self.entry.data:
-            self.async_dismiss_setup_message()
+            self.async_resolve_setup_issue()
 
     async def unregister_webhook(self, event: Event | None = None) -> None:
         """Remove the webhook (before stop), once the last group member unloads."""
@@ -376,23 +375,34 @@ class WebhookHandler:
         if should_unregister:
             webhook_unregister(self.hass, webhook_id)
 
-    def async_show_setup_message(self, uri: str) -> None:
-        """Display persistent notification with setup information."""
-        persistent_notification.async_create(
+    def async_create_setup_issue(self, uri: str) -> None:
+        """Raise a repair issue asking the user to register this webhook URL.
+
+        A repair issue rather than a persistent notification so it doesn't
+        disappear from Settings > Repairs on its own - it's only cleared by
+        async_resolve_setup_issue, once real traffic confirms it's actually
+        registered with TTLock.
+        """
+        ir.async_create_issue(
             self.hass,
-            f"Webhook url: {uri}.\n\n"
-            "This should be [registered with your app](https://open.ttlock.com/manager). "
-            "See [the docs](https://github.com/jbergler/hass-ttlock?tab=readme-ov-file#creating-an-oauth-app) for more info.",
-            "TTLock Setup",
-            _notification_id(self.client_id),
+            DOMAIN,
+            _setup_issue_id(self.client_id),
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="webhook_setup",
+            translation_placeholders={
+                "webhook_url": uri,
+                "docs_url": "https://github.com/jbergler/hass-ttlock?tab=readme-ov-file#creating-an-oauth-app",
+            },
+            learn_more_url="https://open.ttlock.com/manager",
         )
 
-    def async_dismiss_setup_message(self) -> None:
-        """Dismiss the notification shared by the whole group.
+    def async_resolve_setup_issue(self) -> None:
+        """Resolve the repair issue shared by the whole group.
 
         Also marks every entry sharing this webhook as confirmed, and the
         in-memory group too, so a sibling joining later this same runtime
-        doesn't get shown a notification for an already-live webhook.
+        doesn't get a repair issue raised for an already-live webhook.
         """
         webhook_id = self.entry.data.get(CONF_WEBHOOK_ID)
         for member in self.hass.config_entries.async_entries(DOMAIN):
@@ -408,6 +418,4 @@ class WebhookHandler:
         )
         if group := groups.get(self.client_id):
             group.confirmed = True
-        persistent_notification.async_dismiss(
-            self.hass, _notification_id(self.client_id)
-        )
+        ir.async_delete_issue(self.hass, DOMAIN, _setup_issue_id(self.client_id))

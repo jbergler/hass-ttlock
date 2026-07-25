@@ -188,10 +188,10 @@ async def test_webhook_registered_and_unregistered_once_across_shared_entries(
     mock_unregister.assert_called_once()
 
 
-async def test_setup_notification_shown_once_for_shared_entries(
+async def test_setup_issue_raised_once_for_shared_entries(
     hass, mock_api_responses, multi_account_credential, new_mocked_entry
 ):
-    """A group sharing a webhook shows one setup notification, not one per entry."""
+    """A group sharing a webhook raises one setup repair issue, not one per entry."""
     mock_api_responses("default")
     await multi_account_credential(hass)
 
@@ -199,7 +199,7 @@ async def test_setup_notification_shown_once_for_shared_entries(
     entry_a.add_to_hass(hass)
 
     with patch(
-        "homeassistant.components.persistent_notification.async_create"
+        "homeassistant.helpers.issue_registry.async_create_issue"
     ) as mock_create:
         assert await hass.config_entries.async_setup(entry_a.entry_id)
 
@@ -210,10 +210,10 @@ async def test_setup_notification_shown_once_for_shared_entries(
         await hass.async_block_till_done(wait_background_tasks=True)
 
     mock_create.assert_called_once()
-    assert mock_create.call_args.args[-1] == "ttlock_webhook_client-id"
+    assert mock_create.call_args.args[2] == "webhook_setup_client-id"
 
 
-async def test_no_notification_for_entry_joining_confirmed_group(
+async def test_no_setup_issue_for_entry_joining_confirmed_group(
     hass, mock_api_responses, multi_account_credential, new_mocked_entry
 ):
     """A sibling joining an already-confirmed group isn't told to re-register."""
@@ -226,14 +226,14 @@ async def test_no_notification_for_entry_joining_confirmed_group(
     await hass.async_block_till_done(wait_background_tasks=True)
 
     handler = WebhookHandler(hass, entry_a, client_id="client-id")
-    handler.async_dismiss_setup_message()
+    handler.async_resolve_setup_issue()
     assert entry_a.data[CONF_WEBHOOK_STATUS] is True
 
     entry_b = new_mocked_entry()
     entry_b.add_to_hass(hass)
 
     with patch(
-        "homeassistant.components.persistent_notification.async_create"
+        "homeassistant.helpers.issue_registry.async_create_issue"
     ) as mock_create:
         assert await hass.config_entries.async_setup(entry_b.entry_id)
         await hass.async_block_till_done(wait_background_tasks=True)

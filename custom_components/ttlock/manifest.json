@@ -6,7 +6,6 @@
   "config_flow": true,
   "dependencies": [
     "application_credentials",
-    "persistent_notification",
     "webhook"
   ],
   "documentation": "https://github.com/jbergler/hass-ttlock",
