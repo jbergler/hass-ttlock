@@ -1,12 +1,11 @@
 """Test ttlock setup process."""
 
-import logging
 from time import time
 from unittest.mock import patch
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.ttlock.capture import DebugCaptureHandler
+from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import DOMAIN, TT_CAPTURE, TT_LOCKS
 from custom_components.ttlock.models import LockSummary
 from homeassistant.components.application_credentials import (
@@ -28,24 +27,14 @@ async def test_setup_unload_and_reload_entry(hass, component_setup, mock_api_res
     entry = entries[0]
     assert entry.state is ConfigEntryState.LOADED
 
-    package_logger = logging.getLogger("custom_components.ttlock")
-    assert any(
-        isinstance(handler, DebugCaptureHandler) for handler in package_logger.handlers
-    )
+    assert isinstance(hass.data[DOMAIN][entry.entry_id][TT_CAPTURE], LockTrafficCapture)
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert entry.state == ConfigEntryState.NOT_LOADED
 
-    # the last entry unloading must detach the shared debug-capture handler
-    assert not any(
-        isinstance(handler, DebugCaptureHandler) for handler in package_logger.handlers
-    )
 
-
-async def test_capture_handler_is_shared_across_config_entries(
-    hass, mock_api_responses
-):
-    """A single DebugCaptureHandler is attached once, even with two TTLock accounts."""
+async def test_capture_is_shared_across_config_entries(hass, mock_api_responses):
+    """A single LockTrafficCapture is shared, even with two TTLock accounts."""
     mock_api_responses("default")
 
     assert await async_setup_component(hass, "application_credentials", {})
@@ -83,23 +72,22 @@ async def test_capture_handler_is_shared_across_config_entries(
 
     await hass.async_block_till_done(wait_background_tasks=True)
 
-    package_logger = logging.getLogger("custom_components.ttlock")
-    handlers = [
-        handler
-        for handler in package_logger.handlers
-        if isinstance(handler, DebugCaptureHandler)
-    ]
-    assert len(handlers) == 1
-    assert (
-        hass.data[DOMAIN][entry_a.entry_id][TT_CAPTURE]
-        is hass.data[DOMAIN][entry_b.entry_id][TT_CAPTURE]
-    )
+    capture_a = hass.data[DOMAIN][entry_a.entry_id][TT_CAPTURE]
+    capture_b = hass.data[DOMAIN][entry_b.entry_id][TT_CAPTURE]
+    assert capture_a is capture_b
 
     assert await hass.config_entries.async_unload(entry_a.entry_id)
-    assert any(isinstance(h, DebugCaptureHandler) for h in package_logger.handlers)
+    assert hass.data[DOMAIN][entry_b.entry_id][TT_CAPTURE] is capture_b
 
     assert await hass.config_entries.async_unload(entry_b.entry_id)
-    assert not any(isinstance(h, DebugCaptureHandler) for h in package_logger.handlers)
+
+    # re-adding a fresh entry after the last one unloads must not reuse the
+    # torn-down capture instance
+    entry_c = _new_entry()
+    entry_c.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry_c.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.data[DOMAIN][entry_c.entry_id][TT_CAPTURE] is not capture_b
 
 
 @patch(

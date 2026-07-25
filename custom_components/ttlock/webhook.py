@@ -31,6 +31,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import NoURLAvailableError
 
+from .capture import LockTrafficCapture
 from .const import (
     CONF_WEBHOOK_STATUS,
     CONF_WEBHOOK_URL,
@@ -46,10 +47,16 @@ _LOGGER = logging.getLogger(__name__)
 class WebhookHandler:
     """Responsible for setting up/processing webhook data."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        capture: LockTrafficCapture | None = None,
+    ) -> None:
         """Init the thing."""
         self.hass = hass
         self.entry = entry
+        self._capture = capture
 
     async def setup(self) -> None:
         """Actually register the webhook."""
@@ -137,12 +144,17 @@ class WebhookHandler:
         try:
             # {'lockId': ['7252408'], 'notifyType': ['1'], 'records': ['[{"lockId":7252408,"electricQuantity":93,"serverDate":1680810180029,"recordTypeFromLock":17,"recordType":7,"success":1,"lockMac":"16:72:4C:CC:01:C4","keyboardPwd":"<digits>","lockDate":1680810186000,"username":"Jonas"}]'], 'admin': ['jonas@lemon.nz'], 'lockMac': ['16:72:4C:CC:01:C4']}
             if data := await request.post():
-                logger = (
-                    get_device_logger(int(lock_id))  # ty: ignore[invalid-argument-type] - lockId is always a form field string, never a file upload
-                    if (lock_id := data.get("lockId"))
-                    else _LOGGER
+                lock_id = (
+                    int(lock_id_raw)  # ty: ignore[invalid-argument-type] - lockId is always a form field string, never a file upload
+                    if (lock_id_raw := data.get("lockId"))
+                    else None
                 )
+                logger = get_device_logger(lock_id) if lock_id is not None else _LOGGER
                 logger.debug("Got webhook data: %s", data)
+                if lock_id is not None and self._capture is not None:
+                    self._capture.capture(
+                        lock_id, "DEBUG", "Got webhook data: %s", data
+                    )
                 for raw_records in data.getall("records", []):
                     for record in json.loads(raw_records):  # ty: ignore[invalid-argument-type] - always a JSON string, never a file upload
                         async_dispatcher_send(

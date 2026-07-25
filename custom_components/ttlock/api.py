@@ -38,6 +38,7 @@ from aiohttp import ClientResponse, ClientSession
 from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.helpers import config_entry_oauth2_flow
 
+from .capture import LockTrafficCapture
 from .const import get_device_logger
 from .models import (
     AddPasscodeConfig,
@@ -107,10 +108,12 @@ class TTLockApi:
         self,
         websession: ClientSession,
         oauth_session: config_entry_oauth2_flow.OAuth2Session,
+        capture: LockTrafficCapture | None = None,
     ) -> None:
         """Initialize TTLock auth."""
         self._web_session = websession
         self._oauth_session = oauth_session
+        self._capture = capture
 
     async def async_get_access_token(self) -> str:
         """Return a valid access token."""
@@ -136,25 +139,54 @@ class TTLockApi:
             return get_device_logger(lock_id)
         return _LOGGER
 
+    def _debug(
+        self, logger: logging.Logger, lock_id: int | None, msg: str, *args: Any
+    ) -> None:
+        """Emit a live debug log line and, for lock-scoped calls, always capture it too.
+
+        These are two independent consumers of the same event: `logger` is
+        the opt-in, live-log view (enabled via HA's Configure Logger UI);
+        `self._capture` is the always-on diagnostics ring buffer
+        (capture.py) - it doesn't care whether `logger` is actually enabled
+        for DEBUG.
+        """
+        logger.debug(msg, *args)
+        if lock_id is not None and self._capture is not None:
+            self._capture.capture(lock_id, "DEBUG", msg, *args)
+
     async def _parse_resp(
-        self, resp: ClientResponse, log_id: str, logger: logging.Logger
+        self,
+        resp: ClientResponse,
+        log_id: str,
+        logger: logging.Logger,
+        lock_id: int | None,
     ) -> Mapping[str, Any]:
         if resp.status >= 400:
             body = await resp.text()
-            logger.debug(
-                "[%s] Request failed: status=%s, body=%s", log_id, resp.status, body
+            self._debug(
+                logger,
+                lock_id,
+                "[%s] Request failed: status=%s, body=%s",
+                log_id,
+                resp.status,
+                body,
             )
         else:
             body = await resp.json()
-            logger.debug(
-                "[%s] Received response: status=%s: body=%s", log_id, resp.status, body
+            self._debug(
+                logger,
+                lock_id,
+                "[%s] Received response: status=%s: body=%s",
+                log_id,
+                resp.status,
+                body,
             )
 
         resp.raise_for_status()
 
         res = cast(dict, await resp.json())
         if res.get("errcode", 0) != 0:
-            logger.debug("[%s] API returned: %s", log_id, res)
+            self._debug(logger, lock_id, "[%s] API returned: %s", log_id, res)
             raise RequestFailed(f"API returned: {res}")
 
         return cast(dict, await resp.json())
@@ -162,30 +194,46 @@ class TTLockApi:
     async def get(self, path: str, **kwargs: Any) -> Mapping[str, Any]:
         """Make GET request to the API with kwargs as query params."""
         log_id = token_hex(2)
+        lock_id = kwargs.get("lockId")
         logger = self._logger_for(kwargs)
 
         url = urljoin(self.BASE, path)
-        logger.debug("[%s] Sending request to %s with args=%s", log_id, url, kwargs)
+        self._debug(
+            logger,
+            lock_id,
+            "[%s] Sending request to %s with args=%s",
+            log_id,
+            url,
+            kwargs,
+        )
         resp = await self._web_session.get(
             url,
             params=await self._add_auth(**kwargs),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-        return await self._parse_resp(resp, log_id, logger)
+        return await self._parse_resp(resp, log_id, logger, lock_id)
 
     async def post(self, path: str, **kwargs: Any) -> Mapping[str, Any]:
         """Make GET request to the API with kwargs as query params."""
         log_id = token_hex(2)
+        lock_id = kwargs.get("lockId")
         logger = self._logger_for(kwargs)
 
         url = urljoin(self.BASE, path)
-        logger.debug("[%s] Sending request to %s with args=%s", log_id, url, kwargs)
+        self._debug(
+            logger,
+            lock_id,
+            "[%s] Sending request to %s with args=%s",
+            log_id,
+            url,
+            kwargs,
+        )
         resp = await self._web_session.post(
             url,
             params=await self._add_auth(),
             data=kwargs,
         )
-        return await self._parse_resp(resp, log_id, logger)
+        return await self._parse_resp(resp, log_id, logger, lock_id)
 
     async def get_locks(self) -> list[LockSummary]:
         """Enumerate all locks in the account (connectable and not)."""

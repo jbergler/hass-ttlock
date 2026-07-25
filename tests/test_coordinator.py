@@ -9,7 +9,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ttlock.api import RequestFailed
-from custom_components.ttlock.capture import DebugCaptureHandler
+from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import DOMAIN
 from custom_components.ttlock.coordinator import (
     GatewaysUpdateCoordinator,
@@ -268,7 +268,7 @@ class TestLockUpdateCoordinator:
                 hasGateway=0,
             )
             coordinator = LockUpdateCoordinator(
-                hass, config_entry, api, summary, DebugCaptureHandler()
+                hass, config_entry, api, summary, LockTrafficCapture()
             )
 
             assert coordinator.connectable is False
