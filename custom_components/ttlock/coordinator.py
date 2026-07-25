@@ -34,6 +34,7 @@ from .const import DOMAIN, SIGNAL_NEW_DATA, TT_GATEWAYS, TT_LOCKS
 from .models import (
     Features,
     Gateway,
+    GatewayLink,
     LockSummary,
     PassageModeConfig,
     Sensor,
@@ -90,6 +91,12 @@ class LockState:
     sensor: SensorData | None = None
     auto_lock_seconds: int | None = None
     passage_mode_config: PassageModeConfig | None = None
+    gateways: list[GatewayLink] = field(default_factory=list)
+
+    @property
+    def best_gateway(self) -> GatewayLink | None:
+        """The gateway currently used to reach the lock, by best RSSI."""
+        return self.gateways[0] if self.gateways else None
 
     def passage_mode_active(self, current_date: datetime | None = None) -> bool:
         """Check if passage mode is currently active."""
@@ -292,6 +299,11 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             new_data.passage_mode_config = await self.api.get_lock_passage_mode_config(
                 self.lock_id
             )
+
+            if self.has_gateway:
+                new_data.gateways = await self.api.get_gateways_for_lock(self.lock_id)
+            else:
+                new_data.gateways = []
         except Exception as err:
             raise UpdateFailed(err) from err
         else:
@@ -462,8 +474,16 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Device info for the lock."""
-        return DeviceInfo(
+        """Device info for the lock.
+
+        via_device links to the best-RSSI gateway currently in range (see
+        GatewayLink), matching the identifier GatewaySensor registers in
+        binary_sensor.py - this is what makes the lock's device page show
+        "via device: <gateway>". Re-pushed on every successful poll by
+        _async_refresh_finished, so it tracks the gateway TTLock's cloud
+        would actually use if the best one changes.
+        """
+        info = DeviceInfo(
             identifiers={(DOMAIN, self.data.mac)},
             manufacturer="TT Lock",
             model=self.data.model,
@@ -471,6 +491,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             sw_version=self.data.firmware_version,
             hw_version=self.data.hardware_version,
         )
+        if best_gateway := self.data.best_gateway:
+            info["via_device"] = (DOMAIN, best_gateway.mac)
+        return info
 
     @property
     def entities(self) -> list[Entity]:

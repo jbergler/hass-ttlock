@@ -248,6 +248,9 @@ def mock_api_responses(monkeypatch, mock_data_factory):
         async def mock_get_gateways(*args, **kwargs):
             return []
 
+        async def mock_get_gateways_for_lock(*args, **kwargs):
+            return []
+
         monkeypatch.setattr(
             "custom_components.ttlock.api.TTLockApi.get_locks", mock_get_locks
         )
@@ -271,6 +274,10 @@ def mock_api_responses(monkeypatch, mock_data_factory):
         monkeypatch.setattr(
             "custom_components.ttlock.api.TTLockApi.get_gateways",
             mock_get_gateways,
+        )
+        monkeypatch.setattr(
+            "custom_components.ttlock.api.TTLockApi.get_gateways_for_lock",
+            mock_get_gateways_for_lock,
         )
 
     return create_mock_responses

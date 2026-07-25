@@ -45,6 +45,7 @@ from .models import (
     Card,
     Fingerprint,
     Gateway,
+    GatewayLink,
     Lock,
     LockRecord,
     LockState,
@@ -235,6 +236,15 @@ class TTLockApi:
         """Enumerate all gateways in the account."""
         res = await self.get("gateway/list", pageNo=1, pageSize=1000)
         return [Gateway.model_validate(gateway) for gateway in res["list"]]
+
+    async def get_gateways_for_lock(self, lock_id: int) -> list[GatewayLink]:
+        """List gateways currently in range of a lock, best signal first."""
+        res = await self.get("gateway/listByLock", lockId=lock_id)
+        return sorted(
+            (GatewayLink.model_validate(gateway) for gateway in res["list"]),
+            key=lambda gateway: gateway.rssi,
+            reverse=True,
+        )
 
     async def get_lock(self, lock_id: int) -> Lock:
         """Get a lock by ID."""

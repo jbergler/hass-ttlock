@@ -126,6 +126,15 @@ class Gateway(BaseModel):
     network_name: str | None = Field(None, alias="networkName")
 
 
+class GatewayLink(BaseModel):
+    """A gateway currently in range of a lock, from gateway/listByLock."""
+
+    id: int = Field(..., alias="gatewayId")
+    name: str = Field(..., alias="gatewayName")
+    mac: str = Field(..., alias="gatewayMac")
+    rssi: int
+
+
 class LockState(BaseModel):
     """Lock state."""
 
