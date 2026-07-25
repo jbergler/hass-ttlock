@@ -202,6 +202,7 @@ class WebhookHandler:
                 is_fixable=False,
                 severity=ir.IssueSeverity.WARNING,
                 translation_key="webhook_consolidation_ambiguous",
+                learn_more_url="https://open.ttlock.com/manager",
             )
 
         confirmed = canonical in confirmed_ids

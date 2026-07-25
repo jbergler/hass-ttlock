@@ -24,7 +24,7 @@
       "title": "Unable to generate webhook URL."
     },
     "webhook_consolidation_ambiguous": {
-      "description": "This TTLock developer application had more than one webhook URL saved from before locks under it could share one, and it wasn't clear which one is actually registered with TTLock. We picked one automatically - check the TTLock Setup notification for the URL now in use, and make sure it matches what's registered at https://open.ttlock.com/manager, updating it there if it doesn't.",
+      "description": "This TTLock developer application had more than one webhook URL saved from before locks under it could share one, and it wasn't clear which one is actually registered with TTLock. We picked one automatically - check the TTLock Setup notification for the URL now in use, and make sure it matches what's registered in the TTLock console (see the link below), updating it there if it doesn't.",
       "title": "Confirm your TTLock webhook URL"
     }
   }
