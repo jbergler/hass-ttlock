@@ -258,6 +258,17 @@ class WebhookHandler:
 
         self._sync_entry_to_group(group)
 
+        # Registered as soon as this entry has joined the group (incrementing
+        # refcount above), not gated on the registration below succeeding -
+        # otherwise a NoURLAvailableError return below would leave this
+        # entry's +1 with no way to ever decrement it back out, so the group
+        # would never reach a refcount of 0 and its webhook would never be
+        # unregistered. unregister_webhook/webhook_unregister are no-ops if
+        # nothing was ever actually registered with HA.
+        self.hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STOP, self.unregister_webhook
+        )
+
         try:
             webhook_url = await self.get_url()
             data = {**self.entry.data, CONF_WEBHOOK_URL: webhook_url}
@@ -295,10 +306,6 @@ class WebhookHandler:
                     self.handle_webhook,
                 )
                 group.registered = True
-
-        self.hass.bus.async_listen_once(
-            EVENT_HOMEASSISTANT_STOP, self.unregister_webhook
-        )
 
     async def handle_webhook(
         self, hass: HomeAssistant, webhook_id: str, request: Request

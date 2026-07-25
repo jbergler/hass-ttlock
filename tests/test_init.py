@@ -82,6 +82,30 @@ async def test_no_url(hass, component_setup, mock_api_responses):
         assert mock.assert_called
 
 
+async def test_group_refcount_unwinds_after_no_url_failure(
+    hass, component_setup, mock_api_responses
+):
+    """An entry that fails to register (NoURLAvailableError) must not leave
+    its group's refcount permanently inflated - otherwise the group would
+    never reach a refcount of 0 and its webhook would never be unregistered,
+    even once every entry using it is gone.
+    """
+    mock_api_responses("default")
+    with patch(
+        "homeassistant.components.webhook.async_generate_url",
+        side_effect=NoURLAvailableError,
+    ):
+        await component_setup()
+
+    with patch(
+        "custom_components.ttlock.webhook.webhook_unregister"
+    ) as mock_unregister:
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+        await hass.async_block_till_done()
+
+    mock_unregister.assert_called_once()
+
+
 async def test_setup_with_non_connectable_lock(
     hass, component_setup, mock_api_responses, monkeypatch, caplog
 ):
