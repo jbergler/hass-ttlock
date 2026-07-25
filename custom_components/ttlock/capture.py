@@ -12,10 +12,11 @@ This is deliberately independent of get_device_logger's per-lock logger
 hierarchy (const.py): that hierarchy exists so a technical user can target
 one lock's *live* log output via HA's stock Configure Logger UI, and has no
 bearing on whether that lock's traffic ends up in this buffer. api.py and
-webhook.py call both at each capture site - logger.debug(...) for the
-live/opt-in view, LockTrafficCapture.capture(...) unconditionally for the
-always-on one - so enabling a lock's logger changes what you see live, never
-what ends up in diagnostics.
+webhook.py both call log_and_capture(...) at each capture site, which emits
+the live/opt-in logger.debug(...) and then, for lock-scoped calls, mirrors
+the same record into the always-on LockTrafficCapture.capture(...) - so
+enabling a lock's logger changes what you see live, never what ends up in
+diagnostics.
 
 Redaction happens here, once, against each call's original structured
 arguments (still real dicts/lists at this point) rather than a rendered
@@ -29,6 +30,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
+import logging
 from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
@@ -93,3 +95,23 @@ class LockTrafficCapture:
             ),
             "records": [asdict(record) for record in records],
         }
+
+
+def log_and_capture(
+    capture: LockTrafficCapture | None,
+    logger: logging.Logger,
+    lock_id: int | None,
+    msg: str,
+    *args: Any,
+) -> None:
+    """Emit a live debug log line and, for lock-scoped calls, always capture it too.
+
+    Shared by api.py and webhook.py, the two call sites that observe raw
+    TTLock traffic - see this module's docstring. `logger` is the opt-in,
+    live-log view (enabled via HA's Configure Logger UI); `capture` is the
+    always-on diagnostics ring buffer - it doesn't care whether `logger` is
+    actually enabled for DEBUG.
+    """
+    logger.debug(msg, *args)
+    if lock_id is not None and capture is not None:
+        capture.capture(lock_id, "DEBUG", msg, *args)

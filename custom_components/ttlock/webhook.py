@@ -31,7 +31,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import NoURLAvailableError
 
-from .capture import LockTrafficCapture
+from .capture import LockTrafficCapture, log_and_capture
 from .const import (
     CONF_WEBHOOK_STATUS,
     CONF_WEBHOOK_URL,
@@ -150,11 +150,9 @@ class WebhookHandler:
                     else None
                 )
                 logger = get_device_logger(lock_id) if lock_id is not None else _LOGGER
-                logger.debug("Got webhook data: %s", data)
-                if lock_id is not None and self._capture is not None:
-                    self._capture.capture(
-                        lock_id, "DEBUG", "Got webhook data: %s", data
-                    )
+                log_and_capture(
+                    self._capture, logger, lock_id, "Got webhook data: %s", data
+                )
                 for raw_records in data.getall("records", []):
                     for record in json.loads(raw_records):  # ty: ignore[invalid-argument-type] - always a JSON string, never a file upload
                         async_dispatcher_send(
