@@ -1,9 +1,10 @@
 """Global fixtures for ttlock integration."""
 
-from collections.abc import Generator
+import sys
 from time import time
+import types
 from typing import NamedTuple
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiohttp import ClientSession
 import pytest
@@ -22,11 +23,13 @@ from custom_components.ttlock.models import (
     Sensor,
 )
 from custom_components.ttlock.store import LockStateStore
+from homeassistant import components as ha_components
 from homeassistant.components.application_credentials import (
     ClientCredential,
     async_import_client_credential,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.setup import async_setup_component
 
 from .const import (
@@ -283,13 +286,33 @@ def mock_api_responses(monkeypatch, mock_data_factory):
     return create_mock_responses
 
 
+class CloudNotAvailable(HomeAssistantError):
+    """Stand-in for homeassistant.components.cloud.CloudNotAvailable."""
+
+
+class CloudNotConnected(CloudNotAvailable):
+    """Stand-in for homeassistant.components.cloud.CloudNotConnected."""
+
+
 @pytest.fixture(autouse=True)
-def mock_webhook_cloudhook() -> Generator[None]:
-    """Fixture to mock home assistant cloud."""
-    with (
-        patch(
-            "custom_components.ttlock.webhook.WebhookHandler.try_generate_cloudhook",
-            return_value=None,
-        ),
-    ):
-        yield
+def mock_cloud(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
+    """Stub homeassistant.components.cloud so try_generate_cloudhook actually runs.
+
+    homeassistant.components.cloud is unimportable in this test environment
+    (its import chain drags in camera/turbojpeg, then conversation/hassil),
+    so webhook.py's own deferred import can't be satisfied by the real
+    module. Defaults to no active subscription - the non-cloud path every
+    existing test exercised under the old fixture that patched
+    try_generate_cloudhook directly. Tests wanting the cloud path override
+    stub.async_active_subscription / async_get_or_create_cloudhook.
+    """
+    stub = types.ModuleType("homeassistant.components.cloud")
+    stub.CloudNotAvailable = CloudNotAvailable  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
+    stub.CloudNotConnected = CloudNotConnected  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
+    stub.async_active_subscription = MagicMock(return_value=False)  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
+    stub.async_get_or_create_cloudhook = AsyncMock()  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
+
+    monkeypatch.setitem(sys.modules, "homeassistant.components.cloud", stub)
+    monkeypatch.setattr(ha_components, "cloud", stub, raising=False)
+
+    return stub

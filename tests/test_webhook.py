@@ -291,6 +291,58 @@ class TestGetUrl:
         mock_cloudhook.assert_not_called()
 
 
+class TestTryGenerateCloudhook:
+    async def test_returns_none_without_active_subscription(
+        self, handler: WebhookHandler, mock_cloud
+    ):
+        mock_cloud.async_active_subscription.return_value = False
+
+        assert await handler.try_generate_cloudhook() is None
+        mock_cloud.async_get_or_create_cloudhook.assert_not_called()
+
+    async def test_returns_cloudhook_url_with_active_subscription(
+        self, handler: WebhookHandler, mock_cloud
+    ):
+        mock_cloud.async_active_subscription.return_value = True
+        mock_cloud.async_get_or_create_cloudhook.return_value = (
+            "https://hooks.nabucasa.com/abc"
+        )
+
+        assert (
+            await handler.try_generate_cloudhook() == "https://hooks.nabucasa.com/abc"
+        )
+        mock_cloud.async_get_or_create_cloudhook.assert_awaited_once_with(
+            handler.hass, handler.entry.data[CONF_WEBHOOK_ID]
+        )
+
+    async def test_already_registered_cloudhook_is_not_fatal(
+        self, handler: WebhookHandler, mock_cloud
+    ):
+        """Regression test for #313: a cloudhook already existing for this
+        webhook_id must not raise past try_generate_cloudhook - that's what
+        the old async_create_cloudhook call did, and it failed entry setup.
+        """
+        mock_cloud.async_active_subscription.return_value = True
+        mock_cloud.async_get_or_create_cloudhook.return_value = (
+            "https://hooks.nabucasa.com/existing"
+        )
+
+        assert (
+            await handler.try_generate_cloudhook()
+            == "https://hooks.nabucasa.com/existing"
+        )
+
+    async def test_cloud_not_available_degrades_to_none(
+        self, handler: WebhookHandler, mock_cloud
+    ):
+        mock_cloud.async_active_subscription.return_value = True
+        mock_cloud.async_get_or_create_cloudhook.side_effect = (
+            mock_cloud.CloudNotConnected()
+        )
+
+        assert await handler.try_generate_cloudhook() is None
+
+
 class TestResolveSetupIssue:
     async def test_marks_status_and_resolves_issue(
         self, hass: HomeAssistant, handler: WebhookHandler, entry: MockConfigEntry

@@ -119,15 +119,16 @@ class WebhookHandler:
     async def try_generate_cloudhook(self) -> str | None:
         """Create a cloudhook if possible."""
         # deferred: cloud pulls in optional heavy dependencies we don't want to
-        # require at module import time, and this also lets tests mock it easily
+        # require at module import time - this also lets tests stub the whole
+        # module in sys.modules rather than needing the real thing importable
         from homeassistant.components import cloud  # noqa: PLC0415
 
         if cloud.async_active_subscription(self.hass):
             try:
-                return await cloud.async_create_cloudhook(
+                return await cloud.async_get_or_create_cloudhook(
                     self.hass, self.entry.data[CONF_WEBHOOK_ID]
                 )
-            except cloud.CloudNotConnected:
+            except cloud.CloudNotAvailable:
                 return None
         return None
 
