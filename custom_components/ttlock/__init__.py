@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_WEBHOOK_ID, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 
@@ -149,3 +150,41 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             domain_data.pop(_STORE_KEY, None)
 
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete this entry's cloudhook, once no sibling entry still shares it.
+
+    Sibling config entries under the same client_id share one webhook_id
+    (see webhook.py's module docstring), so deleting on every removal would
+    pull the rug out from under any other entry still using it - checking
+    entry.data[CONF_WEBHOOK_ID] against every other loaded/configured entry
+    (already kept in sync by webhook.py's _sync_entry_to_group) avoids
+    needing this entry's OAuth2 implementation, which may no longer be
+    resolvable this late in removal.
+    """
+    webhook_id = entry.data.get(CONF_WEBHOOK_ID)
+    if webhook_id is None:
+        return
+
+    still_shared = any(
+        candidate.entry_id != entry.entry_id
+        and candidate.data.get(CONF_WEBHOOK_ID) == webhook_id
+        for candidate in hass.config_entries.async_entries(DOMAIN)
+    )
+    if still_shared:
+        return
+
+    # deferred: cloud pulls in optional heavy dependencies we don't want to
+    # require at module import time - matches webhook.py's try_generate_cloudhook
+    from homeassistant.components import cloud  # noqa: PLC0415
+
+    if not cloud.async_active_subscription(hass):
+        return
+
+    # ValueError alongside CloudNotAvailable: hass_nabucasa's Cloudhooks.async_delete
+    # raises a bare ValueError if this webhook_id was never actually converted to a
+    # cloudhook (eg. try_generate_cloudhook returned None despite an active
+    # subscription) - matches mobile_app's async_remove_entry, which hits the same gap.
+    with contextlib.suppress(cloud.CloudNotAvailable, ValueError):
+        await cloud.async_delete_cloudhook(hass, webhook_id)

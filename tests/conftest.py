@@ -311,6 +311,7 @@ def mock_cloud(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     stub.CloudNotConnected = CloudNotConnected  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
     stub.async_active_subscription = MagicMock(return_value=False)  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
     stub.async_get_or_create_cloudhook = AsyncMock()  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
+    stub.async_delete_cloudhook = AsyncMock()  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
 
     monkeypatch.setitem(sys.modules, "homeassistant.components.cloud", stub)
     monkeypatch.setattr(ha_components, "cloud", stub, raising=False)

@@ -240,3 +240,88 @@ async def test_no_setup_issue_for_entry_joining_confirmed_group(
 
     mock_create.assert_not_called()
     assert entry_b.data[CONF_WEBHOOK_STATUS] is True
+
+
+async def test_removing_last_entry_deletes_cloudhook(
+    hass, component_setup, mock_api_responses, mock_cloud
+):
+    """Removing the sole entry using a webhook_id deletes its cloudhook."""
+    mock_api_responses("default")
+    mock_cloud.async_active_subscription.return_value = True
+    mock_cloud.async_get_or_create_cloudhook.return_value = (
+        "https://hooks.nabucasa.com/abc"
+    )
+
+    await component_setup()
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    webhook_id = entry.data[CONF_WEBHOOK_ID]
+
+    assert await hass.config_entries.async_remove(entry.entry_id)
+
+    mock_cloud.async_delete_cloudhook.assert_awaited_once_with(hass, webhook_id)
+
+
+async def test_removing_one_of_several_shared_entries_keeps_cloudhook(
+    hass, mock_api_responses, mock_cloud, multi_account_credential, new_mocked_entry
+):
+    """Removing one of several entries sharing a webhook_id must not delete it."""
+    mock_api_responses("default")
+    mock_cloud.async_active_subscription.return_value = True
+    mock_cloud.async_get_or_create_cloudhook.return_value = (
+        "https://hooks.nabucasa.com/abc"
+    )
+    await multi_account_credential(hass)
+
+    entry_a = new_mocked_entry()
+    entry_a.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry_a.entry_id)
+
+    entry_b = new_mocked_entry()
+    entry_b.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry_b.entry_id)
+
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert entry_a.data[CONF_WEBHOOK_ID] == entry_b.data[CONF_WEBHOOK_ID]
+
+    assert await hass.config_entries.async_remove(entry_a.entry_id)
+
+    mock_cloud.async_delete_cloudhook.assert_not_called()
+
+    assert await hass.config_entries.async_remove(entry_b.entry_id)
+
+    mock_cloud.async_delete_cloudhook.assert_awaited_once()
+
+
+async def test_removing_entry_without_cloudhook_is_a_noop(
+    hass, component_setup, mock_api_responses, mock_cloud
+):
+    """Removal is a no-op, not an error, for a non-cloud user."""
+    mock_api_responses("default")
+
+    await component_setup()
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+    assert await hass.config_entries.async_remove(entry.entry_id)
+
+    mock_cloud.async_delete_cloudhook.assert_not_called()
+
+
+async def test_removing_entry_whose_cloudhook_was_never_created_is_a_noop(
+    hass, component_setup, mock_api_responses, mock_cloud
+):
+    """Removal is a no-op, not an error, for a cloud user whose webhook_id was
+    never actually converted to a cloudhook (eg. try_generate_cloudhook
+    returned None despite an active subscription) - hass_nabucasa's
+    Cloudhooks.async_delete raises a bare ValueError for this, not
+    cloud.CloudNotAvailable.
+    """
+    mock_api_responses("default")
+    mock_cloud.async_active_subscription.return_value = True
+    mock_cloud.async_delete_cloudhook.side_effect = ValueError(
+        "Hook is not enabled for the cloud."
+    )
+
+    await component_setup()
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+    assert await hass.config_entries.async_remove(entry.entry_id)
