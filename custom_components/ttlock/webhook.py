@@ -124,10 +124,10 @@ class WebhookHandler:
 
         if cloud.async_active_subscription(self.hass):
             try:
-                return await cloud.async_create_cloudhook(
+                return await cloud.async_get_or_create_cloudhook(
                     self.hass, self.entry.data[CONF_WEBHOOK_ID]
                 )
-            except cloud.CloudNotConnected:
+            except cloud.CloudNotAvailable:
                 return None
         return None
 
