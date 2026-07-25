@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .coordinator import lock_coordinators, sensor_present
+from .coordinator import async_add_when_sensor_present, lock_coordinators
 from .entity import BaseLockEntity
 
 _LOGGER = logging.getLogger(__name__)
@@ -24,21 +24,27 @@ async def async_setup_entry(
 ) -> None:
     """Set up all the locks for the config entry."""
 
+    coordinators = list(lock_coordinators(hass, entry))
+
     async_add_entities(
         [
             entity
-            for coordinator in lock_coordinators(hass, entry)
+            for coordinator in coordinators
             for entity in (
                 LockBattery(coordinator),
                 LockOperator(coordinator),
                 LockTrigger(coordinator),
-                SensorBattery(coordinator)
-                if sensor_present(coordinator.data.sensor)
-                else None,
             )
-            if entity is not None
         ]
     )
+
+    for lock_coordinator in coordinators:
+        async_add_when_sensor_present(
+            lock_coordinator,
+            lambda lock_coordinator=lock_coordinator: async_add_entities(
+                [SensorBattery(lock_coordinator)]
+            ),
+        )
 
 
 class LockBattery(BaseLockEntity, SensorEntity):

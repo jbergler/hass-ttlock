@@ -12,6 +12,7 @@ the webhook path in favor of "just poll faster."
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -35,10 +36,12 @@ from .models import (
     Gateway,
     LockSummary,
     PassageModeConfig,
+    Sensor,
     SensorState,
     State,
     WebhookEvent,
 )
+from .store import LockStateStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +49,12 @@ NOT_CONNECTABLE_REASON = (
     "No gateway paired and no WiFi — TTLock's cloud can't reach this lock. "
     "Live data isn't available until connectivity is restored."
 )
+
+# TTLock's doorSensor/query can't distinguish "no sensor paired" from a
+# transient failure (see api.get_sensor), so a lock only counts as confirmed
+# absent after this many consecutive failed checks - see
+# LockUpdateCoordinator._check_for_sensor.
+SENSOR_ABSENT_AFTER_FAILURES = 3
 
 
 @dataclass
@@ -119,6 +128,35 @@ def sensor_present(instance: SensorData | None) -> TypeGuard[SensorData]:
     return instance is not None and instance.present
 
 
+def async_add_when_sensor_present(
+    coordinator: LockUpdateCoordinator, add_entities: Callable[[], None]
+) -> None:
+    """Call `add_entities` once presence is confirmed - now, or later.
+
+    Door-sensor presence isn't known at the cheap lock/list stage entities
+    are created from at platform setup - it's only filled in once the
+    coordinator's first refresh completes, which __init__.py runs in the
+    background *after* platforms are set up (see _fill_lock_details), so
+    sensor-backed entities can't just check coordinator.data.sensor at setup
+    time. Instead: add immediately if presence is already known, otherwise
+    watch for the update that confirms it and add then.
+    """
+    if sensor_present(coordinator.data.sensor):
+        add_entities()
+        return
+
+    remove: Callable[[], None] | None = None
+
+    @callback
+    def _check_and_add() -> None:
+        if sensor_present(coordinator.data.sensor):
+            add_entities()
+            if remove is not None:
+                remove()
+
+    remove = coordinator.async_add_listener(_check_and_add)
+
+
 @contextmanager
 def lock_action(controller: LockUpdateCoordinator):
     """Wrap a lock action so that in-progress state is managed correctly."""
@@ -169,6 +207,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         api: TTLockApi,
         summary: LockSummary,
         capture: LockTrafficCapture,
+        store: LockStateStore,
     ) -> None:
         """Initialize the update co-ordinator for a single lock."""
         self.api = api
@@ -177,6 +216,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self.has_gateway = summary.hasGateway
         self.feature_value = summary.featureValue
         self._capture = capture
+        self._store = store
+
+        # Whether we've already made this restart's one-shot door-sensor
+        # recheck (see _check_for_sensor) - deliberately in-memory, not
+        # persisted, so it naturally resets to False on every restart.
+        self._sensor_recheck_done = False
 
         super().__init__(
             hass,
@@ -217,15 +262,10 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 if new_data.sensor is None:
                     new_data.sensor = SensorData()
 
-                # only fetch sensor metadata once a day
-                if (
-                    new_data.sensor.last_fetched is None
-                    or new_data.sensor.last_fetched < dt_util.now() - timedelta(days=1)
-                ):
-                    sensor = await self.api.get_sensor(self.lock_id)
-                    new_data.sensor.last_fetched = dt_util.now()
-                    if sensor:
-                        new_data.sensor.battery = sensor.battery_level
+                if sensor_present(new_data.sensor):
+                    await self._update_present_sensor(new_data.sensor)
+                else:
+                    await self._check_for_sensor(new_data.sensor)
             else:
                 new_data.sensor = None
 
@@ -256,6 +296,87 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             raise UpdateFailed(err) from err
         else:
             return new_data
+
+    async def _refresh_sensor(self, sensor: SensorData) -> Sensor | None:
+        """Query the door sensor endpoint and stamp when we last did so."""
+        result = await self.api.get_sensor(self.lock_id)
+        sensor.last_fetched = dt_util.now()
+        return result
+
+    async def _update_present_sensor(self, sensor: SensorData) -> None:
+        """A sensor is already known-present; refresh its battery once a day."""
+        if (
+            sensor.last_fetched is not None
+            and sensor.last_fetched >= dt_util.now() - timedelta(days=1)
+        ):
+            return
+
+        result = await self._refresh_sensor(sensor)
+        if result:
+            sensor.battery = result.battery_level
+
+    async def _check_for_sensor(self, sensor: SensorData) -> None:
+        """No sensor confirmed present yet - probe for one.
+
+        TTLock's API can't distinguish "no sensor paired" from a transient
+        failure (see api.get_sensor), so we only give up after
+        SENSOR_ABSENT_AFTER_FAILURES consecutive failures, persisted via
+        self._store so the count - and the final verdict - survive HA
+        restarts. Once given up, re-probe just once per restart
+        (self._sensor_recheck_done) rather than resuming the failure count
+        from scratch, which would poll forever on a setup that restarts HA
+        often.
+        """
+        stored = await self._store.async_get(self.lock_id)
+        confirmed_absent = stored.get("door_sensor_confirmed_absent", False)
+
+        if confirmed_absent:
+            if self._sensor_recheck_done:
+                return
+            self._sensor_recheck_done = True
+        else:
+            last_failed = stored.get("door_sensor_last_failed_req")
+            last_failed_dt = (
+                dt_util.parse_datetime(last_failed) if last_failed else None
+            )
+            if (
+                last_failed_dt is not None
+                and last_failed_dt >= dt_util.now() - timedelta(days=1)
+            ):
+                return
+
+        result = await self._refresh_sensor(sensor)
+
+        if result:
+            sensor.battery = result.battery_level
+            await self._store.async_update(
+                self.lock_id,
+                door_sensor_confirmed_absent=False,
+                door_sensor_count_failed_req=0,
+            )
+            return
+
+        if confirmed_absent:
+            # this was just this restart's one-shot recheck, and it also
+            # failed - leave the persisted verdict as-is rather than
+            # growing the failure count forever across restarts
+            return
+
+        failures = stored.get("door_sensor_count_failed_req", 0) + 1
+        newly_confirmed_absent = failures >= SENSOR_ABSENT_AFTER_FAILURES
+        if newly_confirmed_absent:
+            # this call is what crossed the threshold, so it also counts as
+            # this instance's one-shot recheck - otherwise the very next
+            # scheduled refresh (15 minutes later, not gated by the daily
+            # throttle above) would see confirmed_absent for "the first
+            # time" and fire one more unbudgeted check before going quiet.
+            self._sensor_recheck_done = True
+        await self._store.async_update(
+            self.lock_id,
+            door_sensor_last_failed_req=dt_util.now().isoformat(),
+            door_sensor_count_failed_req=failures,
+            door_sensor_confirmed_absent=newly_confirmed_absent,
+        )
 
     @callback
     def _async_refresh_finished(self) -> None:
@@ -353,10 +474,16 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
     @property
     def entities(self) -> list[Entity]:
-        """Entities belonging to this co-ordinator."""
+        """Entities belonging to this co-ordinator.
+
+        Not every registered listener is a bound entity method -
+        async_add_when_sensor_present registers a plain closure while it
+        waits to confirm door-sensor presence, which has no `__self__` at
+        all, so that has to be tolerated rather than assumed away.
+        """
         result: list[Entity] = []
         for listener_callback, _ in list(self._listeners.values()):
-            owner = listener_callback.__self__  # ty: ignore[unresolved-attribute] - checking for bound-method listeners
+            owner = getattr(listener_callback, "__self__", None)
             if isinstance(owner, Entity):
                 result.append(owner)
         return result
