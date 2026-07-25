@@ -31,6 +31,7 @@ from homeassistant.setup import async_setup_component
 
 from .const import (
     BASIC_LOCK_DETAILS,
+    LOCK_DETAILS_NO_AUTOLOCK,
     LOCK_DETAILS_WITH_SENSOR,
     LOCK_STATE_LOCKED,
     LOCK_STATE_UNLOCKED,
@@ -205,6 +206,13 @@ def mock_data_factory():
                 lock=Lock.model_validate(BASIC_LOCK_DETAILS),
                 state=LockState.model_validate(LOCK_STATE_UNLOCKED),
                 passage_mode=None,
+            ),
+            "no_autolock": MockApiData(
+                lock=Lock.model_validate(LOCK_DETAILS_NO_AUTOLOCK),
+                state=LockState.model_validate(LOCK_STATE_UNLOCKED),
+                passage_mode=PassageModeConfig.model_validate(
+                    PASSAGE_MODE_6_TO_6_7_DAYS
+                ),
             ),
         }
         return scenarios[scenario]

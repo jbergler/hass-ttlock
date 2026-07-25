@@ -255,6 +255,24 @@ update_state:
       integration: ttlock
       domain: lock
 
+set_config_override:
+  name: Set Config Override
+  description: Manually set locally-stored fallback values for lock configuration TTLock's API doesn't always report (e.g. some locks never report an auto-lock delay). These are only used to fill gaps in what the cloud API reports - the physical lock is never reconfigured. Leave a field blank to leave it untouched; pass it as an explicit YAML null to clear a previously-set override.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    auto_lock_seconds:
+      name: Auto Lock Seconds (override)
+      description: Assumed number of seconds until the lock relocks itself, used only when TTLock's API doesn't report an auto-lock delay for this lock. Pass an explicit YAML null to clear a previously-set override.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 3600
+          unit_of_measurement: secs
+
 list_cards:
   name: List IC cards
   description: Lists all IC cards enrolled on the selected lock, including their names, numbers, and validity periods.

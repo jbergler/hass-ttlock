@@ -545,6 +545,95 @@ class TestLockUpdateCoordinator:
             assert entry["door_sensor_confirmed_absent"] is True
             assert entry["door_sensor_count_failed_req"] == 3
 
+    class TestAutoLockOverride:
+        """See coordinator.py's auto_lock_seconds merge in _async_update_data -
+        some locks never report autoLockTime at all (issue #67), so a
+        locally-stored override fills the gap, but never outranks a real
+        value TTLock's API does report.
+        """
+
+        LOCK_ID = 7252408
+
+        def _make_coordinator(
+            self, hass, api, store: LockStateStore
+        ) -> LockUpdateCoordinator:
+            config_entry = MockConfigEntry(domain=DOMAIN)
+            config_entry.add_to_hass(hass)
+            summary = LockSummary(
+                lockId=self.LOCK_ID,
+                lockAlias="Test Lock",
+                lockMac="00:00:00:00:00:00",
+                hasGateway=1,
+            )
+            return LockUpdateCoordinator(
+                hass, config_entry, api, summary, LockTrafficCapture(), store
+            )
+
+        async def test_stays_none_without_an_override(
+            self, hass, api, mock_api_responses
+        ):
+            mock_api_responses("no_autolock")
+            coordinator = self._make_coordinator(hass, api, LockStateStore(hass))
+
+            await coordinator.async_refresh()
+
+            assert coordinator.data.auto_lock_seconds is None
+
+        async def test_override_fills_in_when_api_reports_nothing(
+            self, hass, api, mock_api_responses
+        ):
+            mock_api_responses("no_autolock")
+            store = LockStateStore(hass)
+            await store.async_update(self.LOCK_ID, auto_lock_override_seconds=5)
+            coordinator = self._make_coordinator(hass, api, store)
+
+            await coordinator.async_refresh()
+
+            assert coordinator.data.auto_lock_seconds == 5
+
+        async def test_real_api_value_always_wins_over_the_override(
+            self, hass, api, mock_api_responses
+        ):
+            mock_api_responses("default")
+            store = LockStateStore(hass)
+            await store.async_update(self.LOCK_ID, auto_lock_override_seconds=5)
+            coordinator = self._make_coordinator(hass, api, store)
+
+            await coordinator.async_refresh()
+
+            assert (
+                coordinator.data.auto_lock_seconds == BASIC_LOCK_DETAILS["autoLockTime"]
+            )
+
+        async def test_async_set_auto_lock_override_persists_and_applies_immediately(
+            self, hass, api, mock_api_responses
+        ):
+            mock_api_responses("no_autolock")
+            store = LockStateStore(hass)
+            coordinator = self._make_coordinator(hass, api, store)
+            await coordinator.async_refresh()
+            assert coordinator.data.auto_lock_seconds is None
+
+            await coordinator.async_set_auto_lock_override(5)
+
+            assert coordinator.data.auto_lock_seconds == 5
+            entry = await store.async_get(self.LOCK_ID)
+            assert entry["auto_lock_override_seconds"] == 5
+
+        async def test_async_set_auto_lock_override_none_clears_it(
+            self, hass, api, mock_api_responses
+        ):
+            mock_api_responses("no_autolock")
+            store = LockStateStore(hass)
+            await store.async_update(self.LOCK_ID, auto_lock_override_seconds=5)
+            coordinator = self._make_coordinator(hass, api, store)
+            await coordinator.async_refresh()
+            assert coordinator.data.auto_lock_seconds == 5
+
+            await coordinator.async_set_auto_lock_override(None)
+
+            assert coordinator.data.auto_lock_seconds is None
+
     class TestProcessWebhookData:
         async def test_lock_works(
             self, coordinator: LockUpdateCoordinator, mock_api_responses
