@@ -38,7 +38,7 @@ from aiohttp import ClientResponse, ClientSession
 from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.helpers import config_entry_oauth2_flow
 
-from .capture import LockTrafficCapture
+from .capture import LockTrafficCapture, log_and_capture
 from .const import get_device_logger
 from .models import (
     AddPasscodeConfig,
@@ -142,17 +142,8 @@ class TTLockApi:
     def _debug(
         self, logger: logging.Logger, lock_id: int | None, msg: str, *args: Any
     ) -> None:
-        """Emit a live debug log line and, for lock-scoped calls, always capture it too.
-
-        These are two independent consumers of the same event: `logger` is
-        the opt-in, live-log view (enabled via HA's Configure Logger UI);
-        `self._capture` is the always-on diagnostics ring buffer
-        (capture.py) - it doesn't care whether `logger` is actually enabled
-        for DEBUG.
-        """
-        logger.debug(msg, *args)
-        if lock_id is not None and self._capture is not None:
-            self._capture.capture(lock_id, "DEBUG", msg, *args)
+        """Emit a live debug log line and, for lock-scoped calls, always capture it too."""
+        log_and_capture(self._capture, logger, lock_id, msg, *args)
 
     async def _parse_resp(
         self,
