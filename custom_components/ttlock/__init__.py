@@ -15,6 +15,7 @@ from .capture import LockTrafficCapture
 from .const import DOMAIN, TT_API, TT_CAPTURE, TT_GATEWAYS, TT_LOCKS
 from .coordinator import GatewaysUpdateCoordinator, LockUpdateCoordinator
 from .services import Services
+from .store import LockStateStore
 from .webhook import WebhookHandler
 
 PLATFORMS: list[Platform] = [
@@ -30,6 +31,11 @@ DETAIL_FILL_CONCURRENCY = 3
 # generator) - marks the one LockTrafficCapture shared by every loaded
 # config entry, so a second TTLock account doesn't get a second buffer.
 _CAPTURE_KEY = "_capture"
+
+# Same pattern as _CAPTURE_KEY: one LockStateStore shared by every loaded
+# config entry, since it's a single JSON file keyed by lock ID, not
+# per-account state.
+_STORE_KEY = "_lock_state_store"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,6 +79,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         capture = LockTrafficCapture()
         domain_data[_CAPTURE_KEY] = capture
 
+    store = domain_data.get(_STORE_KEY)
+    if store is None:
+        store = LockStateStore(hass)
+        domain_data[_STORE_KEY] = store
+
     client = TTLockApi(aiohttp_client.async_get_clientsession(hass), session, capture)
 
     domain_data[entry.entry_id] = {
@@ -81,7 +92,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     locks = [
-        LockUpdateCoordinator(hass, entry, client, summary, capture)
+        LockUpdateCoordinator(hass, entry, client, summary, capture, store)
         for summary in await client.get_locks()
     ]
     hass.data[DOMAIN][entry.entry_id][TT_LOCKS] = locks
@@ -135,5 +146,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # is still loaded" here.
         if not any(not key.startswith("_") for key in domain_data):
             domain_data.pop(_CAPTURE_KEY, None)
+            domain_data.pop(_STORE_KEY, None)
 
     return unload_ok

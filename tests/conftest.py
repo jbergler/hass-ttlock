@@ -21,6 +21,7 @@ from custom_components.ttlock.models import (
     PassageModeConfig,
     Sensor,
 )
+from custom_components.ttlock.store import LockStateStore
 from homeassistant.components.application_credentials import (
     ClientCredential,
     async_import_client_credential,
@@ -156,7 +157,9 @@ async def coordinator(hass, api):
     summary = LockSummary(
         lockId=7252408, lockAlias="Test Lock", lockMac="00:00:00:00:00:00", hasGateway=1
     )
-    return LockUpdateCoordinator(hass, config_entry, api, summary, LockTrafficCapture())
+    return LockUpdateCoordinator(
+        hass, config_entry, api, summary, LockTrafficCapture(), LockStateStore(hass)
+    )
 
 
 class MockApiData(NamedTuple):

@@ -17,9 +17,9 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 from .coordinator import (
     GatewaysUpdateCoordinator,
+    async_add_when_sensor_present,
     gateway_coordinator,
     lock_coordinators,
-    sensor_present,
 )
 from .entity import BaseLockEntity
 
@@ -33,19 +33,17 @@ async def async_setup_entry(
 ) -> None:
     """Set up all the locks for the config entry."""
 
-    async_add_entities(
-        [
-            entity
-            for coordinator in lock_coordinators(hass, entry)
-            for entity in (
-                PassageMode(coordinator),
-                Sensor(coordinator)
-                if sensor_present(coordinator.data.sensor)
-                else None,
-            )
-            if entity is not None
-        ]
-    )
+    coordinators = list(lock_coordinators(hass, entry))
+
+    async_add_entities([PassageMode(coordinator) for coordinator in coordinators])
+
+    for lock_coordinator in coordinators:
+        async_add_when_sensor_present(
+            lock_coordinator,
+            lambda lock_coordinator=lock_coordinator: async_add_entities(
+                [Sensor(lock_coordinator)]
+            ),
+        )
 
     coordinator = gateway_coordinator(hass, entry)
     async_add_entities(

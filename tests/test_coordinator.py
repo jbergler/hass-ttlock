@@ -22,6 +22,7 @@ from custom_components.ttlock.models import (
     PassageModeConfig,
     WebhookEvent,
 )
+from custom_components.ttlock.store import LockStateStore
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -268,7 +269,12 @@ class TestLockUpdateCoordinator:
                 hasGateway=0,
             )
             coordinator = LockUpdateCoordinator(
-                hass, config_entry, api, summary, LockTrafficCapture()
+                hass,
+                config_entry,
+                api,
+                summary,
+                LockTrafficCapture(),
+                LockStateStore(hass),
             )
 
             assert coordinator.connectable is False
@@ -277,6 +283,205 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
 
             assert coordinator.last_update_success is False
+
+    class TestSensorAbsenceTracking:
+        """See coordinator.py's _check_for_sensor - the whole reason issue
+        #181 exists: TTLock's doorSensor/query can't distinguish "no sensor"
+        from a transient failure, so we only give up after repeated
+        failures, persist that verdict, and only re-probe once per restart
+        afterwards.
+        """
+
+        LOCK_ID = 7252408
+
+        def _make_coordinator(
+            self, hass, api, store: LockStateStore
+        ) -> LockUpdateCoordinator:
+            config_entry = MockConfigEntry(domain=DOMAIN)
+            config_entry.add_to_hass(hass)
+            summary = LockSummary(
+                lockId=self.LOCK_ID,
+                lockAlias="Test Lock",
+                lockMac="00:00:00:00:00:00",
+                hasGateway=1,
+            )
+            return LockUpdateCoordinator(
+                hass, config_entry, api, summary, LockTrafficCapture(), store
+            )
+
+        async def _expire_daily_gate(self, store: LockStateStore) -> None:
+            await store.async_update(
+                self.LOCK_ID,
+                door_sensor_last_failed_req=(
+                    dt_util.now() - timedelta(days=2)
+                ).isoformat(),
+            )
+
+        async def test_does_not_recheck_within_the_same_day(
+            self, hass, api, mock_api_responses
+        ):
+            mock_api_responses("sensor_not_installed")
+            store = LockStateStore(hass)
+            coordinator = self._make_coordinator(hass, api, store)
+
+            await coordinator.async_refresh()
+            await coordinator.async_refresh()
+
+            entry = await store.async_get(self.LOCK_ID)
+            assert entry["door_sensor_count_failed_req"] == 1
+
+        async def test_confirms_absent_after_three_consecutive_failures(
+            self, hass, api, mock_api_responses
+        ):
+            mock_api_responses("sensor_not_installed")
+            store = LockStateStore(hass)
+            coordinator = self._make_coordinator(hass, api, store)
+
+            await coordinator.async_refresh()
+            entry = await store.async_get(self.LOCK_ID)
+            assert entry["door_sensor_count_failed_req"] == 1
+            assert entry.get("door_sensor_confirmed_absent", False) is False
+
+            await self._expire_daily_gate(store)
+            await coordinator.async_refresh()
+            entry = await store.async_get(self.LOCK_ID)
+            assert entry["door_sensor_count_failed_req"] == 2
+            assert entry.get("door_sensor_confirmed_absent", False) is False
+
+            await self._expire_daily_gate(store)
+            await coordinator.async_refresh()
+            entry = await store.async_get(self.LOCK_ID)
+            assert entry["door_sensor_count_failed_req"] == 3
+            assert entry["door_sensor_confirmed_absent"] is True
+
+        async def test_no_extra_check_immediately_after_crossing_the_threshold(
+            self, hass, api, mock_api_responses, monkeypatch
+        ):
+            """The refresh that crosses the failure threshold must itself
+            count as this instance's one-shot recheck - otherwise the very
+            next scheduled refresh (minutes later, not gated by the daily
+            throttle that applied while still counting) would see
+            confirmed_absent for "the first time" and fire one more
+            unbudgeted call before finally going quiet.
+            """
+            mock_api_responses("sensor_not_installed")
+            store = LockStateStore(hass)
+            coordinator = self._make_coordinator(hass, api, store)
+
+            await coordinator.async_refresh()
+            await self._expire_daily_gate(store)
+            await coordinator.async_refresh()
+            await self._expire_daily_gate(store)
+            await coordinator.async_refresh()
+
+            entry = await store.async_get(self.LOCK_ID)
+            assert entry["door_sensor_confirmed_absent"] is True
+
+            call_count = 0
+
+            async def counting_get_sensor(self, lock_id):
+                nonlocal call_count
+                call_count += 1
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_sensor",
+                counting_get_sensor,
+            )
+
+            await coordinator.async_refresh()
+
+            assert call_count == 0
+
+        async def test_success_resets_failure_count(
+            self, hass, api, mock_api_responses
+        ):
+            store = LockStateStore(hass)
+            await store.async_update(self.LOCK_ID, door_sensor_count_failed_req=2)
+
+            mock_api_responses("with_sensor")
+            coordinator = self._make_coordinator(hass, api, store)
+            await coordinator.async_refresh()
+
+            entry = await store.async_get(self.LOCK_ID)
+            assert entry["door_sensor_count_failed_req"] == 0
+            assert entry["door_sensor_confirmed_absent"] is False
+
+        async def test_new_instance_gets_one_recheck_after_confirmed_absent(
+            self, hass, api, mock_api_responses, monkeypatch
+        ):
+            """Simulates an HA restart: a fresh LockUpdateCoordinator sharing
+            the persisted store makes exactly one check, not the full
+            three-strike sequence again.
+            """
+            mock_api_responses("sensor_not_installed")
+            store = LockStateStore(hass)
+
+            coordinator_a = self._make_coordinator(hass, api, store)
+            await coordinator_a.async_refresh()
+            await self._expire_daily_gate(store)
+            await coordinator_a.async_refresh()
+            await self._expire_daily_gate(store)
+            await coordinator_a.async_refresh()
+
+            entry = await store.async_get(self.LOCK_ID)
+            assert entry["door_sensor_confirmed_absent"] is True
+
+            call_count = 0
+
+            async def counting_get_sensor(self, lock_id):
+                nonlocal call_count
+                call_count += 1
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_sensor",
+                counting_get_sensor,
+            )
+
+            coordinator_b = self._make_coordinator(hass, api, store)
+            await coordinator_b.async_refresh()
+            await coordinator_b.async_refresh()
+            await coordinator_b.async_refresh()
+
+            assert call_count == 1
+
+        async def test_confirmed_absent_recheck_success_clears_state(
+            self, hass, api, mock_api_responses
+        ):
+            mock_api_responses("with_sensor")
+            store = LockStateStore(hass)
+            await store.async_update(
+                self.LOCK_ID,
+                door_sensor_confirmed_absent=True,
+                door_sensor_count_failed_req=3,
+            )
+
+            coordinator = self._make_coordinator(hass, api, store)
+            await coordinator.async_refresh()
+
+            assert coordinator.data.sensor is not None
+            assert coordinator.data.sensor.present is True
+
+            entry = await store.async_get(self.LOCK_ID)
+            assert entry["door_sensor_confirmed_absent"] is False
+            assert entry["door_sensor_count_failed_req"] == 0
+
+        async def test_confirmed_absent_recheck_failure_leaves_state_unchanged(
+            self, hass, api, mock_api_responses
+        ):
+            mock_api_responses("sensor_not_installed")
+            store = LockStateStore(hass)
+            await store.async_update(
+                self.LOCK_ID,
+                door_sensor_confirmed_absent=True,
+                door_sensor_count_failed_req=3,
+            )
+
+            coordinator = self._make_coordinator(hass, api, store)
+            await coordinator.async_refresh()
+
+            entry = await store.async_get(self.LOCK_ID)
+            assert entry["door_sensor_confirmed_absent"] is True
+            assert entry["door_sensor_count_failed_req"] == 3
 
     class TestProcessWebhookData:
         async def test_lock_works(

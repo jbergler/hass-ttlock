@@ -16,6 +16,7 @@ from custom_components.ttlock.diagnostics import (
     async_get_device_diagnostics,
 )
 from custom_components.ttlock.models import Gateway, LockSummary
+from custom_components.ttlock.store import LockStateStore
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 
@@ -203,7 +204,9 @@ async def _refresh_captured_lock(hass: HomeAssistant) -> tuple[dict, dict]:
             lockMac="16:72:4C:CC:01:C4",
             hasGateway=1,
         )
-        coordinator = LockUpdateCoordinator(hass, config_entry, api, summary, capture)
+        coordinator = LockUpdateCoordinator(
+            hass, config_entry, api, summary, capture, LockStateStore(hass)
+        )
         await coordinator.async_refresh()
 
         hass.data.setdefault(DOMAIN, {})[config_entry.entry_id] = {
