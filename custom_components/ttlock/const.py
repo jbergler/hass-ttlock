@@ -34,8 +34,11 @@ def get_device_logger(lock_id: int) -> logging.Logger:
 
     Named `<integration logger>.device.<lockId>` - a child of the shared
     integration logger, so enabling the integration's existing top-level
-    debug logging still enables every lock's logger too (see
-    docs/adr/0001-per-lock-debug-capture-via-logger-hierarchy.md).
+    debug logging still enables every lock's logger too. This is purely for
+    a technical user watching a lock's traffic live via HA's Configure
+    Logger UI - it has no bearing on capture.py's always-on diagnostics
+    buffer, which is populated unconditionally regardless of this logger's
+    level (see docs/adr/0001-per-lock-debug-capture-via-logger-hierarchy.md).
     """
     return logging.getLogger(f"{DEVICE_LOGGER_PREFIX}{lock_id}")
 

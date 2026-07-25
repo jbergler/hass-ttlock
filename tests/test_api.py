@@ -12,6 +12,7 @@ from custom_components.ttlock.api import (
     TTLockApi,
     TTLockAuthImplementation,
 )
+from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.models import (
     AddPasscodeConfig,
     Card,
@@ -185,6 +186,47 @@ class TestPerLockLogging:
         assert any(
             record.name == "custom_components.ttlock.api" for record in caplog.records
         )
+
+
+class TestDebugCapture:
+    async def test_lock_scoped_request_is_captured_without_any_logger_opt_in(
+        self, mock_oauth_session, mocker: AiohttpClientMocker
+    ):
+        """Capture is always-on: no caplog/logger level is touched here at all."""
+        mocker.get(f"{BASE}lock/detail", json={"errcode": 0})
+
+        capture = LockTrafficCapture()
+        session = mocker.create_session(None)
+        try:
+            api = TTLockApi(session, mock_oauth_session, capture)
+            await api.get("lock/detail", lockId=42)
+        finally:
+            await session.close()
+
+        captured = capture.diagnostics_for(42)
+        assert captured["window"] is not None
+        assert any(
+            "Sending request" in record["message"] for record in captured["records"]
+        )
+        assert any(
+            "Received response" in record["message"] for record in captured["records"]
+        )
+
+    async def test_request_without_lock_id_is_not_captured(
+        self, mock_oauth_session, mocker: AiohttpClientMocker
+    ):
+        """Account-wide (non-lock-scoped) calls have nothing to key a buffer on."""
+        mocker.get(f"{BASE}lock/list", json={"list": []})
+
+        capture = LockTrafficCapture()
+        session = mocker.create_session(None)
+        try:
+            api = TTLockApi(session, mock_oauth_session, capture)
+            await api.get_locks()
+        finally:
+            await session.close()
+
+        assert capture.diagnostics_for(42)["records"] == []
 
 
 class TestGetLocks:

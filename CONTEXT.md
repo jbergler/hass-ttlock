@@ -12,5 +12,5 @@ _Avoid_: reachable, online (online/offline is used for gateways specifically, a 
 The one-time enumeration of every lock in a TTLock account, performed at integration startup. Determines each lock's initial Connectable verdict.
 
 **Debug capture**:
-Opt-in recording of a single lock's raw TTLock traffic (API request/response bodies, inbound webhook events) for troubleshooting, surfaced through diagnostics.
-_Avoid_: debug logging (HA's own general, per-integration mechanism — Debug capture is per-lock and diagnostics-facing), trace
+Always-on recording of a single lock's raw TTLock traffic (API request/response bodies, inbound webhook events) into a small bounded in-memory buffer, surfaced through diagnostics. Not opt-in and not tied to any logger's level — see `docs/adr/0001-per-lock-debug-capture-via-logger-hierarchy.md`.
+_Avoid_: debug logging (HA's own general, per-integration mechanism — Debug capture is per-lock, always-on, and diagnostics-facing), trace

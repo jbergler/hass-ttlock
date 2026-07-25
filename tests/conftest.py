@@ -10,7 +10,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ttlock.api import TTLockApi
-from custom_components.ttlock.capture import DebugCaptureHandler
+from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import DOMAIN, TT_LOCKS
 from custom_components.ttlock.coordinator import LockUpdateCoordinator
 from custom_components.ttlock.models import (
@@ -113,9 +113,7 @@ async def coordinator(hass, api):
     summary = LockSummary(
         lockId=7252408, lockAlias="Test Lock", lockMac="00:00:00:00:00:00", hasGateway=1
     )
-    return LockUpdateCoordinator(
-        hass, config_entry, api, summary, DebugCaptureHandler()
-    )
+    return LockUpdateCoordinator(hass, config_entry, api, summary, LockTrafficCapture())
 
 
 class MockApiData(NamedTuple):

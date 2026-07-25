@@ -10,6 +10,7 @@ from multidict import MultiDict
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
     CONF_WEBHOOK_STATUS,
     CONF_WEBHOOK_URL,
@@ -189,6 +190,42 @@ class TestPerLockLogging:
             record.name == "custom_components.ttlock.webhook"
             for record in caplog.records
         )
+
+
+class TestDebugCapture:
+    async def test_lock_scoped_webhook_data_is_captured_without_any_logger_opt_in(
+        self, hass: HomeAssistant, entry: MockConfigEntry
+    ):
+        """Capture is always-on: no caplog/logger level is touched here at all."""
+        capture = LockTrafficCapture()
+        handler = WebhookHandler(hass, entry, capture)
+
+        request = _request(
+            MultiDict(
+                {"lockId": "7252408", "records": json.dumps([WEBHOOK_LOCK_10AM_UTC])}
+            )
+        )
+        await handler.handle_webhook(hass, "wh-id", request)
+        await hass.async_block_till_done()
+
+        captured = capture.diagnostics_for(7252408)
+        assert captured["window"] is not None
+        assert any(
+            "Got webhook data" in record["message"] for record in captured["records"]
+        )
+
+    async def test_webhook_data_without_lock_id_is_not_captured(
+        self, hass: HomeAssistant, entry: MockConfigEntry
+    ):
+        """Account-wide (non-lock-scoped) webhook payloads have nothing to key a buffer on."""
+        capture = LockTrafficCapture()
+        handler = WebhookHandler(hass, entry, capture)
+
+        request = _request(MultiDict({"records": json.dumps([WEBHOOK_LOCK_10AM_UTC])}))
+        await handler.handle_webhook(hass, "wh-id", request)
+        await hass.async_block_till_done()
+
+        assert capture.diagnostics_for(7252408)["records"] == []
 
 
 class TestSetup:
