@@ -404,3 +404,32 @@ class TestResolveGroupWebhookId:
         assert (
             mock_issue.call_args.args[2] == "webhook_consolidation_ambiguous_client-id"
         )
+        # The current webhook URL is embedded directly in the issue - it
+        # can't just point at the "TTLock Setup" notification, since that
+        # gets dismissed the moment traffic arrives while the repair issue
+        # stays open regardless.
+        placeholders = mock_issue.call_args.kwargs["translation_placeholders"]
+        assert "wh-a" in placeholders["webhook_url"]
+
+    async def test_ambiguous_guess_matching_a_conflicting_confirmed_id_is_not_confirmed(
+        self, hass: HomeAssistant, credential: None
+    ):
+        """A guess isn't "confirmed" just because it happens to equal one of
+        several conflicting previously-confirmed ids - by definition we
+        can't trust it, and marking it confirmed would suppress the setup
+        notification carrying the guessed URL.
+        """
+        entry_a = _mocked_entry(
+            hass, **{CONF_WEBHOOK_ID: "wh-a", CONF_WEBHOOK_STATUS: True}
+        )
+        _mocked_entry(hass, **{CONF_WEBHOOK_ID: "wh-b", CONF_WEBHOOK_STATUS: True})
+        handler = WebhookHandler(hass, entry_a, client_id="client-id")
+
+        with patch("homeassistant.helpers.issue_registry.async_create_issue"):
+            webhook_id, confirmed = await handler._resolve_group_webhook_id()
+
+        # "wh-a" (entry_a's own id) wins the entry-order fallback and is
+        # also, coincidentally, one of the two conflicting confirmed ids -
+        # that coincidence must not be read as "the group is confirmed".
+        assert webhook_id == "wh-a"
+        assert confirmed is False

@@ -165,8 +165,12 @@ class WebhookHandler:
         webhook_id. Prefers whichever webhook_id has actually received live
         traffic before (CONF_WEBHOOK_STATUS); if that's ambiguous (no
         confirmed value, or confirmed members disagree), falls back to entry
-        order and raises a repair issue so the user can confirm the guess
-        against what's registered in the TTLock console.
+        order and raises a repair issue - with the guessed URL embedded
+        directly in it, since the separate "TTLock Setup" persistent
+        notification isn't a reliable place to point the user at: it gets
+        dismissed the moment any traffic arrives on the guessed webhook,
+        while the repair issue (which the user might not read until later)
+        stays open regardless.
 
         Returns the chosen webhook_id and whether the group is confirmed
         (some member has already received live traffic on it).
@@ -183,6 +187,7 @@ class WebhookHandler:
             if member.data.get(CONF_WEBHOOK_STATUS) and CONF_WEBHOOK_ID in member.data
         }
 
+        ambiguous = False
         if not existing:
             canonical = secrets.token_hex()
         elif len(existing) == 1:
@@ -195,17 +200,14 @@ class WebhookHandler:
                 for member in members
                 if CONF_WEBHOOK_ID in member.data
             )
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                f"webhook_consolidation_ambiguous_{self.client_id}",
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key="webhook_consolidation_ambiguous",
-                learn_more_url="https://open.ttlock.com/manager",
-            )
+            ambiguous = True
 
-        confirmed = canonical in confirmed_ids
+        # Ambiguous means we can't actually trust the guess, even if it
+        # happens to equal one of several conflicting previously-confirmed
+        # ids - treating it as confirmed here would suppress the setup
+        # notification carrying the URL below.
+        confirmed = not ambiguous and canonical in confirmed_ids
+
         for member in members:
             data = dict(member.data)
             changed = False
@@ -218,6 +220,22 @@ class WebhookHandler:
                 changed = True
             if changed:
                 self.hass.config_entries.async_update_entry(member, data=data)
+
+        if ambiguous:
+            try:
+                webhook_url = webhook.async_generate_url(self.hass, canonical)
+            except NoURLAvailableError:
+                webhook_url = canonical
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                f"webhook_consolidation_ambiguous_{self.client_id}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="webhook_consolidation_ambiguous",
+                translation_placeholders={"webhook_url": webhook_url},
+                learn_more_url="https://open.ttlock.com/manager",
+            )
 
         return canonical, confirmed
 
