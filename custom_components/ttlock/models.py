@@ -116,22 +116,24 @@ class Sensor(BaseModel):
     mac: str = Field(..., alias="mac")
 
 
-class Gateway(BaseModel):
-    """Gateway details."""
+class GatewayIdentity(BaseModel):
+    """Fields common to every gateway/* response shape."""
 
     id: int = Field(..., alias="gatewayId")
     name: str = Field(..., alias="gatewayName")
     mac: str = Field(..., alias="gatewayMac")
+
+
+class Gateway(GatewayIdentity):
+    """Gateway details."""
+
     is_online: bool = Field(..., alias="isOnline")
     network_name: str | None = Field(None, alias="networkName")
 
 
-class GatewayLink(BaseModel):
+class GatewayLink(GatewayIdentity):
     """A gateway currently in range of a lock, from gateway/listByLock."""
 
-    id: int = Field(..., alias="gatewayId")
-    name: str = Field(..., alias="gatewayName")
-    mac: str = Field(..., alias="gatewayMac")
     rssi: int
 
 
