@@ -522,7 +522,7 @@ class Services:
 
         seconds = call.data[CONF_AUTO_LOCK_SECONDS]
         for coordinator in self._get_coordinators(call).values():
-            await coordinator.async_set_auto_lock_override(seconds)
+            await coordinator.set_auto_lock_override(seconds)
 
     async def handle_list_cards(self, call: ServiceCall) -> ServiceResponse:
         """List all IC cards for the selected locks."""

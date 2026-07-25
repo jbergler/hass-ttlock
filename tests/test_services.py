@@ -844,7 +844,7 @@ class Test_set_config_override:
         coordinator = await component_setup()
         entity_id = coordinator.entities[0].entity_id
 
-        await coordinator.async_set_auto_lock_override(5)
+        await coordinator.set_auto_lock_override(5)
         assert coordinator.data.auto_lock_seconds == 5
 
         await hass.services.async_call(
@@ -863,9 +863,7 @@ class Test_set_config_override:
         coordinator = await component_setup()
         entity_id = coordinator.entities[0].entity_id
 
-        with patch.object(
-            coordinator, "async_set_auto_lock_override"
-        ) as mock_set_override:
+        with patch.object(coordinator, "set_auto_lock_override") as mock_set_override:
             await hass.services.async_call(
                 DOMAIN,
                 SVC_SET_CONFIG_OVERRIDE,

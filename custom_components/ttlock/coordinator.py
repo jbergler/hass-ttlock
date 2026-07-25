@@ -530,7 +530,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             self.data.auto_lock_seconds = seconds
             self.async_update_listeners()
 
-    async def async_set_auto_lock_override(self, seconds: int | None) -> None:
+    async def set_auto_lock_override(self, seconds: int | None) -> None:
         """Persist a locally-assumed auto-lock delay, for locks TTLock's API never reports one for.
 
         Never sent to the lock or TTLock's API - see _async_update_data, which

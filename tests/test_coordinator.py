@@ -605,7 +605,7 @@ class TestLockUpdateCoordinator:
                 coordinator.data.auto_lock_seconds == BASIC_LOCK_DETAILS["autoLockTime"]
             )
 
-        async def test_async_set_auto_lock_override_persists_and_applies_immediately(
+        async def test_set_auto_lock_override_persists_and_applies_immediately(
             self, hass, api, mock_api_responses
         ):
             mock_api_responses("no_autolock")
@@ -614,13 +614,13 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
             assert coordinator.data.auto_lock_seconds is None
 
-            await coordinator.async_set_auto_lock_override(5)
+            await coordinator.set_auto_lock_override(5)
 
             assert coordinator.data.auto_lock_seconds == 5
             entry = await store.async_get(self.LOCK_ID)
             assert entry["auto_lock_override_seconds"] == 5
 
-        async def test_async_set_auto_lock_override_none_clears_it(
+        async def test_set_auto_lock_override_none_clears_it(
             self, hass, api, mock_api_responses
         ):
             mock_api_responses("no_autolock")
@@ -630,7 +630,7 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
             assert coordinator.data.auto_lock_seconds == 5
 
-            await coordinator.async_set_auto_lock_override(None)
+            await coordinator.set_auto_lock_override(None)
 
             assert coordinator.data.auto_lock_seconds is None
 
