@@ -54,11 +54,11 @@ jobs:
             --timeout=9 \
             --durations=10 \
             -n auto \
-            --cov custom_components.ttlock \
+            --cov \
             --cov-report=xml \
             -o console_output_style=count \
             -p no:sugar \
-            --cov --junitxml=junit.xml -o junit_family=legacy \
+            --junitxml=junit.xml -o junit_family=legacy \
             tests
       - name: Upload coverage reports to Codecov
         if: ${{ !cancelled() }}
