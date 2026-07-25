@@ -13,5 +13,5 @@ jobs:
         uses: ergo720/auto-close-issues@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          issue-close-message: "@${issue.user.login}: hello! :wave:\n\nThis issue is being automatically closed because it does not follow the issue template."
+          issue-close-message: "@${issue.user.login}: hello! :wave:\n\nThis issue is being automatically closed because it does not follow the [issue template](https://github.com/jbergler/hass-ttlock/blob/develop/.github/ISSUE_TEMPLATE/issue.md) — in particular, please include a lock's diagnostics download (see **Required information** in the template). Edit this issue to add the missing sections and it will reopen automatically."
           closed-issues-label: "invalid"
