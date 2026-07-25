@@ -166,24 +166,19 @@ async def test_device_diagnostics_matches_config_entry_lock_entry(
     }
 
 
-async def test_debug_capture_appears_redacted_in_diagnostics(
-    hass: HomeAssistant, caplog
-):
-    """A lock's raw traffic is captured into diagnostics unconditionally - no logger
-    opt-in required - and redacted independently of HA's live logs.
+DEBUG_CAPTURE_DEVICE_LOGGER_NAME = "custom_components.ttlock.device.7252408"
+
+
+async def _refresh_captured_lock(hass: HomeAssistant) -> tuple[dict, dict]:
+    """Refresh lock 7252408 through the real TTLockApi request/response logging.
 
     Deliberately bypasses the `mock_api_responses` fixture, which stubs out
     TTLockApi's methods entirely and so never exercises the request/response
-    debug logging this test is about - instead it mocks at the HTTP layer
+    debug logging these tests are about - instead it mocks at the HTTP layer
     (like test_api.py) so the real TTLockApi.get/_parse_resp logging runs.
-    """
-    device_logger_name = "custom_components.ttlock.device.7252408"
-    # pytest_homeassistant_custom_component forces the root logger to DEBUG
-    # for every test (see the equivalent note in test_api.py), so this lock's
-    # logger needs an explicit level above DEBUG to simulate its normal,
-    # un-enabled default - proving capture doesn't depend on it.
-    caplog.set_level(logging.WARNING, logger=device_logger_name)
 
+    Returns (config-entry diagnostics, that lock's device diagnostics).
+    """
     mocker = AiohttpClientMocker()
     mocker.get(f"{API_BASE}lock/detail", json=BASIC_LOCK_DETAILS)
     mocker.get(f"{API_BASE}lock/queryOpenState", json=LOCK_STATE_UNLOCKED)
@@ -228,6 +223,24 @@ async def test_debug_capture_appears_redacted_in_diagnostics(
     finally:
         await session.close()
 
+    return diagnostics, device_diagnostics
+
+
+async def test_debug_capture_appears_redacted_in_diagnostics(
+    hass: HomeAssistant, caplog
+):
+    """A lock's raw traffic is captured into diagnostics unconditionally - no logger
+    opt-in required - and redacted independently of HA's live logs.
+    """
+    device_logger_name = DEBUG_CAPTURE_DEVICE_LOGGER_NAME
+    # pytest_homeassistant_custom_component forces the root logger to DEBUG
+    # for every test (see the equivalent note in test_api.py), so this lock's
+    # logger needs an explicit level above DEBUG to simulate its normal,
+    # un-enabled default - proving capture doesn't depend on it.
+    caplog.set_level(logging.WARNING, logger=device_logger_name)
+
+    diagnostics, device_diagnostics = await _refresh_captured_lock(hass)
+
     capture_result = diagnostics["locks"][0]["debug_capture"]
     assert capture_result["window"] is not None
 
@@ -261,44 +274,10 @@ async def test_debug_capture_redaction_does_not_affect_live_log_output(
     unredacted, while the same field is redacted in that lock's captured
     diagnostics output.
     """
-    device_logger_name = "custom_components.ttlock.device.7252408"
+    device_logger_name = DEBUG_CAPTURE_DEVICE_LOGGER_NAME
     caplog.set_level(logging.DEBUG, logger=device_logger_name)
 
-    mocker = AiohttpClientMocker()
-    mocker.get(f"{API_BASE}lock/detail", json=BASIC_LOCK_DETAILS)
-    mocker.get(f"{API_BASE}lock/queryOpenState", json=LOCK_STATE_UNLOCKED)
-    mocker.get(f"{API_BASE}lock/getPassageModeConfig", json=PASSAGE_MODE_6_TO_6_7_DAYS)
-
-    oauth_session = MagicMock()
-    oauth_session.valid_token = True
-    oauth_session.token = {"access_token": "mock-access-token"}
-    oauth_session.implementation.client_id = "mock-client-id"
-    oauth_session.async_ensure_token_valid = AsyncMock()
-
-    session = mocker.create_session(None)
-    capture = LockTrafficCapture()
-
-    try:
-        api = TTLockApi(session, oauth_session, capture)
-        config_entry = MockConfigEntry(domain=DOMAIN)
-        config_entry.add_to_hass(hass)
-        summary = LockSummary(
-            lockId=7252408,
-            lockAlias="Front Door",
-            lockMac="16:72:4C:CC:01:C4",
-            hasGateway=1,
-        )
-        coordinator = LockUpdateCoordinator(hass, config_entry, api, summary, capture)
-        await coordinator.async_refresh()
-
-        hass.data.setdefault(DOMAIN, {})[config_entry.entry_id] = {
-            TT_LOCKS: [coordinator],
-            TT_GATEWAYS: SimpleNamespace(as_dict=list),
-        }
-
-        diagnostics = await async_get_config_entry_diagnostics(hass, config_entry)
-    finally:
-        await session.close()
+    diagnostics, _ = await _refresh_captured_lock(hass)
 
     # lockKey is a known-sensitive field present in the real lock/detail response body.
     sensitive_value = BASIC_LOCK_DETAILS["lockKey"]
