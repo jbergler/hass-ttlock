@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_WEBHOOK_ID, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
+from homeassistant.helpers.device_registry import DeviceEntry
 
 from .api import TTLockApi
 from .capture import LockTrafficCapture
@@ -150,6 +151,31 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             domain_data.pop(_STORE_KEY, None)
 
     return unload_ok
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: ConfigEntry, device_entry: DeviceEntry
+) -> bool:
+    """Allow manually deleting a lock/gateway device once it's gone from the account.
+
+    A lock or gateway removed from the TTLock account drops out of
+    async_setup_entry's next get_locks()/get_gateways() call, but its device
+    stays behind in the registry with no entities - the only way to clear it
+    is a manual delete from the device page. Block that for macs still
+    present in this entry's live coordinators (a still-active device HA would
+    just recreate); allow it otherwise, including when this entry's runtime
+    data isn't in hass.data at all (failed/unloaded entry - nothing to check
+    against, and exactly when stale devices are likely to need clearing).
+    """
+    domain_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if domain_data is None:
+        return True
+
+    known_macs = {coordinator.data.mac for coordinator in domain_data[TT_LOCKS]}
+    gateways = domain_data[TT_GATEWAYS].data or {}
+    known_macs.update(gateway.mac for gateway in gateways.values())
+
+    return not any((DOMAIN, mac) in device_entry.identifiers for mac in known_macs)
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

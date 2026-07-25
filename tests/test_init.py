@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+from custom_components.ttlock import async_remove_config_entry_device
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
     CONF_WEBHOOK_STATUS,
@@ -9,10 +10,11 @@ from custom_components.ttlock.const import (
     TT_CAPTURE,
     TT_LOCKS,
 )
-from custom_components.ttlock.models import LockSummary
+from custom_components.ttlock.models import Gateway, LockSummary
 from custom_components.ttlock.webhook import WebhookHandler
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_WEBHOOK_ID, EVENT_HOMEASSISTANT_STOP
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.network import NoURLAvailableError
 
 
@@ -304,6 +306,87 @@ async def test_removing_entry_without_cloudhook_is_a_noop(
     assert await hass.config_entries.async_remove(entry.entry_id)
 
     mock_cloud.async_delete_cloudhook.assert_not_called()
+
+
+async def test_remove_config_entry_device_blocks_active_lock(
+    hass, component_setup, mock_api_responses
+):
+    """A device for a lock still on the account can't be manually deleted."""
+    mock_api_responses("default")
+    await component_setup()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    device = dr.async_get(hass).async_get_device(
+        identifiers={(DOMAIN, "16:72:4C:CC:01:C4")}
+    )
+    assert device is not None
+
+    assert await async_remove_config_entry_device(hass, entry, device) is False
+
+
+async def test_remove_config_entry_device_allows_removed_lock(
+    hass, component_setup, mock_api_responses
+):
+    """A device left behind after its lock was removed from the account can be deleted."""
+    mock_api_responses("default")
+    await component_setup()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    orphaned_device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "00:00:00:00:00:99")},
+    )
+
+    assert await async_remove_config_entry_device(hass, entry, orphaned_device) is True
+
+
+async def test_remove_config_entry_device_blocks_active_gateway(
+    hass, component_setup, mock_api_responses, monkeypatch
+):
+    """A device for a gateway still on the account can't be manually deleted."""
+    mock_api_responses("default")
+
+    async def mock_get_gateways(*args, **kwargs):
+        return [
+            Gateway(
+                gatewayId=1,
+                gatewayName="Test Gateway",
+                gatewayMac="11:22:33:44:55:66",
+                isOnline=True,
+            )
+        ]
+
+    monkeypatch.setattr(
+        "custom_components.ttlock.api.TTLockApi.get_gateways", mock_get_gateways
+    )
+
+    await component_setup()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    gateway_device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "11:22:33:44:55:66")},
+    )
+
+    assert await async_remove_config_entry_device(hass, entry, gateway_device) is False
+
+
+async def test_remove_config_entry_device_allows_when_entry_data_missing(
+    hass, component_setup, mock_api_responses
+):
+    """A failed/unloaded entry has nothing to check against, so removal is allowed."""
+    mock_api_responses("default")
+    await component_setup()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    device = dr.async_get(hass).async_get_device(
+        identifiers={(DOMAIN, "16:72:4C:CC:01:C4")}
+    )
+    assert device is not None
+
+    hass.data[DOMAIN].pop(entry.entry_id)
+
+    assert await async_remove_config_entry_device(hass, entry, device) is True
 
 
 async def test_removing_entry_whose_cloudhook_was_never_created_is_a_noop(
