@@ -30,6 +30,14 @@
     "no_webhook_url": {
       "description": "An error ocurred while trying to generate a webhook url. Please make sure that you have a URL configured in Settings > System > Network.",
       "title": "Unable to generate webhook URL."
+    },
+    "webhook_consolidation_ambiguous": {
+      "description": "This TTLock developer application had more than one webhook URL saved from before locks under it could share one, and it wasn't clear which one is actually registered with TTLock. We picked this one automatically:\n\n{webhook_url}\n\nMake sure it matches what's registered in the TTLock console (see the link below), updating it there if it doesn't.",
+      "title": "Confirm your TTLock webhook URL"
+    },
+    "webhook_setup": {
+      "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n{webhook_url}\n\nUse the link below to open the TTLock console, or see [the setup docs]({docs_url}) for more info. Until this is done, locks still stay in sync via TTLock's regular 15-minute poll.",
+      "title": "Register your TTLock webhook URL"
     }
   }
 }

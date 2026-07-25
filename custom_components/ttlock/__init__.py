@@ -90,7 +90,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await gateway_coordinator.async_config_entry_first_refresh()
     hass.data[DOMAIN][entry.entry_id][TT_GATEWAYS] = gateway_coordinator
 
-    await WebhookHandler(hass, entry, capture).setup()
+    await WebhookHandler(
+        hass,
+        entry,
+        capture,
+        implementation.client_id,  # ty: ignore[unresolved-attribute] - implementation is a TTLockAuthImplementation
+    ).setup()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -123,8 +128,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         domain_data = hass.data[DOMAIN]
         domain_data.pop(entry.entry_id)
 
-        # last entry gone - drop the shared capture buffer too
-        if not any(key != _CAPTURE_KEY for key in domain_data):
-            domain_data.pop(_CAPTURE_KEY)
+        # last entry gone - drop the shared capture buffer too. Entry IDs are
+        # hex strings from HA's entry-id generator; shared, non-entry state
+        # (this module's _CAPTURE_KEY, webhook.py's own group bookkeeping) is
+        # marked with a leading underscore so it doesn't count as "an entry
+        # is still loaded" here.
+        if not any(not key.startswith("_") for key in domain_data):
+            domain_data.pop(_CAPTURE_KEY, None)
 
     return unload_ok

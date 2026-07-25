@@ -25,6 +25,21 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from .const import WEBHOOK_LOCK_10AM_UTC, WEBHOOK_UNLOCK_10AM_UTC
 
 
+def _mocked_entry(hass: HomeAssistant, **data) -> MockConfigEntry:
+    """A config entry authenticated via the "mocked" client-id credential."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={"auth_implementation": "mocked", **data}
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+@pytest.fixture
+async def credential(hass: HomeAssistant, multi_account_credential) -> None:
+    """Register the shared client-id credential these tests' entries use."""
+    await multi_account_credential(hass)
+
+
 class FakeRequest:
     """Minimal stand-in for aiohttp's web Request."""
 
@@ -53,7 +68,7 @@ def entry(hass: HomeAssistant) -> MockConfigEntry:
 
 @pytest.fixture
 def handler(hass: HomeAssistant, entry: MockConfigEntry) -> WebhookHandler:
-    return WebhookHandler(hass, entry)
+    return WebhookHandler(hass, entry, client_id="client-id")
 
 
 class TestHandleWebhook:
@@ -110,20 +125,20 @@ class TestHandleWebhook:
 
         assert received == []
 
-    async def test_dismisses_setup_message_on_first_success(
+    async def test_resolves_setup_issue_on_first_success(
         self, hass: HomeAssistant, handler: WebhookHandler, entry: MockConfigEntry
     ):
         assert CONF_WEBHOOK_STATUS not in entry.data
 
-        with patch.object(handler, "async_dismiss_setup_message") as mock_dismiss:
+        with patch.object(handler, "async_resolve_setup_issue") as mock_resolve:
             request = _request(
                 MultiDict({"records": json.dumps([WEBHOOK_LOCK_10AM_UTC])})
             )
             await handler.handle_webhook(hass, "wh-id", request)
 
-        mock_dismiss.assert_called_once()
+        mock_resolve.assert_called_once()
 
-    async def test_does_not_dismiss_setup_message_when_already_dismissed(
+    async def test_does_not_resolve_setup_issue_when_already_resolved(
         self, hass: HomeAssistant, entry: MockConfigEntry
     ):
         hass.config_entries.async_update_entry(
@@ -131,21 +146,21 @@ class TestHandleWebhook:
         )
         handler = WebhookHandler(hass, entry)
 
-        with patch.object(handler, "async_dismiss_setup_message") as mock_dismiss:
+        with patch.object(handler, "async_resolve_setup_issue") as mock_resolve:
             request = _request(
                 MultiDict({"records": json.dumps([WEBHOOK_LOCK_10AM_UTC])})
             )
             await handler.handle_webhook(hass, "wh-id", request)
 
-        mock_dismiss.assert_not_called()
+        mock_resolve.assert_not_called()
 
-    async def test_does_not_dismiss_setup_message_without_records(
+    async def test_does_not_resolve_setup_issue_without_records(
         self, hass: HomeAssistant, handler: WebhookHandler
     ):
-        with patch.object(handler, "async_dismiss_setup_message") as mock_dismiss:
+        with patch.object(handler, "async_resolve_setup_issue") as mock_resolve:
             await handler.handle_webhook(hass, "wh-id", _request(MultiDict()))
 
-        mock_dismiss.assert_not_called()
+        mock_resolve.assert_not_called()
 
 
 class TestPerLockLogging:
@@ -276,16 +291,145 @@ class TestGetUrl:
         mock_cloudhook.assert_not_called()
 
 
-class TestDismissSetupMessage:
-    async def test_marks_status_and_dismisses_notification(
+class TestResolveSetupIssue:
+    async def test_marks_status_and_resolves_issue(
         self, hass: HomeAssistant, handler: WebhookHandler, entry: MockConfigEntry
     ):
         assert CONF_WEBHOOK_STATUS not in entry.data
 
         with patch(
-            "homeassistant.components.persistent_notification.async_dismiss"
-        ) as mock_dismiss:
-            handler.async_dismiss_setup_message()
+            "homeassistant.helpers.issue_registry.async_delete_issue"
+        ) as mock_delete:
+            handler.async_resolve_setup_issue()
 
         assert entry.data[CONF_WEBHOOK_STATUS] is True
-        mock_dismiss.assert_called_once_with(hass, entry.entry_id)
+        mock_delete.assert_called_once_with(hass, DOMAIN, "webhook_setup_client-id")
+
+
+class TestResolveGroupWebhookId:
+    """Reconciling config entries that share one client_id's webhook."""
+
+    async def test_mints_new_id_when_group_has_none(
+        self, hass: HomeAssistant, credential: None
+    ):
+        entry = _mocked_entry(hass)
+        handler = WebhookHandler(hass, entry, client_id="client-id")
+
+        webhook_id, confirmed = await handler._resolve_group_webhook_id()
+
+        assert webhook_id
+        assert confirmed is False
+        assert entry.data[CONF_WEBHOOK_ID] == webhook_id
+
+    async def test_single_existing_value_has_no_ambiguity(
+        self, hass: HomeAssistant, credential: None
+    ):
+        entry_a = _mocked_entry(hass, **{CONF_WEBHOOK_ID: "wh-a"})
+        entry_b = _mocked_entry(hass)
+        handler = WebhookHandler(hass, entry_a, client_id="client-id")
+
+        with patch(
+            "homeassistant.helpers.issue_registry.async_create_issue"
+        ) as mock_issue:
+            webhook_id, confirmed = await handler._resolve_group_webhook_id()
+
+        assert webhook_id == "wh-a"
+        assert confirmed is False
+        assert entry_b.data[CONF_WEBHOOK_ID] == "wh-a"
+        mock_issue.assert_not_called()
+
+    async def test_confirmed_entry_wins_when_values_diverge(
+        self, hass: HomeAssistant, credential: None
+    ):
+        entry_a = _mocked_entry(
+            hass, **{CONF_WEBHOOK_ID: "wh-a", CONF_WEBHOOK_STATUS: True}
+        )
+        entry_b = _mocked_entry(hass, **{CONF_WEBHOOK_ID: "wh-b"})
+        handler = WebhookHandler(hass, entry_a, client_id="client-id")
+
+        with patch(
+            "homeassistant.helpers.issue_registry.async_create_issue"
+        ) as mock_issue:
+            webhook_id, confirmed = await handler._resolve_group_webhook_id()
+
+        assert webhook_id == "wh-a"
+        assert confirmed is True
+        assert entry_b.data[CONF_WEBHOOK_ID] == "wh-a"
+        assert entry_b.data[CONF_WEBHOOK_STATUS] is True
+        mock_issue.assert_not_called()
+
+    async def test_multiple_entries_confirming_the_same_value_has_no_ambiguity(
+        self, hass: HomeAssistant, credential: None
+    ):
+        """Two confirmed entries that already agree aren't "ambiguous" just
+        because more than one of them is confirmed.
+        """
+        entry_a = _mocked_entry(
+            hass, **{CONF_WEBHOOK_ID: "wh-a", CONF_WEBHOOK_STATUS: True}
+        )
+        entry_b = _mocked_entry(
+            hass, **{CONF_WEBHOOK_ID: "wh-a", CONF_WEBHOOK_STATUS: True}
+        )
+        entry_c = _mocked_entry(hass, **{CONF_WEBHOOK_ID: "wh-c"})
+        handler = WebhookHandler(hass, entry_a, client_id="client-id")
+
+        with patch(
+            "homeassistant.helpers.issue_registry.async_create_issue"
+        ) as mock_issue:
+            webhook_id, confirmed = await handler._resolve_group_webhook_id()
+
+        assert webhook_id == "wh-a"
+        assert confirmed is True
+        assert entry_b.data[CONF_WEBHOOK_ID] == "wh-a"
+        assert entry_c.data[CONF_WEBHOOK_ID] == "wh-a"
+        assert entry_c.data[CONF_WEBHOOK_STATUS] is True
+        mock_issue.assert_not_called()
+
+    async def test_ambiguous_values_fall_back_to_entry_order_and_raise_repair_issue(
+        self, hass: HomeAssistant, credential: None
+    ):
+        entry_a = _mocked_entry(hass, **{CONF_WEBHOOK_ID: "wh-a"})
+        entry_b = _mocked_entry(hass, **{CONF_WEBHOOK_ID: "wh-b"})
+        handler = WebhookHandler(hass, entry_a, client_id="client-id")
+
+        with patch(
+            "homeassistant.helpers.issue_registry.async_create_issue"
+        ) as mock_issue:
+            webhook_id, confirmed = await handler._resolve_group_webhook_id()
+
+        assert webhook_id == "wh-a"
+        assert confirmed is False
+        assert entry_b.data[CONF_WEBHOOK_ID] == "wh-a"
+        mock_issue.assert_called_once()
+        assert (
+            mock_issue.call_args.args[2] == "webhook_consolidation_ambiguous_client-id"
+        )
+        # The current webhook URL is embedded directly in the issue - it
+        # can't just point at the "TTLock Setup" notification, since that
+        # gets dismissed the moment traffic arrives while the repair issue
+        # stays open regardless.
+        placeholders = mock_issue.call_args.kwargs["translation_placeholders"]
+        assert "wh-a" in placeholders["webhook_url"]
+
+    async def test_ambiguous_guess_matching_a_conflicting_confirmed_id_is_not_confirmed(
+        self, hass: HomeAssistant, credential: None
+    ):
+        """A guess isn't "confirmed" just because it happens to equal one of
+        several conflicting previously-confirmed ids - by definition we
+        can't trust it, and marking it confirmed would suppress the setup
+        notification carrying the guessed URL.
+        """
+        entry_a = _mocked_entry(
+            hass, **{CONF_WEBHOOK_ID: "wh-a", CONF_WEBHOOK_STATUS: True}
+        )
+        _mocked_entry(hass, **{CONF_WEBHOOK_ID: "wh-b", CONF_WEBHOOK_STATUS: True})
+        handler = WebhookHandler(hass, entry_a, client_id="client-id")
+
+        with patch("homeassistant.helpers.issue_registry.async_create_issue"):
+            webhook_id, confirmed = await handler._resolve_group_webhook_id()
+
+        # "wh-a" (entry_a's own id) wins the entry-order fallback and is
+        # also, coincidentally, one of the two conflicting confirmed ids -
+        # that coincidence must not be read as "the group is confirmed".
+        assert webhook_id == "wh-a"
+        assert confirmed is False
