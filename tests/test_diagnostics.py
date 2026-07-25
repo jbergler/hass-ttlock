@@ -166,24 +166,19 @@ async def test_device_diagnostics_matches_config_entry_lock_entry(
     }
 
 
-async def test_debug_capture_appears_redacted_in_diagnostics(
-    hass: HomeAssistant, caplog
-):
-    """A lock's raw traffic is captured into diagnostics unconditionally - no logger
-    opt-in required - and redacted independently of HA's live logs.
+DEBUG_CAPTURE_DEVICE_LOGGER_NAME = "custom_components.ttlock.device.7252408"
+
+
+async def _refresh_captured_lock(hass: HomeAssistant) -> tuple[dict, dict]:
+    """Refresh lock 7252408 through the real TTLockApi request/response logging.
 
     Deliberately bypasses the `mock_api_responses` fixture, which stubs out
     TTLockApi's methods entirely and so never exercises the request/response
-    debug logging this test is about - instead it mocks at the HTTP layer
+    debug logging these tests are about - instead it mocks at the HTTP layer
     (like test_api.py) so the real TTLockApi.get/_parse_resp logging runs.
-    """
-    device_logger_name = "custom_components.ttlock.device.7252408"
-    # pytest_homeassistant_custom_component forces the root logger to DEBUG
-    # for every test (see the equivalent note in test_api.py), so this lock's
-    # logger needs an explicit level above DEBUG to simulate its normal,
-    # un-enabled default - proving capture doesn't depend on it.
-    caplog.set_level(logging.WARNING, logger=device_logger_name)
 
+    Returns (config-entry diagnostics, that lock's device diagnostics).
+    """
     mocker = AiohttpClientMocker()
     mocker.get(f"{API_BASE}lock/detail", json=BASIC_LOCK_DETAILS)
     mocker.get(f"{API_BASE}lock/queryOpenState", json=LOCK_STATE_UNLOCKED)
@@ -228,6 +223,24 @@ async def test_debug_capture_appears_redacted_in_diagnostics(
     finally:
         await session.close()
 
+    return diagnostics, device_diagnostics
+
+
+async def test_debug_capture_appears_redacted_in_diagnostics(
+    hass: HomeAssistant, caplog
+):
+    """A lock's raw traffic is captured into diagnostics unconditionally - no logger
+    opt-in required - and redacted independently of HA's live logs.
+    """
+    device_logger_name = DEBUG_CAPTURE_DEVICE_LOGGER_NAME
+    # pytest_homeassistant_custom_component forces the root logger to DEBUG
+    # for every test (see the equivalent note in test_api.py), so this lock's
+    # logger needs an explicit level above DEBUG to simulate its normal,
+    # un-enabled default - proving capture doesn't depend on it.
+    caplog.set_level(logging.WARNING, logger=device_logger_name)
+
+    diagnostics, device_diagnostics = await _refresh_captured_lock(hass)
+
     capture_result = diagnostics["locks"][0]["debug_capture"]
     assert capture_result["window"] is not None
 
@@ -246,3 +259,39 @@ async def test_debug_capture_appears_redacted_in_diagnostics(
     # This lock's logger was never raised to DEBUG, so HA's live log output
     # stays silent - capture is independent of, not gated by, that opt-in.
     assert not any(record.name == device_logger_name for record in caplog.records)
+
+
+async def test_debug_capture_redaction_does_not_affect_live_log_output(
+    hass: HomeAssistant, caplog
+):
+    """Redaction is a diagnostics-surface concern only, not a change to live logging.
+
+    Companion to test_debug_capture_appears_redacted_in_diagnostics above, which
+    proves capture doesn't depend on the device logger's level by keeping it above
+    DEBUG (so nothing live is even emitted). This test does the opposite: it raises
+    the device logger to DEBUG so a live record *is* emitted, then asserts both
+    sides of the contrast - the live log record carries the sensitive field
+    unredacted, while the same field is redacted in that lock's captured
+    diagnostics output.
+    """
+    device_logger_name = DEBUG_CAPTURE_DEVICE_LOGGER_NAME
+    caplog.set_level(logging.DEBUG, logger=device_logger_name)
+
+    diagnostics, _ = await _refresh_captured_lock(hass)
+
+    # lockKey is a known-sensitive field present in the real lock/detail response body.
+    sensitive_value = BASIC_LOCK_DETAILS["lockKey"]
+
+    live_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == device_logger_name
+    ]
+    assert any("Received response" in message for message in live_messages)
+    assert any(sensitive_value in message for message in live_messages)
+
+    capture_result = diagnostics["locks"][0]["debug_capture"]
+    captured_messages = [record["message"] for record in capture_result["records"]]
+    assert any("Received response" in message for message in captured_messages)
+    assert not any(sensitive_value in message for message in captured_messages)
+    assert any("**REDACTED**" in message for message in captured_messages)
