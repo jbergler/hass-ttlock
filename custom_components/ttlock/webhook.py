@@ -5,10 +5,17 @@ your TTLock account (see https://open.ttlock.com/manager), is called
 whenever a lock/passcode event happens. WebhookHandler.handle_webhook parses
 the payload into WebhookEvent models and dispatches SIGNAL_NEW_DATA, which
 LockUpdateCoordinator._process_webhook_data (coordinator.py) listens for.
+
+TTLock's console accepts one callback URL per developer application
+(client_id), not per TTLock account, but each config entry is one account
+login - so config entries sharing a client_id must share one webhook
+registration rather than each minting their own. See
+docs/adr/0002-shared-webhook-per-developer-application.md.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
@@ -27,7 +34,7 @@ from homeassistant.const import (
     EVENT_HOMEASSISTANT_STOP,
 )
 from homeassistant.core import CoreState, Event, HomeAssistant
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import config_entry_oauth2_flow, issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import NoURLAvailableError
 
@@ -43,6 +50,46 @@ from .models import WebhookEvent
 
 _LOGGER = logging.getLogger(__name__)
 
+# hass.data[DOMAIN][_GROUPS_KEY]: dict[client_id, _WebhookGroup]. Refcounts
+# how many loaded config entries share one developer application's webhook
+# registration, so it's registered on the first member's setup and only
+# unregistered once the last member unloads - no single member is a
+# privileged "owner".
+_GROUPS_KEY = "_webhook_groups"
+
+# Serializes the check-is-group-active-and-increment section of
+# register_webhook (and its unregister_webhook counterpart) so two sibling
+# entries loading concurrently at startup can't both decide they're first.
+_GROUPS_LOCK = asyncio.Lock()
+
+
+def _notification_id(client_id: str) -> str:
+    return f"ttlock_webhook_{client_id}"
+
+
+class _WebhookGroup:
+    """The shared webhook_id for one client_id, and how many entries use it."""
+
+    def __init__(self, webhook_id: str, confirmed: bool = False) -> None:
+        self.webhook_id = webhook_id
+        self.refcount = 0
+        # Only True once webhook_register has actually been called for this
+        # webhook_id - distinct from refcount, since a member can join the
+        # group (refcount+1) but bail out before registering (eg.
+        # NoURLAvailableError), leaving the next member to still need to do
+        # the real HA-side registration.
+        self.registered = False
+        # Has any member ever actually received webhook traffic? Tracked
+        # here (not just in each entry's own CONF_WEBHOOK_STATUS) so a new
+        # sibling joining an already-working group later in the same
+        # runtime doesn't get told to go register a URL that's already live.
+        self.confirmed = confirmed
+        # Has the "register this URL" notification already been shown for
+        # this group this runtime? All members share one notification_id, so
+        # showing it again would just be a same-content no-op, but tracking
+        # this avoids the redundant call.
+        self.notified = False
+
 
 class WebhookHandler:
     """Responsible for setting up/processing webhook data."""
@@ -52,10 +99,12 @@ class WebhookHandler:
         hass: HomeAssistant,
         entry: ConfigEntry,
         capture: LockTrafficCapture | None = None,
+        client_id: str = "",
     ) -> None:
         """Init the thing."""
         self.hass = hass
         self.entry = entry
+        self.client_id = client_id
         self._capture = capture
 
     async def setup(self) -> None:
@@ -90,12 +139,124 @@ class WebhookHandler:
             return cloudhook
         return webhook.async_generate_url(self.hass, self.entry.data[CONF_WEBHOOK_ID])
 
-    async def register_webhook(self, event: Event | None = None) -> None:
-        """Set up a webhook to receive pushed data."""
-        if CONF_WEBHOOK_ID not in self.entry.data:
-            _LOGGER.info("Webhook not found in config entry, creating new one")
-            data = {**self.entry.data, CONF_WEBHOOK_ID: secrets.token_hex()}
+    async def _group_members(self) -> list[ConfigEntry]:
+        """Every config entry (loaded or not) authenticating via this client_id."""
+        members = []
+        for candidate in self.hass.config_entries.async_entries(DOMAIN):
+            if candidate.entry_id == self.entry.entry_id:
+                members.append(candidate)
+                continue
+            try:
+                implementation = await config_entry_oauth2_flow.async_get_config_entry_implementation(
+                    self.hass, candidate
+                )
+            except (ValueError, KeyError):
+                continue
+            if implementation.client_id == self.client_id:  # ty: ignore[unresolved-attribute] - implementation is a TTLockAuthImplementation
+                members.append(candidate)
+        return members
+
+    async def _resolve_group_webhook_id(self) -> tuple[str, bool]:
+        """Pick the one webhook_id this client_id's group will share.
+
+        Only called the first time this client_id's group becomes active in
+        this runtime - reconciles config entries left over from before
+        webhook sharing existed, which may each carry a different stale
+        webhook_id. Prefers whichever webhook_id has actually received live
+        traffic before (CONF_WEBHOOK_STATUS); if that's ambiguous (no
+        confirmed value, or confirmed members disagree), falls back to entry
+        order and raises a repair issue so the user can confirm the guess
+        against what's registered in the TTLock console.
+
+        Returns the chosen webhook_id and whether the group is confirmed
+        (some member has already received live traffic on it).
+        """
+        members = await self._group_members()
+        existing = {
+            member.data[CONF_WEBHOOK_ID]
+            for member in members
+            if CONF_WEBHOOK_ID in member.data
+        }
+        confirmed_ids = {
+            member.data[CONF_WEBHOOK_ID]
+            for member in members
+            if member.data.get(CONF_WEBHOOK_STATUS) and CONF_WEBHOOK_ID in member.data
+        }
+
+        if not existing:
+            canonical = secrets.token_hex()
+        elif len(existing) == 1:
+            canonical = next(iter(existing))
+        elif len(confirmed_ids) == 1:
+            canonical = next(iter(confirmed_ids))
+        else:
+            canonical = next(
+                member.data[CONF_WEBHOOK_ID]
+                for member in members
+                if CONF_WEBHOOK_ID in member.data
+            )
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                f"webhook_consolidation_ambiguous_{self.client_id}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="webhook_consolidation_ambiguous",
+            )
+
+        confirmed = canonical in confirmed_ids
+        for member in members:
+            data = dict(member.data)
+            changed = False
+            if data.get(CONF_WEBHOOK_ID) != canonical:
+                data[CONF_WEBHOOK_ID] = canonical
+                data.pop(CONF_WEBHOOK_URL, None)
+                changed = True
+            if confirmed and not data.get(CONF_WEBHOOK_STATUS):
+                data[CONF_WEBHOOK_STATUS] = True
+                changed = True
+            if changed:
+                self.hass.config_entries.async_update_entry(member, data=data)
+
+        return canonical, confirmed
+
+    def _sync_entry_to_group(self, group: _WebhookGroup) -> None:
+        """Adopt the group's webhook_id and confirmed state onto this entry.
+
+        Runs for every member, not just whoever resolved the group - a
+        sibling joining an already-confirmed group later in the same
+        runtime still needs its own CONF_WEBHOOK_STATUS set, or it'll show a
+        "register this URL" notification for a webhook that's already live.
+        """
+        data = dict(self.entry.data)
+        changed = False
+        if data.get(CONF_WEBHOOK_ID) != group.webhook_id:
+            data[CONF_WEBHOOK_ID] = group.webhook_id
+            data.pop(CONF_WEBHOOK_URL, None)
+            changed = True
+        if group.confirmed and not data.get(CONF_WEBHOOK_STATUS):
+            data[CONF_WEBHOOK_STATUS] = True
+            changed = True
+        if changed:
             self.hass.config_entries.async_update_entry(self.entry, data=data)
+
+    async def register_webhook(self, event: Event | None = None) -> None:
+        """Set up a webhook to receive pushed data.
+
+        Shared with any config entry using the same client_id.
+        """
+        async with _GROUPS_LOCK:
+            groups: dict[str, _WebhookGroup] = self.hass.data.setdefault(
+                DOMAIN, {}
+            ).setdefault(_GROUPS_KEY, {})
+            group = groups.get(self.client_id)
+            if group is None:
+                webhook_id, confirmed = await self._resolve_group_webhook_id()
+                group = _WebhookGroup(webhook_id, confirmed)
+                groups[self.client_id] = group
+            group.refcount += 1
+
+        self._sync_entry_to_group(group)
 
         try:
             webhook_url = await self.get_url()
@@ -115,21 +276,25 @@ class WebhookHandler:
         else:
             ir.async_delete_issue(self.hass, DOMAIN, "no_webhook_url")
 
-        if CONF_WEBHOOK_STATUS not in self.entry.data:
+        if CONF_WEBHOOK_STATUS not in self.entry.data and not group.notified:
             self.async_show_setup_message(webhook_url)
+            group.notified = True
 
-        _LOGGER.info("Webhook registered at %s", webhook_url)
+        async with _GROUPS_LOCK:
+            if not group.registered:
+                _LOGGER.info("Webhook registered at %s", webhook_url)
 
-        # Ensure the webhook is not registered already
-        webhook_unregister(self.hass, self.entry.data[CONF_WEBHOOK_ID])
+                # Ensure the webhook is not registered already
+                webhook_unregister(self.hass, group.webhook_id)
 
-        webhook_register(
-            self.hass,
-            DOMAIN,
-            "TTLock",
-            self.entry.data[CONF_WEBHOOK_ID],
-            self.handle_webhook,
-        )
+                webhook_register(
+                    self.hass,
+                    DOMAIN,
+                    "TTLock",
+                    group.webhook_id,
+                    self.handle_webhook,
+                )
+                group.registered = True
 
         self.hass.bus.async_listen_once(
             EVENT_HOMEASSISTANT_STOP, self.unregister_webhook
@@ -169,8 +334,21 @@ class WebhookHandler:
             self.async_dismiss_setup_message()
 
     async def unregister_webhook(self, event: Event | None = None) -> None:
-        """Remove the webhook (before stop)."""
-        webhook_unregister(self.hass, self.entry.data[CONF_WEBHOOK_ID])
+        """Remove the webhook (before stop), once the last group member unloads."""
+        webhook_id = self.entry.data[CONF_WEBHOOK_ID]
+        should_unregister = True
+        async with _GROUPS_LOCK:
+            domain_data = self.hass.data.get(DOMAIN, {})
+            groups: dict[str, _WebhookGroup] = domain_data.get(_GROUPS_KEY, {})
+            if group := groups.get(self.client_id):
+                group.refcount -= 1
+                should_unregister = group.refcount <= 0
+                if should_unregister:
+                    groups.pop(self.client_id, None)
+            if not groups:
+                domain_data.pop(_GROUPS_KEY, None)
+        if should_unregister:
+            webhook_unregister(self.hass, webhook_id)
 
     def async_show_setup_message(self, uri: str) -> None:
         """Display persistent notification with setup information."""
@@ -180,11 +358,30 @@ class WebhookHandler:
             "This should be [registered with your app](https://open.ttlock.com/manager). "
             "See [the docs](https://github.com/jbergler/hass-ttlock?tab=readme-ov-file#creating-an-oauth-app) for more info.",
             "TTLock Setup",
-            self.entry.entry_id,
+            _notification_id(self.client_id),
         )
 
     def async_dismiss_setup_message(self) -> None:
-        """Dismiss persistent notification."""
-        data = {**self.entry.data, CONF_WEBHOOK_STATUS: True}
-        self.hass.config_entries.async_update_entry(self.entry, data=data)
-        persistent_notification.async_dismiss(self.hass, self.entry.entry_id)
+        """Dismiss the notification shared by the whole group.
+
+        Also marks every entry sharing this webhook as confirmed, and the
+        in-memory group too, so a sibling joining later this same runtime
+        doesn't get shown a notification for an already-live webhook.
+        """
+        webhook_id = self.entry.data.get(CONF_WEBHOOK_ID)
+        for member in self.hass.config_entries.async_entries(DOMAIN):
+            if member.data.get(CONF_WEBHOOK_ID) != webhook_id:
+                continue
+            if CONF_WEBHOOK_STATUS in member.data:
+                continue
+            self.hass.config_entries.async_update_entry(
+                member, data={**member.data, CONF_WEBHOOK_STATUS: True}
+            )
+        groups: dict[str, _WebhookGroup] = self.hass.data.get(DOMAIN, {}).get(
+            _GROUPS_KEY, {}
+        )
+        if group := groups.get(self.client_id):
+            group.confirmed = True
+        persistent_notification.async_dismiss(
+            self.hass, _notification_id(self.client_id)
+        )

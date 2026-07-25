@@ -99,6 +99,49 @@ def component_setup(hass: HomeAssistant, config_entry: MockConfigEntry):
 
 
 @pytest.fixture
+def multi_account_credential():
+    """Factory: register the one developer application ("client-id") that
+    new_mocked_entry's config entries all authenticate against, so tests can
+    build several config entries sharing a client_id.
+    """
+
+    async def _register(hass: HomeAssistant) -> None:
+        assert await async_setup_component(hass, "application_credentials", {})
+        await async_import_client_credential(
+            hass, DOMAIN, ClientCredential("client-id", "client-secret"), "mocked"
+        )
+
+    return _register
+
+
+@pytest.fixture
+def new_mocked_entry():
+    """Factory: a config entry authenticated via the "mocked" credential
+    above - call once per account when a test needs several config entries
+    sharing one client_id.
+    """
+
+    def _new_entry(**extra_data) -> MockConfigEntry:
+        return MockConfigEntry(
+            domain=DOMAIN,
+            data={
+                "auth_implementation": "mocked",
+                "token": {
+                    "refresh_token": "mock-refresh-token",
+                    "access_token": "mock-access-token",
+                    "type": "Bearer",
+                    "expires_in": 60,
+                    "expires_at": time() + 1000,
+                    "scope": "",
+                },
+                **extra_data,
+            },
+        )
+
+    return _new_entry
+
+
+@pytest.fixture
 async def api():
     """TTLockApi instance for use in tests."""
     async with ClientSession() as session:

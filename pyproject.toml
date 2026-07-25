@@ -206,6 +206,9 @@ max-complexity = 25
 "tests/test_api.py" = [
     "SLF001",  # exercises TTLockApi._add_auth and TTLockAuthImplementation._async_refresh_token directly
 ]
+"tests/test_webhook.py" = [
+    "SLF001",  # exercises WebhookHandler._resolve_group_webhook_id directly
+]
 "custom_components/ttlock/models.py" = [
     "N815",  # fields mirror the TTLock API's camelCase wire format on purpose
 ]
