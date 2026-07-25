@@ -58,6 +58,12 @@ class StartDebugCapture(BaseLockEntity, ButtonEntity):
         """Fetch state from the device."""
         self._attr_name = f"{self.coordinator.data.name} Start Debug Capture"
 
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel any pending revert so it doesn't fire against a removed entity."""
+        if self._cancel_revert is not None:
+            self._cancel_revert()
+            self._cancel_revert = None
+
     async def async_press(self) -> None:
         """Raise this lock's logger to debug, and (re)start the revert window."""
         logger = get_device_logger(self.coordinator.lock_id)
@@ -67,9 +73,7 @@ class StartDebugCapture(BaseLockEntity, ButtonEntity):
         else:
             self._cancel_revert()
 
-        await self.hass.services.async_call(
-            LOGGER_DOMAIN, SERVICE_SET_LEVEL, {logger.name: "DEBUG"}, blocking=True
-        )
+        await self._async_set_level(logger.name, "DEBUG")
 
         self._cancel_revert = async_call_later(
             self.hass, CAPTURE_WINDOW, self._async_revert
@@ -82,6 +86,10 @@ class StartDebugCapture(BaseLockEntity, ButtonEntity):
         self._cancel_revert = None
         self._prior_level = None
 
+        await self._async_set_level(logger.name, level)
+
+    async def _async_set_level(self, logger_name: str, level: str) -> None:
+        """Call HA's built-in logger service to set one logger's level."""
         await self.hass.services.async_call(
-            LOGGER_DOMAIN, SERVICE_SET_LEVEL, {logger.name: level}, blocking=True
+            LOGGER_DOMAIN, SERVICE_SET_LEVEL, {logger_name: level}, blocking=True
         )
