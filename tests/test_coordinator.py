@@ -15,6 +15,8 @@ from custom_components.ttlock.coordinator import (
     GatewaysUpdateCoordinator,
     LockState,
     LockUpdateCoordinator,
+    SensorData,
+    async_add_when_sensor_present,
 )
 from custom_components.ttlock.models import (
     LockState as WireLockState,
@@ -136,6 +138,50 @@ class TestLockState:
             assert lock_state.auto_lock_delay(ts(time)) is None
 
 
+class TestAsyncAddWhenSensorPresent:
+    """coordinator.py's __init__.py always calls this before a lock's first
+    refresh has run (see async_add_when_sensor_present's own docstring), so
+    the "already present" branch is never exercised through the real
+    component_setup flow - test it directly as a unit instead.
+    """
+
+    async def test_adds_immediately_when_already_present(
+        self, coordinator: LockUpdateCoordinator
+    ):
+        coordinator.data.sensor = SensorData(battery=50)
+        calls = []
+
+        async_add_when_sensor_present(coordinator, lambda: calls.append(True))
+
+        assert calls == [True]
+
+    async def test_defers_until_presence_confirmed(
+        self, coordinator: LockUpdateCoordinator
+    ):
+        calls = []
+
+        async_add_when_sensor_present(coordinator, lambda: calls.append(True))
+        assert calls == []
+
+        coordinator.data.sensor = SensorData(battery=50)
+        coordinator.async_update_listeners()
+
+        assert calls == [True]
+
+    async def test_listener_is_removed_after_firing(
+        self, coordinator: LockUpdateCoordinator
+    ):
+        calls = []
+
+        async_add_when_sensor_present(coordinator, lambda: calls.append(True))
+
+        coordinator.data.sensor = SensorData(battery=50)
+        coordinator.async_update_listeners()
+        coordinator.async_update_listeners()
+
+        assert calls == [True]
+
+
 class TestLockUpdateCoordinator:
     class TestAsyncRefresh:
         async def test_coordinator_loads_data(
@@ -193,6 +239,22 @@ class TestLockUpdateCoordinator:
             t1 = coordinator.data.sensor.last_fetched
 
             assert t0 == t1
+
+        async def test_present_sensor_battery_refetched_after_a_day(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses
+        ):
+            mock_api_responses("with_sensor")
+
+            await coordinator.async_refresh()
+            assert coordinator.data.sensor is not None
+            coordinator.data.sensor.last_fetched = dt_util.now() - timedelta(days=2)
+
+            await coordinator.async_refresh()
+
+            assert coordinator.data.sensor is not None
+            assert coordinator.data.sensor.last_fetched > dt_util.now() - timedelta(
+                seconds=3
+            )
 
         async def test_locked_state_reverified_every_refresh(
             self,
