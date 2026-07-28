@@ -21,6 +21,7 @@ from custom_components.ttlock.const import (
     SVC_MODIFY_PASSCODE,
     SVC_RENAME_CARD,
     SVC_RENAME_FINGERPRINT,
+    SVC_SET_CONFIG_OVERRIDE,
     SVC_UPDATE_STATE,
 )
 from custom_components.ttlock.models import (
@@ -810,6 +811,67 @@ class Test_update_state:
             await hass.async_block_till_done()
             assert mock_refresh.called
             assert coordinator.data.locked is None
+
+
+class Test_set_config_override:
+    """See coordinator.py's TestAutoLockOverride - this is the service-layer
+    wiring for issue #67's fix: some locks never report an auto-lock delay
+    from TTLock's API at all, so this service lets a user assert one
+    locally instead of the integration guessing it.
+    """
+
+    async def test_sets_override_when_api_reports_nothing(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        mock_api_responses("no_autolock")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+        assert coordinator.data.auto_lock_seconds is None
+
+        await hass.services.async_call(
+            DOMAIN,
+            SVC_SET_CONFIG_OVERRIDE,
+            {ATTR_ENTITY_ID: entity_id, "auto_lock_seconds": 5},
+            blocking=True,
+        )
+
+        assert coordinator.data.auto_lock_seconds == 5
+
+    async def test_explicit_none_clears_a_previously_set_override(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        mock_api_responses("no_autolock")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        await coordinator.set_auto_lock_override(5)
+        assert coordinator.data.auto_lock_seconds == 5
+
+        await hass.services.async_call(
+            DOMAIN,
+            SVC_SET_CONFIG_OVERRIDE,
+            {ATTR_ENTITY_ID: entity_id, "auto_lock_seconds": None},
+            blocking=True,
+        )
+
+        assert coordinator.data.auto_lock_seconds is None
+
+    async def test_omitted_field_leaves_override_untouched(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        mock_api_responses("no_autolock")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        with patch.object(coordinator, "set_auto_lock_override") as mock_set_override:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_SET_CONFIG_OVERRIDE,
+                {ATTR_ENTITY_ID: entity_id},
+                blocking=True,
+            )
+
+        mock_set_override.assert_not_called()
 
 
 class Test_list_cards:

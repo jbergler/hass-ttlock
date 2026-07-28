@@ -294,6 +294,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                     ) from err
 
             new_data.auto_lock_seconds = details.autoLockTime
+            if new_data.auto_lock_seconds is None:
+                stored = await self._store.async_get(self.lock_id)
+                new_data.auto_lock_seconds = stored.get("auto_lock_override_seconds")
             new_data.lock_sound = bool(details.lockSound)
 
             new_data.passage_mode_config = await self.api.get_lock_passage_mode_config(
@@ -549,6 +552,16 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         if res:
             self.data.auto_lock_seconds = seconds
             self.async_update_listeners()
+
+    async def set_auto_lock_override(self, seconds: int | None) -> None:
+        """Persist a locally-assumed auto-lock delay, for locks TTLock's API never reports one for.
+
+        Never sent to the lock or TTLock's API - see _async_update_data, which
+        only falls back to this when the API's own autoLockTime is absent.
+        Pass None to clear a previously-set override.
+        """
+        await self._store.async_update(self.lock_id, auto_lock_override_seconds=seconds)
+        await self.async_refresh()
 
     async def set_lock_sound(self, on: bool) -> None:
         """Turn on/off lock sound."""

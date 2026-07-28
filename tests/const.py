@@ -48,6 +48,10 @@ LOCK_DETAILS_WITH_SENSOR = {
     "featureValue": "F44354CF5F3",
 }
 
+LOCK_DETAILS_NO_AUTOLOCK = {
+    k: v for k, v in BASIC_LOCK_DETAILS.items() if k != "autoLockTime"
+}
+
 SENSOR_DETAILS = {
     "doorSensorId": 2323,
     "name": "Door sensor for front door",

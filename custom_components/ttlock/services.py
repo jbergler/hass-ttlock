@@ -17,6 +17,7 @@ from homeassistant.util.dt import as_utc
 
 from .const import (
     CONF_ALL_DAY,
+    CONF_AUTO_LOCK_SECONDS,
     CONF_AUTO_UNLOCK,
     CONF_END_TIME,
     CONF_SECONDS,
@@ -37,6 +38,7 @@ from .const import (
     SVC_MODIFY_PASSCODE,
     SVC_RENAME_CARD,
     SVC_RENAME_FINGERPRINT,
+    SVC_SET_CONFIG_OVERRIDE,
     SVC_UPDATE_STATE,
 )
 from .coordinator import LockUpdateCoordinator, coordinator_for
@@ -208,6 +210,20 @@ class Services:
             schema=vol.Schema(
                 {
                     vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                }
+            ),
+        )
+
+        self.hass.services.register(
+            DOMAIN,
+            SVC_SET_CONFIG_OVERRIDE,
+            self.handle_set_config_override,
+            schema=vol.Schema(
+                {
+                    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                    vol.Optional(CONF_AUTO_LOCK_SECONDS): vol.Any(
+                        None, vol.All(vol.Coerce(int), vol.Range(min=0))
+                    ),
                 }
             ),
         )
@@ -498,6 +514,15 @@ class Services:
             # Set the locked state to none to force the API call.
             coordinator.data.locked = None
             await coordinator.async_refresh()
+
+    async def handle_set_config_override(self, call: ServiceCall):
+        """Persist local fallback values for config the TTLock API doesn't always report."""
+        if CONF_AUTO_LOCK_SECONDS not in call.data:
+            return
+
+        seconds = call.data[CONF_AUTO_LOCK_SECONDS]
+        for coordinator in self._get_coordinators(call).values():
+            await coordinator.set_auto_lock_override(seconds)
 
     async def handle_list_cards(self, call: ServiceCall) -> ServiceResponse:
         """List all IC cards for the selected locks."""
