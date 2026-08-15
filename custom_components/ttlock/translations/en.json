@@ -17,12 +17,24 @@
         "title": "Login to TTLock",
         "description": "Please provide the login details that you used to log into the TTLock app when setting up your locks",
         "data": {
+          "region": "Region",
           "password": "Password",
           "username": "Username"
+        },
+        "data_description": {
+          "region": "The TTLock cloud your account and developer app are registered with. EU / International covers everywhere except mainland China."
         }
       },
       "pick_implementation": {
         "title": "Pick Authentication Method"
+      }
+    }
+  },
+  "selector": {
+    "region": {
+      "options": {
+        "eu": "EU / International",
+        "cn": "China"
       }
     }
   },

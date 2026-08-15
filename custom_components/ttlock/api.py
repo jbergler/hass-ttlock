@@ -3,14 +3,17 @@
 This integration talks to TTLock's cloud API, not the locks directly — locks
 connect via a TTLock gateway or WiFi, and the gateway/lock relays commands
 from TTLock's cloud. Full API docs: docs/ttlock-cloud-api/ (mirrored from
-https://euopen.ttlock.com/document; EU region — hardcoded to
-https://euapi.ttlock.com, no multi-region support).
+https://euopen.ttlock.com/document). TTLock runs separate per-region clouds
+(EU/International euapi.ttlock.com, China cnapi.ttlock.com); the region is
+chosen in the config flow and selects TTLockApi's base host (const.REGIONS,
+keyed off entry.data[CONF_REGION], defaulting to EU).
 
 Auth is OAuth2, wired up through HA's application_credentials component
 (application_credentials.py, config_flow.py), but TTLock's OAuth2 is
 non-standard: the initial grant is username + MD5-hashed password
 (TTLockAuthImplementation.login), not an authorization-code redirect. Token
-endpoint: https://euapi.ttlock.com/oauth2/token (const.OAUTH2_TOKEN). Docs:
+endpoint: <host>/oauth2/token, region-specific (const.REGIONS[...]["token_url"],
+built in application_credentials.async_get_auth_implementation). Docs:
 docs/ttlock-cloud-api/oauth2/getAccessToken.md (mirrored from
 https://euopen.ttlock.com/document/doc?urlName=cloud%2Foauth2%2FgetAccessTokenEn.html)
 
@@ -39,7 +42,7 @@ from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.helpers import config_entry_oauth2_flow
 
 from .capture import LockTrafficCapture, log_and_capture
-from .const import get_device_logger
+from .const import DEFAULT_REGION, REGIONS, get_device_logger
 from .models import (
     AddPasscodeConfig,
     Card,
@@ -103,18 +106,18 @@ class TTLockAuthImplementation(
 class TTLockApi:
     """Provide TTLock authentication tied to an OAuth2 based config entry."""
 
-    BASE = "https://euapi.ttlock.com/v3/"
-
     def __init__(
         self,
         websession: ClientSession,
         oauth_session: config_entry_oauth2_flow.OAuth2Session,
         capture: LockTrafficCapture | None = None,
+        region: str = DEFAULT_REGION,
     ) -> None:
         """Initialize TTLock auth."""
         self._web_session = websession
         self._oauth_session = oauth_session
         self._capture = capture
+        self._base = REGIONS[region]["api_base"]
 
     async def async_get_access_token(self) -> str:
         """Return a valid access token."""
@@ -189,7 +192,7 @@ class TTLockApi:
         lock_id = kwargs.get("lockId")
         logger = self._logger_for(kwargs)
 
-        url = urljoin(self.BASE, path)
+        url = urljoin(self._base, path)
         self._debug(
             logger,
             lock_id,
@@ -211,7 +214,7 @@ class TTLockApi:
         lock_id = kwargs.get("lockId")
         logger = self._logger_for(kwargs)
 
-        url = urljoin(self.BASE, path)
+        url = urljoin(self._base, path)
         self._debug(
             logger,
             lock_id,
