@@ -129,6 +129,35 @@ class TestGetAndPost:
         with pytest.raises(RequestFailed):
             await ttlock_api.get("lock/detail", lockId=1)
 
+    async def test_region_selects_api_base_host(
+        self, mock_oauth_session, mocker: AiohttpClientMocker
+    ):
+        """The China region routes requests to cnapi instead of euapi."""
+        session = mocker.create_session(None)
+        cn_api = TTLockApi(session, mock_oauth_session, region="cn")
+        mocker.get(
+            "https://cnapi.ttlock.com/v3/lock/detail", json={"errcode": 0, "lockId": 1}
+        )
+
+        res = await cn_api.get("lock/detail", lockId=1)
+
+        assert res == {"errcode": 0, "lockId": 1}
+        assert str(mocker.mock_calls[0][1]).startswith("https://cnapi.ttlock.com/v3/")
+        await session.close()
+
+    async def test_region_defaults_to_eu(
+        self, mock_oauth_session, mocker: AiohttpClientMocker
+    ):
+        """Omitting region preserves the historic EU host."""
+        session = mocker.create_session(None)
+        eu_api = TTLockApi(session, mock_oauth_session)
+        mocker.get(f"{BASE}lock/detail", json={"errcode": 0, "lockId": 1})
+
+        await eu_api.get("lock/detail", lockId=1)
+
+        assert str(mocker.mock_calls[0][1]).startswith(BASE)
+        await session.close()
+
 
 class TestPerLockLogging:
     async def test_debug_on_one_lock_logger_does_not_capture_another_locks_records(

@@ -14,7 +14,15 @@ from homeassistant.helpers.device_registry import DeviceEntry
 
 from .api import TTLockApi
 from .capture import LockTrafficCapture
-from .const import DOMAIN, TT_API, TT_CAPTURE, TT_GATEWAYS, TT_LOCKS
+from .const import (
+    CONF_REGION,
+    DEFAULT_REGION,
+    DOMAIN,
+    TT_API,
+    TT_CAPTURE,
+    TT_GATEWAYS,
+    TT_LOCKS,
+)
 from .coordinator import GatewaysUpdateCoordinator, LockUpdateCoordinator
 from .services import Services
 from .store import LockStateStore
@@ -86,7 +94,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         store = LockStateStore(hass)
         domain_data[_STORE_KEY] = store
 
-    client = TTLockApi(aiohttp_client.async_get_clientsession(hass), session, capture)
+    client = TTLockApi(
+        aiohttp_client.async_get_clientsession(hass),
+        session,
+        capture,
+        region=entry.data.get(CONF_REGION, DEFAULT_REGION),
+    )
 
     domain_data[entry.entry_id] = {
         TT_API: client,

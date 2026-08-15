@@ -8,9 +8,29 @@ TT_LOCKS = "locks"
 TT_GATEWAYS = "gateways"
 TT_CAPTURE = "capture"
 
-OAUTH2_TOKEN = "https://euapi.ttlock.com/oauth2/token"
 CONF_WEBHOOK_URL = "webhook_url"
 CONF_WEBHOOK_STATUS = "webhook_status"
+
+# TTLock runs separate, non-interoperable clouds per region: only the host
+# differs - the /v3/ API paths, /oauth2/token endpoint and the
+# clientId/accessToken/date auth scheme are identical (see issue #319).
+# Region is chosen in the config flow and stored in entry.data[CONF_REGION];
+# entries created before region support have no such key and are treated as
+# "eu" (DEFAULT_REGION), preserving the historic hardcoded-EU behaviour.
+CONF_REGION = "region"
+DEFAULT_REGION = "eu"
+# Option labels live in translations (selector.region.options) - keep this
+# to endpoints only.
+REGIONS: dict[str, dict[str, str]] = {
+    "eu": {
+        "api_base": "https://euapi.ttlock.com/v3/",
+        "token_url": "https://euapi.ttlock.com/oauth2/token",
+    },
+    "cn": {
+        "api_base": "https://cnapi.ttlock.com/v3/",
+        "token_url": "https://cnapi.ttlock.com/oauth2/token",
+    },
+}
 
 SIGNAL_NEW_DATA = f"{DOMAIN}.data_received"
 
