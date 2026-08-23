@@ -8,9 +8,13 @@ import dateparser
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.ttlock.api import RequestFailed
+from custom_components.ttlock.api import RequestFailed, TTLockApi
 from custom_components.ttlock.capture import LockTrafficCapture
-from custom_components.ttlock.const import DOMAIN
+from custom_components.ttlock.const import (
+    CONF_POLL_INTERVAL,
+    CONF_SLOW_POLL_INTERVAL,
+    DOMAIN,
+)
 from custom_components.ttlock.coordinator import (
     GatewaysUpdateCoordinator,
     LockState,
@@ -442,6 +446,107 @@ class TestLockUpdateCoordinator:
             assert wifi_coordinator.connectable is True
             assert called is False
             assert wifi_coordinator.data.gateways == []
+
+    class TestPollingCadence:
+        """Lock state is re-verified every poll; slow-changing detail,
+        passage-mode config and the gateway link are fetched at most once per
+        slow interval (see coordinator.py _async_update_data). Cadence is
+        driven by the entry's options, defaulting to 30 min / 6 h."""
+
+        @staticmethod
+        def _spy(monkeypatch, name):
+            """Wrap the currently-installed mock for `name` in a call counter."""
+            current = getattr(TTLockApi, name)
+            spy = AsyncMock(side_effect=current)
+            monkeypatch.setattr(f"custom_components.ttlock.api.TTLockApi.{name}", spy)
+            return spy
+
+        def _make_coordinator(self, hass, api, options=None):
+            config_entry = MockConfigEntry(domain=DOMAIN, options=options or {})
+            config_entry.add_to_hass(hass)
+            summary = LockSummary(
+                lockId=7252408,
+                lockAlias="Test Lock",
+                lockMac="00:00:00:00:00:00",
+                hasGateway=1,
+            )
+            return LockUpdateCoordinator(
+                hass,
+                config_entry,
+                api,
+                summary,
+                LockTrafficCapture(),
+                LockStateStore(hass),
+            )
+
+        async def test_defaults_when_no_options(self, hass, api):
+            coordinator = self._make_coordinator(hass, api)
+            assert coordinator.update_interval == timedelta(minutes=30)
+            assert coordinator._slow_interval == timedelta(hours=6)
+
+        async def test_intervals_from_options(self, hass, api):
+            coordinator = self._make_coordinator(
+                hass,
+                api,
+                options={CONF_POLL_INTERVAL: 45, CONF_SLOW_POLL_INTERVAL: 12},
+            )
+            assert coordinator.update_interval == timedelta(minutes=45)
+            assert coordinator._slow_interval == timedelta(hours=12)
+
+        async def test_state_reverified_every_poll_detail_fetched_once(
+            self, coordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("with_sensor")
+            get_lock = self._spy(monkeypatch, "get_lock")
+            get_state = self._spy(monkeypatch, "get_lock_state")
+            get_passage = self._spy(monkeypatch, "get_lock_passage_mode_config")
+            get_gateways = self._spy(monkeypatch, "get_gateways_for_lock")
+
+            await coordinator.async_refresh()
+            await coordinator.async_refresh()
+            await coordinator.async_refresh()
+
+            # fast tier: every poll
+            assert get_state.call_count == 3
+            # slow tier: once, then gated
+            assert get_lock.call_count == 1
+            assert get_passage.call_count == 1
+            assert get_gateways.call_count == 1
+
+        async def test_slow_tier_refetched_after_interval(
+            self, coordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            get_lock = self._spy(monkeypatch, "get_lock")
+            get_passage = self._spy(monkeypatch, "get_lock_passage_mode_config")
+            get_gateways = self._spy(monkeypatch, "get_gateways_for_lock")
+
+            await coordinator.async_refresh()
+            # simulate the slow interval having elapsed since the last fetch
+            past = dt_util.now() - timedelta(hours=7)
+            coordinator._details_last_fetched = past
+            coordinator._passage_last_fetched = past
+            coordinator._gateways_last_fetched = past
+
+            await coordinator.async_refresh()
+
+            assert get_lock.call_count == 2
+            assert get_passage.call_count == 2
+            assert get_gateways.call_count == 2
+
+        async def test_detail_carried_forward_when_slow_tier_skipped(
+            self, coordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            name = coordinator.data.name
+            battery = coordinator.data.battery_level
+            assert name is not None
+
+            # second poll skips get_lock but must preserve prior detail
+            await coordinator.async_refresh()
+            assert coordinator.data.name == name
+            assert coordinator.data.battery_level == battery
 
     class TestSensorAbsenceTracking:
         """See coordinator.py's _check_for_sensor - the whole reason issue

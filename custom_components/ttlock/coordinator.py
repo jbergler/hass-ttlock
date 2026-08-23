@@ -30,7 +30,16 @@ from homeassistant.util import dt as dt_util
 
 from .api import TTLockApi
 from .capture import LockTrafficCapture
-from .const import DOMAIN, SIGNAL_NEW_DATA, TT_GATEWAYS, TT_LOCKS
+from .const import (
+    CONF_POLL_INTERVAL,
+    CONF_SLOW_POLL_INTERVAL,
+    DEFAULT_POLL_INTERVAL_MINUTES,
+    DEFAULT_SLOW_POLL_INTERVAL_HOURS,
+    DOMAIN,
+    SIGNAL_NEW_DATA,
+    TT_GATEWAYS,
+    TT_LOCKS,
+)
 from .models import (
     Features,
     Gateway,
@@ -230,12 +239,29 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         # persisted, so it naturally resets to False on every restart.
         self._sensor_recheck_done = False
 
+        # Slow-tier cadence and its per-call "last fetched" gates. Only lock
+        # state is re-verified every poll; detail/passage/gateway fetches run
+        # at most once per _slow_interval (see _async_update_data). Timestamps
+        # are in-memory, so a restart re-fetches everything once - which is
+        # what we want on startup anyway.
+        options = config_entry.options if config_entry else {}
+        poll_minutes = options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL_MINUTES)
+        slow_hours = options.get(
+            CONF_SLOW_POLL_INTERVAL, DEFAULT_SLOW_POLL_INTERVAL_HOURS
+        )
+        self._slow_interval = timedelta(hours=slow_hours)
+        self._details_last_fetched: datetime | None = None
+        self._passage_last_fetched: datetime | None = None
+        self._gateways_last_fetched: datetime | None = None
+
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             config_entry=config_entry,
-            update_interval=timedelta(minutes=15) if self.connectable else None,
+            update_interval=(
+                timedelta(minutes=poll_minutes) if self.connectable else None
+            ),
         )
 
         self.data = LockState(
@@ -251,18 +277,26 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             )
 
         try:
-            details = await self.api.get_lock(self.lock_id)
-
+            now = dt_util.now()
             new_data = deepcopy(self.data)
 
-            # update mutable attributes
-            new_data.name = details.name
-            new_data.mac = details.mac
-            new_data.model = details.model
-            new_data.features = Features.from_feature_value(details.featureValue)
-            new_data.battery_level = details.battery_level
-            new_data.hardware_version = details.hardwareRevision
-            new_data.firmware_version = details.firmwareRevision
+            # Slow tier: full lock detail (battery, name, model, features,
+            # autolock/sound config). Slow-changing and, for lock/unlock,
+            # already delivered in real time by webhooks - so fetch it at most
+            # once per slow interval and otherwise carry the previous values
+            # forward via the deepcopy above.
+            if self._slow_tier_due(self._details_last_fetched, now):
+                details = await self.api.get_lock(self.lock_id)
+                new_data.name = details.name
+                new_data.mac = details.mac
+                new_data.model = details.model
+                new_data.features = Features.from_feature_value(details.featureValue)
+                new_data.battery_level = details.battery_level
+                new_data.hardware_version = details.hardwareRevision
+                new_data.firmware_version = details.firmwareRevision
+                new_data.auto_lock_seconds = details.autoLockTime
+                new_data.lock_sound = bool(details.lockSound)
+                self._details_last_fetched = now
 
             if Features.door_sensor in new_data.features:
                 # make sure we have a placeholder for sensor state if the lock supports it
@@ -276,6 +310,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             else:
                 new_data.sensor = None
 
+            # Fast tier: re-verify lock (and door) state every poll - this is
+            # the real-time-relevant signal and the reason the poll exists.
             try:
                 state = await self.api.get_lock_state(self.lock_id)
                 new_data.locked = state.locked == State.locked
@@ -293,21 +329,34 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                         f"Failed to re-verify lock state for {self.lock_id}"
                     ) from err
 
-            new_data.auto_lock_seconds = details.autoLockTime
-            new_data.lock_sound = bool(details.lockSound)
+            # Slow tier: passage-mode schedule config, rarely changes.
+            if self._slow_tier_due(self._passage_last_fetched, now):
+                new_data.passage_mode_config = (
+                    await self.api.get_lock_passage_mode_config(self.lock_id)
+                )
+                self._passage_last_fetched = now
 
-            new_data.passage_mode_config = await self.api.get_lock_passage_mode_config(
-                self.lock_id
-            )
-
+            # Slow tier: gateway link (RSSI/name/mac for the signal sensor).
             if self.has_gateway:
-                new_data.gateways = await self.api.get_gateways_for_lock(self.lock_id)
+                if self._slow_tier_due(self._gateways_last_fetched, now):
+                    new_data.gateways = await self.api.get_gateways_for_lock(
+                        self.lock_id
+                    )
+                    self._gateways_last_fetched = now
             else:
                 new_data.gateways = []
         except Exception as err:
             raise UpdateFailed(err) from err
         else:
             return new_data
+
+    def _slow_tier_due(self, last_fetched: datetime | None, now: datetime) -> bool:
+        """Whether a slow-tier fetch is due, given when it last ran.
+
+        Due if never fetched (None - e.g. first poll after a restart) or if
+        the slow interval has elapsed since the last fetch.
+        """
+        return last_fetched is None or last_fetched <= now - self._slow_interval
 
     async def _refresh_sensor(self, sensor: SensorData) -> Sensor | None:
         """Query the door sensor endpoint and stamp when we last did so."""

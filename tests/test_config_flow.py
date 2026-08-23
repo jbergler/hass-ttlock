@@ -3,9 +3,15 @@
 from unittest.mock import patch
 
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ttlock.api import TTLockAuthImplementation
-from custom_components.ttlock.const import CONF_REGION, DOMAIN
+from custom_components.ttlock.const import (
+    CONF_POLL_INTERVAL,
+    CONF_REGION,
+    CONF_SLOW_POLL_INTERVAL,
+    DOMAIN,
+)
 from homeassistant import config_entries
 from homeassistant.components.application_credentials import (
     ClientCredential,
@@ -71,3 +77,26 @@ async def test_flow_persists_region_and_targets_its_token_url(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_REGION] == region
     assert captured["token_url"] == token_url
+
+
+async def test_options_flow_saves_polling_cadence(hass: HomeAssistant):
+    """The options flow persists the fast/slow polling intervals."""
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_POLL_INTERVAL: 45, CONF_SLOW_POLL_INTERVAL: 12},
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    # coerced to int (NumberSelector yields floats) so the reload guard's
+    # snapshot comparison stays clean
+    assert entry.options[CONF_POLL_INTERVAL] == 45
+    assert isinstance(entry.options[CONF_POLL_INTERVAL], int)
+    assert entry.options[CONF_SLOW_POLL_INTERVAL] == 12
+    assert isinstance(entry.options[CONF_SLOW_POLL_INTERVAL], int)
