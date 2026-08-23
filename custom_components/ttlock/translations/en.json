@@ -30,6 +30,22 @@
       }
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Polling cadence",
+        "description": "How often the integration polls the TTLock cloud. Locks also update in near real time via webhooks, so these can stay high to keep multi-lock accounts under TTLock's free-tier API-call limit. Lower the poll interval if your webhooks are unreliable.",
+        "data": {
+          "poll_interval": "Poll interval",
+          "slow_poll_interval": "Detail refresh interval"
+        },
+        "data_description": {
+          "poll_interval": "How often to re-check whether each lock is locked or unlocked, in minutes.",
+          "slow_poll_interval": "How often to refresh slow-changing detail (battery, name, autolock and passage-mode config, gateway signal), in hours."
+        }
+      }
+    }
+  },
   "selector": {
     "region": {
       "options": {
@@ -48,7 +64,7 @@
       "title": "Confirm your TTLock webhook URL"
     },
     "webhook_setup": {
-      "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n{webhook_url}\n\nUse the link below to open the TTLock console, or see [the setup docs]({docs_url}) for more info. Until this is done, locks still stay in sync via TTLock's regular 15-minute poll.",
+      "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n{webhook_url}\n\nUse the link below to open the TTLock console, or see [the setup docs]({docs_url}) for more info. Until this is done, locks still stay in sync via the integration's regular poll.",
       "title": "Register your TTLock webhook URL"
     }
   }

@@ -47,6 +47,10 @@ _CAPTURE_KEY = "_capture"
 # per-account state.
 _STORE_KEY = "_lock_state_store"
 
+# Per-entry key holding the options snapshot the coordinators were built with,
+# so _reload_on_options_update can ignore non-options entry updates.
+_OPTIONS_KEY = "_options_snapshot"
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -83,6 +87,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     session = config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation)
 
+    # Re-create coordinators with the new cadence when polling options change.
+    entry.async_on_unload(entry.add_update_listener(_reload_on_options_update))
+
     domain_data = hass.data.setdefault(DOMAIN, {})
     capture = domain_data.get(_CAPTURE_KEY)
     if capture is None:
@@ -104,6 +111,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     domain_data[entry.entry_id] = {
         TT_API: client,
         TT_CAPTURE: capture,
+        # Snapshot of the options the coordinators below were built with, so
+        # the update listener can tell a real options change from the entry.data
+        # writes webhook.py makes during setup (which must not trigger a reload).
+        _OPTIONS_KEY: dict(entry.options),
     }
 
     locks = [
@@ -146,6 +157,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     return True
+
+
+async def _reload_on_options_update(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry when its options change, so coordinators pick them up.
+
+    HA fires this listener on any entry update, including the entry.data writes
+    webhook.py makes during setup - reload only when the options themselves
+    actually changed, or those writes would trigger a reload storm mid-setup.
+    """
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    # No snapshot yet (update fired before setup finished storing it, or the
+    # entry isn't loaded) - not a real options change, so don't reload.
+    if entry_data is None or entry_data.get(_OPTIONS_KEY) == dict(entry.options):
+        return
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

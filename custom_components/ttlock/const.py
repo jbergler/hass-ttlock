@@ -32,6 +32,18 @@ REGIONS: dict[str, dict[str, str]] = {
     },
 }
 
+# Polling cadence, tunable via the options flow (see config_flow.py).
+# The fast tier re-verifies lock state (locked/opened) every poll; the slow
+# tier refreshes rarely-changing detail (battery, name, autolock/sound config,
+# passage-mode config, gateway link) only once per slow interval. Webhooks
+# (webhook.py) carry real-time changes, so the poll is mostly reconciliation -
+# these defaults are deliberately gentler than the historic 15-minute loop to
+# keep multi-lock accounts under TTLock's free-tier API-call budget (#320).
+CONF_POLL_INTERVAL = "poll_interval"
+CONF_SLOW_POLL_INTERVAL = "slow_poll_interval"
+DEFAULT_POLL_INTERVAL_MINUTES = 30
+DEFAULT_SLOW_POLL_INTERVAL_HOURS = 6
+
 SIGNAL_NEW_DATA = f"{DOMAIN}.data_received"
 
 DEVICE_LOGGER_PREFIX = f"{__package__}.device."

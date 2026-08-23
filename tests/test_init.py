@@ -1,10 +1,13 @@
 """Test ttlock setup process."""
 
+from datetime import timedelta
 from unittest.mock import patch
 
 from custom_components.ttlock import async_remove_config_entry_device
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
+    CONF_POLL_INTERVAL,
+    CONF_SLOW_POLL_INTERVAL,
     CONF_WEBHOOK_STATUS,
     DOMAIN,
     TT_CAPTURE,
@@ -32,6 +35,28 @@ async def test_setup_unload_and_reload_entry(hass, component_setup, mock_api_res
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert entry.state == ConfigEntryState.NOT_LOADED
+
+
+async def test_changing_options_reloads_with_new_interval(
+    hass, component_setup, mock_api_responses
+):
+    """Updating the polling options reloads the entry so coordinators pick up
+    the new cadence (see _reload_on_options_update)."""
+    mock_api_responses("default")
+    await component_setup()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
+    assert coordinator.update_interval == timedelta(minutes=30)
+
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_POLL_INTERVAL: 90, CONF_SLOW_POLL_INTERVAL: 24}
+    )
+    await hass.async_block_till_done()
+
+    # reload rebuilt the coordinators with the new cadence
+    coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
+    assert coordinator.update_interval == timedelta(minutes=90)
 
 
 async def test_capture_is_shared_across_config_entries(
