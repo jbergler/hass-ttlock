@@ -9,6 +9,7 @@ confirms presence, not decided up front.
 
 from custom_components.ttlock.const import DOMAIN
 from custom_components.ttlock.models import GatewayLink, LockSummary
+from custom_components.ttlock.sensor import LockBleSignal
 from homeassistant.helpers import entity_registry as er
 
 from .const import MOCK_LOCK_MAC
@@ -195,3 +196,8 @@ async def test_bluetooth_signal_entity_reports_locally_heard_rssi(
     assert state.attributes["source"] == "00:11:22:33:44:55"
     assert state.attributes["connectable"] is True
     assert state.attributes["last_seen"] is not None
+
+
+async def test_bluetooth_signal_entity_has_no_attributes_when_never_heard(coordinator):
+    """A lock we've never heard exposes no source/last_seen to report."""
+    assert LockBleSignal(coordinator).extra_state_attributes is None
