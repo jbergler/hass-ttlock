@@ -304,3 +304,11 @@ class TestLockSummary:
 
     def test_not_connectable_without_gateway_or_wifi(self):
         assert self._summary(hasGateway=0, featureValue="0").connectable is False
+
+    def test_lock_data_is_parsed_when_present(self):
+        """lock/list is the only endpoint that returns the BLE credential blob."""
+        assert self._summary(lockData="Ax9dQ0pF").lockData == "Ax9dQ0pF"
+
+    def test_lock_data_is_none_when_absent(self):
+        """Older accounts and trimmed fixtures omit it - that must not be fatal."""
+        assert self._summary().lockData is None

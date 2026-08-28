@@ -9,7 +9,7 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 
 from custom_components.ttlock.api import TTLockApi
 from custom_components.ttlock.capture import LockTrafficCapture
-from custom_components.ttlock.const import DOMAIN, TT_GATEWAYS, TT_LOCKS
+from custom_components.ttlock.const import DOMAIN, TO_REDACT, TT_GATEWAYS, TT_LOCKS
 from custom_components.ttlock.coordinator import LockUpdateCoordinator
 from custom_components.ttlock.diagnostics import (
     async_get_config_entry_diagnostics,
@@ -17,6 +17,7 @@ from custom_components.ttlock.diagnostics import (
 )
 from custom_components.ttlock.models import Gateway, LockSummary
 from custom_components.ttlock.store import LockStateStore
+from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 
@@ -298,3 +299,28 @@ async def test_debug_capture_redaction_does_not_affect_live_log_output(
     assert any("Received response" in message for message in captured_messages)
     assert not any(sensitive_value in message for message in captured_messages)
     assert any("**REDACTED**" in message for message in captured_messages)
+
+
+def test_to_redact_covers_lock_data():
+    """lockData is a per-lock BLE credential blob - it must never survive redaction.
+
+    lock/list is not lock-scoped (no lockId), so its response doesn't reach the
+    per-lock capture buffer today and this is a forward guard rather than a
+    regression test: the moment lockData is carried anywhere that feeds
+    coordinator.as_dict(), TO_REDACT is what has to catch it.
+    """
+    payload = {
+        "list": [
+            {
+                "lockId": 7252408,
+                "lockAlias": "Front Door",
+                "lockMac": "00:00:00:00:00:00",
+                "lockData": "super-secret-ble-blob",
+            }
+        ]
+    }
+
+    redacted = async_redact_data(payload, TO_REDACT)
+
+    assert redacted["list"][0]["lockData"] == "**REDACTED**"
+    assert redacted["list"][0]["lockAlias"] == "Front Door"
