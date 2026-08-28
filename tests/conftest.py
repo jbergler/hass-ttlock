@@ -1,12 +1,23 @@
 """Global fixtures for ttlock integration."""
 
+from collections.abc import Callable
 import sys
 from time import time
 import types
-from typing import NamedTuple
+from typing import Any, NamedTuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiohttp import ClientSession
+from bleak.backends.device import BLEDevice
+
+# The real objects HA's bluetooth component re-exports, imported from the
+# packages it gets them from because the component itself can't be loaded
+# here (see mock_bluetooth) - so ble.py still measures advertisement age
+# against the same clock and matches the same scanning-mode enum it would in
+# production.
+from bluetooth_data_tools import monotonic_time_coarse
+from habluetooth import BluetoothScanningMode
+from home_assistant_bluetooth import BluetoothServiceInfoBleak
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -37,8 +48,11 @@ from .const import (
     LOCK_DETAILS_WITH_SENSOR,
     LOCK_STATE_LOCKED,
     LOCK_STATE_UNLOCKED,
+    MOCK_LOCK_MAC,
+    MOCK_LOCK_NAME,
     PASSAGE_MODE_6_TO_6_7_DAYS,
     SENSOR_DETAILS,
+    TTLOCK_SERVICE_UUID,
 )
 
 pytest_plugins = "pytest_homeassistant_custom_component"
@@ -317,3 +331,93 @@ def mock_cloud(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     monkeypatch.setattr(ha_components, "cloud", stub, raising=False)
 
     return stub
+
+
+class BluetoothRecorder:
+    """What ble.py asked HA's bluetooth component to do."""
+
+    def __init__(self) -> None:
+        self.matcher: dict | None = None
+        self.mode: BluetoothScanningMode | None = None
+        self.advertisement: Callable | None = None
+        self.unavailable: Callable | None = None
+        self.unavailable_address: str | None = None
+        self.unavailable_connectable: bool | None = None
+        self.seed: BluetoothServiceInfoBleak | None = None
+        self.seed_address: str | None = None
+        self.unsubscribed: list[str] = []
+
+
+@pytest.fixture
+def ble_advertisement():
+    """Factory: one plausible advertisement from a TTLock lock."""
+
+    def _advertisement(**overrides) -> BluetoothServiceInfoBleak:
+        address = overrides.pop("address", MOCK_LOCK_MAC)
+        kwargs: dict[str, Any] = {
+            "name": MOCK_LOCK_NAME,
+            "address": address,
+            "rssi": -62,
+            "manufacturer_data": {},
+            "service_data": {},
+            "service_uuids": [TTLOCK_SERVICE_UUID],
+            "source": "local",
+            "device": BLEDevice(address, MOCK_LOCK_NAME, {}),
+            "advertisement": None,
+            "connectable": True,
+            "time": monotonic_time_coarse(),
+            "tx_power": -127,
+        }
+        kwargs.update(overrides)
+        return BluetoothServiceInfoBleak(**kwargs)
+
+    return _advertisement
+
+
+@pytest.fixture
+def mock_bluetooth(
+    monkeypatch: pytest.MonkeyPatch, hass: HomeAssistant
+) -> BluetoothRecorder:
+    """Stand in for a set-up bluetooth component, recording every call.
+
+    homeassistant.components.bluetooth is unimportable in this test
+    environment - its import chain reaches the usb component and then
+    aiousbwatcher/asyncinotify, which are Linux-only - so it gets the same
+    treatment as mock_cloud above, and for the same reason ble.py defers the
+    import rather than taking it at module scope.
+
+    Marking "bluetooth" as a loaded component is part of the stub: that is
+    exactly what ble.async_bluetooth_available checks before it will import
+    or call anything here, so requesting this fixture is what turns local
+    Bluetooth on for a test.
+    """
+    recorder = BluetoothRecorder()
+
+    def register_callback(hass, callback, matcher, mode):
+        recorder.advertisement = callback
+        recorder.matcher = matcher
+        recorder.mode = mode
+        return lambda: recorder.unsubscribed.append("advertisement")
+
+    def track_unavailable(hass, callback, address, connectable):
+        recorder.unavailable = callback
+        recorder.unavailable_address = address
+        recorder.unavailable_connectable = connectable
+        return lambda: recorder.unsubscribed.append("unavailable")
+
+    def last_service_info(hass, address, connectable=True):
+        recorder.seed_address = address
+        return recorder.seed
+
+    stub = types.ModuleType("homeassistant.components.bluetooth")
+    stub.async_register_callback = register_callback  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
+    stub.async_track_unavailable = track_unavailable  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
+    stub.async_last_service_info = last_service_info  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
+    stub.BluetoothScanningMode = BluetoothScanningMode  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
+    stub.MONOTONIC_TIME = monotonic_time_coarse  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
+
+    monkeypatch.setitem(sys.modules, "homeassistant.components.bluetooth", stub)
+    monkeypatch.setattr(ha_components, "bluetooth", stub, raising=False)
+    hass.config.components.add("bluetooth")
+
+    return recorder

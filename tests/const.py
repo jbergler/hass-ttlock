@@ -1,5 +1,15 @@
 """Dummy data for tests."""
 
+# The lock the Bluetooth-presence tests advertise as. Matches BASIC_LOCK_DETAILS
+# below so a single lock is consistent across cloud and BLE fixtures.
+MOCK_LOCK_MAC = "16:72:4C:CC:01:C4"
+MOCK_LOCK_NAME = "S31_c401cc"
+
+# TTLock's GATT service, advertised by every lock. Used only to give the mock
+# advertisement a plausible service uuid; ble.py's presence layer doesn't read
+# it.
+TTLOCK_SERVICE_UUID = "00001910-0000-1000-8000-00805f9b34fb"
+
 BASIC_LOCK_DETAILS = {
     "date": 1669690212000,
     "lockAlias": "Front Door",
