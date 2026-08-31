@@ -37,7 +37,6 @@ from .const import (
     LOCK_DETAILS_WITH_SENSOR,
     LOCK_STATE_LOCKED,
     LOCK_STATE_UNLOCKED,
-    MOCK_LOCK_DATA,
     PASSAGE_MODE_6_TO_6_7_DAYS,
     SENSOR_DETAILS,
 )
@@ -231,9 +230,8 @@ def mock_api_responses(monkeypatch, mock_data_factory):
                     lockMac=mock_data.lock.mac,
                     featureValue=mock_data.lock.featureValue,
                     hasGateway=1,
-                    # real lock/list responses always carry this; keep it in the
-                    # fixture so nothing regresses to assuming it is absent.
-                    lockData=MOCK_LOCK_DATA,
+                    # opaque binary blob, value doesn't matter to us, just presence
+                    lockData="TW9ja0xvY2tEYXRhQmxvYkZvclRlc3Rz",
                 )
             ]
 

@@ -101,10 +101,8 @@ class LockSummary(BaseModel):
     # lockData is the per-lock credential blob TTLock's own SDK uses to talk
     # to a lock directly over BLE - it is only ever returned by lock/list
     # (see docs/ttlock-cloud-api/lock/list.md) and ekey/get, never by
-    # lock/detail. Carrying it here means a future local BLE transport needs
-    # no second authentication path: the developer OAuth2 session this
-    # integration already holds is sufficient. Treated as opaque - it is a
-    # server-issued blob whose contents are TTLock's business, not ours, and
+    # lock/detail.
+    # Treated as opaque - its contents are TTLock's business, not ours, and
     # it is mutable (lock/updateLockData is the write-back endpoint). Always
     # redacted from diagnostics via const.TO_REDACT.
     lockData: str | None = None

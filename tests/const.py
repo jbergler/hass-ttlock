@@ -112,9 +112,3 @@ WEBHOOK_SENSOR_CLOSE = {
     "username": "test",
     "success": 1,
 }
-
-# A stand-in for the opaque per-lock BLE credential blob that lock/list
-# returns as lockData. The real value is a server-issued base64 string this
-# integration treats as opaque; the tests only care that it round-trips onto
-# LockSummary and is redacted, so any base64-shaped string will do.
-MOCK_LOCK_DATA = "TW9ja0xvY2tEYXRhQmxvYkZvclRlc3Rz"
