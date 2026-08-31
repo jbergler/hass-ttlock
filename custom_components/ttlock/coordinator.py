@@ -21,7 +21,7 @@ import logging
 from typing import TypeGuard
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, Entity
@@ -29,6 +29,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .api import TTLockApi
+from .ble import BleData, async_bluetooth_available, async_track_address
 from .capture import LockTrafficCapture
 from .const import (
     CONF_POLL_INTERVAL,
@@ -234,6 +235,11 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self._capture = capture
         self._store = store
 
+        # Latest passive Bluetooth presence for this lock.
+        # Empty until async_start_ble_tracking hears the first
+        # advertisement (or immediately, if the stack already has one)
+        self.ble: BleData = BleData()
+
         # Whether we've already made this restart's one-shot door-sensor
         # recheck (see _check_for_sensor) - deliberately in-memory, not
         # persisted, so it naturally resets to False on every restart.
@@ -269,6 +275,29 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         )
 
         async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._process_webhook_data)
+
+    @callback
+    def async_start_ble_tracking(self) -> CALLBACK_TYPE:
+        """Begin watching this lock's Bluetooth presence.
+
+        Returns an unsubscribe callable for the caller to register with
+        `entry.async_on_unload`. When the bluetooth component isn't set up
+        there is nothing to watch, so this is a no-op that returns a no-op -
+        the lock keeps working over the cloud exactly as before.
+        """
+        if not async_bluetooth_available(self.hass):
+            return lambda: None
+        return async_track_address(self.hass, self.data.mac, self._async_ble_updated)
+
+    @callback
+    def _async_ble_updated(self, ble: BleData) -> None:
+        """Record new presence and let entities re-read it.
+
+        This is passive - a presence change never triggers a cloud poll or a
+        connection, it only refreshes what the RSSI sensor reports.
+        """
+        self.ble = ble
+        self.async_update_listeners()
 
     async def _async_update_data(self) -> LockState:
         if not self.connectable:

@@ -1,7 +1,7 @@
 {
   "domain": "ttlock",
   "name": "TTLock",
-  "after_dependencies": ["cloud"],
+  "after_dependencies": ["bluetooth", "cloud"],
   "codeowners": ["@jbergler"],
   "config_flow": true,
   "dependencies": [

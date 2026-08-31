@@ -123,6 +123,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ]
     hass.data[DOMAIN][entry.entry_id][TT_LOCKS] = locks
 
+    for coordinator in locks:
+        entry.async_on_unload(coordinator.async_start_ble_tracking())
+
     gateway_coordinator = GatewaysUpdateCoordinator(hass, entry, client)
     await gateway_coordinator.async_config_entry_first_refresh()
     hass.data[DOMAIN][entry.entry_id][TT_GATEWAYS] = gateway_coordinator

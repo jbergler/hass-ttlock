@@ -21,6 +21,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
+from .ble import async_bluetooth_available
 from .coordinator import async_add_when_sensor_present, lock_coordinators
 from .entity import BaseLockEntity
 
@@ -36,6 +37,8 @@ async def async_setup_entry(
 
     coordinators = list(lock_coordinators(hass, entry))
 
+    with_bluetooth = async_bluetooth_available(hass)
+
     async_add_entities(
         [
             entity
@@ -45,6 +48,7 @@ async def async_setup_entry(
                 LockOperator(coordinator),
                 LockTrigger(coordinator),
                 *([LockGateway(coordinator)] if coordinator.has_gateway else []),
+                *([LockBleSignal(coordinator)] if with_bluetooth else []),
             )
         ]
     )
@@ -164,4 +168,38 @@ class LockGateway(BaseLockEntity, SensorEntity):
                 {"name": gateway.name, "mac": gateway.mac, "rssi": gateway.rssi}
                 for gateway in others
             ],
+        }
+
+
+class LockBleSignal(BaseLockEntity, SensorEntity):
+    """RSSI of the lock as heard directly by HA's own Bluetooth stack.
+
+    Distinct from LockGateway, which reports how well the *TTLock gateway*
+    hears the lock - this reports how well *we* hear it, with no TTLock
+    hardware in between. Diagnostic and disabled by default: it exists to
+    answer "is this lock within local radio range, and would a Bluetooth
+    proxy help?", which is a placement question, not a dashboard one.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
+    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def _update_from_coordinator(self) -> None:
+        """Fetch state from the device."""
+        self._attr_name = f"{self.coordinator.data.name} Bluetooth Signal"
+        self._attr_native_value = self.coordinator.ble.rssi
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Which adapter/proxy heard the lock, when, and whether it can connect."""
+        ble = self.coordinator.ble
+        if not ble.in_range:
+            return None
+        return {
+            "source": ble.source,
+            "connectable": ble.connectable,
+            "last_seen": ble.last_seen.isoformat() if ble.last_seen else None,
         }
