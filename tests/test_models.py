@@ -308,3 +308,11 @@ class TestLockSummary:
     def test_mac_is_upper_cased(self):
         """HA matches BLE on upper-case MACs; the cloud isn't consistent about case."""
         assert self._summary(lockMac="16:72:4c:cc:01:c4").mac == "16:72:4C:CC:01:C4"
+        
+    def test_lock_data_is_parsed_when_present(self):
+        """lock/list is the only endpoint that returns the BLE credential blob."""
+        assert self._summary(lockData="Ax9dQ0pF").lockData == "Ax9dQ0pF"
+
+    def test_lock_data_is_none_when_absent(self):
+        """Older accounts and trimmed fixtures omit it - that must not be fatal."""
+        assert self._summary().lockData is None

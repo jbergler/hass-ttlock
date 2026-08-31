@@ -244,6 +244,8 @@ def mock_api_responses(monkeypatch, mock_data_factory):
                     lockMac=mock_data.lock.mac,
                     featureValue=mock_data.lock.featureValue,
                     hasGateway=1,
+                    # opaque binary blob, value doesn't matter to us, just presence
+                    lockData="TW9ja0xvY2tEYXRhQmxvYkZvclRlc3Rz",
                 )
             ]
 
