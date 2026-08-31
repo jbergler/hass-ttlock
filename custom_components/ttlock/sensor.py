@@ -37,9 +37,6 @@ async def async_setup_entry(
 
     coordinators = list(lock_coordinators(hass, entry))
 
-    # Only add the local-radio RSSI sensor when HA actually has Bluetooth set
-    # up; on a cloud-only host it would sit permanently unavailable and mean
-    # nothing (see ble.async_bluetooth_available).
     with_bluetooth = async_bluetooth_available(hass)
 
     async_add_entities(

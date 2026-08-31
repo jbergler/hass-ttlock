@@ -60,13 +60,28 @@ class SensorState(Enum):
     unknown = None
 
 
-class Lock(BaseModel):
+class LockMacModel(BaseModel):
+    """Base for API models carrying a lock MAC.
+
+    Normalises it at parse time so internal state is consistent no matter
+    which endpoint (lock/list, lock/detail) it came from - HA matches BLE on
+    upper-case MACs and the cloud isn't consistent about case.
+    """
+
+    mac: str = Field(..., alias="lockMac")
+
+    @field_validator("mac")
+    @classmethod
+    def _normalise_mac(cls, mac: str) -> str:
+        return mac.upper()
+
+
+class Lock(LockMacModel):
     """Lock details."""
 
     id: int = Field(..., alias="lockId")
     type: str = Field(..., alias="lockName")
     name: str = Field("Lock", alias="lockAlias")
-    mac: str = Field(..., alias="lockMac")
     battery_level: int | None = Field(None, alias="electricQuantity")
     featureValue: str | None = None
     timezoneRawOffset: int = 0
@@ -87,12 +102,11 @@ class Lock(BaseModel):
     noKeyPwd: str = Field(alias="adminPwd")
 
 
-class LockSummary(BaseModel):
+class LockSummary(LockMacModel):
     """Cheap per-lock summary from lock/list, enough to build a device/entities without a detail fetch."""
 
     id: int = Field(..., alias="lockId")
     name: str = Field("Lock", alias="lockAlias")
-    mac: str = Field(..., alias="lockMac")
     featureValue: str | None = None
     hasGateway: int = 0
 

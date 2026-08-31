@@ -235,10 +235,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self._capture = capture
         self._store = store
 
-        # Latest passive Bluetooth presence for this lock: RSSI, when it was
-        # last heard and via which adapter. Empty until async_start_ble_tracking
-        # hears the first advertisement (or immediately, if the stack already
-        # has one). Read-only - nothing here connects to the lock.
+        # Latest passive Bluetooth presence for this lock.
+        # Empty until async_start_ble_tracking hears the first
+        # advertisement (or immediately, if the stack already has one)
         self.ble: BleData = BleData()
 
         # Whether we've already made this restart's one-shot door-sensor

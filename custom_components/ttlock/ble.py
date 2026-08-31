@@ -1,39 +1,7 @@
 """Local Bluetooth presence for TTLock locks.
 
-This is the read-only, passive layer: it answers "can this Home Assistant
-instance hear this lock's radio, how strongly, and via which adapter" by
-watching the advertisements the lock is broadcasting anyway. No connection,
-no protocol, no cost to the lock's battery - nothing here ever writes to the
-lock or even opens a GATT session.
-
-That question is the one a user would otherwise stand up a Bluetooth proxy to
-answer: is the lock in range of the HA host at all, and is the signal good
-enough that a future local transport could work here, or does the door need a
-proxy/gateway. The RSSI it surfaces is the measurement that decides it.
-
-Everything goes through `homeassistant.components.bluetooth` rather than
-bleak directly. That is what makes the radio source interchangeable: a
-Bluetooth adapter on the HA host, an ESPHome Bluetooth proxy, or a
-purpose-built gateway all surface through the same API, so adding one later
-needs no change here.
-
-Bluetooth is an *optional* enhancement - a TTLock account works perfectly
-well over the cloud on a host with no Bluetooth at all. That shapes two
-things:
-
-- manifest.json lists `bluetooth` under `after_dependencies`, not
-  `dependencies`, and every entry point here checks
-  `async_bluetooth_available` first. Calling the bluetooth APIs when the
-  component was never set up raises out of habluetooth's manager singleton.
-- The `homeassistant.components.bluetooth` import is deferred into the
-  functions that need it, the same way webhook.py defers `cloud`. Importing
-  it pulls in the `usb` component and a chain of Linux-only packages
-  (aiousbwatcher -> asyncinotify), which a cloud-only install has no reason
-  to load and which can't be added to this repo's dev dependencies without
-  breaking `uv sync` on macOS. Because `async_bluetooth_available` gates
-  every one of those imports, the component is by then already in
-  sys.modules and the import is a dict lookup, not disk I/O in the event
-  loop.
+Read-only, passive layer that listens for the advertisements the lock is
+broadcasting anyway.
 """
 
 from __future__ import annotations
@@ -58,12 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass
 class BleData:
-    """What the local radio currently knows about one lock.
-
-    The default - every field empty - is the honest "we have never heard
-    this lock" state, which is also what a lock that has gone silent decays
-    back to.
-    """
+    """What we know about the lock via ble, empty means nothing."""
 
     rssi: int | None = None
     last_seen: datetime | None = None
@@ -81,15 +44,10 @@ class BleData:
             return None
         return (now - self.last_seen).total_seconds()
 
-    def as_dict(self, now: datetime) -> dict:
-        """Serialize for diagnostics, dated against `now`.
-
-        The age is included rather than left to be reconstructed from
-        `last_seen` and the download time. An advertisement is only evidence
-        of what the lock was doing when it was *emitted*, so a payload read
-        without its age has already been misread once. A dump has to be a
-        self-dating sample or it is not a sample.
-        """
+    @property
+    def as_dict(self) -> dict:
+        """Serialize for diagnostics, snapshot in time with now being a reference for age."""
+        now = dt_util.utcnow()
         return {
             "rssi": self.rssi,
             "last_seen": self.last_seen,
@@ -139,35 +97,17 @@ def async_track_address(
 ) -> CALLBACK_TYPE:
     """Watch one BLE address, calling `on_change` whenever presence changes.
 
-    Fires once immediately if the stack has already heard the address, so a
-    lock that was advertising before this integration loaded doesn't have to
-    wait for its next advertisement to show up. Fires with an empty
-    `BleData` when the bluetooth component declares the address unavailable,
-    which is what stops a stale RSSI from being reported forever after a
-    lock is taken off the door.
-
-    Matching uses `connectable=False`, which widens rather than narrows: it
-    means "any scanner that can hear it", including passive-only proxies.
-    Whether a *connectable* path exists is reported per-advertisement via
-    `BleData.connectable` instead of being a precondition for seeing the
-    lock at all - for the "do I need a gateway here?" question, a sighting
-    from a passive scanner is still a useful answer.
-
-    Returns an unsubscribe callable; the caller owns its lifetime.
+    Fires on registration if address has been seen. Also fires later with empty
+    payload if the address becomes unavailable.
     """
     from homeassistant.components import bluetooth  # noqa: PLC0415
-
-    # HA canonicalises BLE addresses as upper-case colon-separated MACs, which
-    # is also what lock/list returns - normalise anyway, because the TTLock
-    # cloud is not consistent about case between endpoints and a lower-case
-    # address silently matches nothing.
-    address = address.upper()
 
     @callback
     def _advertisement(
         service_info: BluetoothServiceInfoBleak,
         change: BluetoothChange,
     ) -> None:
+        _LOGGER.debug("Lock %s received BLE advertisement", address)
         on_change(_ble_data(service_info))
 
     @callback

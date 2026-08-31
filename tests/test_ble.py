@@ -3,10 +3,10 @@
 conftest's mock_bluetooth stands in for HA's bluetooth component - see its
 docstring for why the real one can't be loaded here. Stubbing at exactly the
 seam ble.py uses (three functions and a matcher) is what lets these assert
-the things that are easy to get silently wrong: that the address is
-normalised, that a lock heard before we loaded is picked up without waiting
-for its next advertisement, that going out of range clears the reading
-rather than freezing it, and that unsubscribing releases both registrations.
+the things that are easy to get silently wrong: that a lock heard before we
+loaded is picked up without waiting for its next advertisement, that going
+out of range clears the reading rather than freezing it, and that
+unsubscribing releases both registrations.
 """
 
 from datetime import timedelta
@@ -47,24 +47,23 @@ class TestBleData:
         emitted 222s before the operation it was taken to describe. Whoever
         reads a dump gets the age without having to know that.
         """
-        now = dt_util.utcnow()
         data = BleData(
             rssi=-80,
-            last_seen=now - timedelta(seconds=222.6),
+            last_seen=dt_util.utcnow() - timedelta(seconds=222.6),
             source="local",
             connectable=True,
         )
 
-        dumped = data.as_dict(now)
+        dumped = data.as_dict
 
         assert dumped["rssi"] == -80
         assert dumped["source"] == "local"
         assert dumped["connectable"] is True
-        assert dumped["age_seconds"] == pytest.approx(222.6)
+        assert dumped["age_seconds"] == pytest.approx(222.6, abs=1)
 
     def test_a_lock_never_heard_reports_no_age(self):
         """None, not 0 - which would read as an advertisement received now."""
-        assert BleData().as_dict(dt_util.utcnow())["age_seconds"] is None
+        assert BleData().as_dict["age_seconds"] is None
 
 
 class TestAsyncBluetoothAvailable:
@@ -95,14 +94,6 @@ class TestAsyncTrackAddress:
 
         assert mock_bluetooth.matcher == {"address": LOCK_MAC, "connectable": False}
         assert mock_bluetooth.mode is BluetoothScanningMode.ACTIVE
-
-    def test_lower_case_addresses_are_normalised(self, track, mock_bluetooth):
-        """The cloud isn't consistent about case; a lower-case matcher matches nothing."""
-        track(LOCK_MAC.lower())
-
-        assert mock_bluetooth.matcher == {"address": LOCK_MAC, "connectable": False}
-        assert mock_bluetooth.unavailable_address == LOCK_MAC
-        assert mock_bluetooth.seed_address == LOCK_MAC
 
     def test_watches_non_connectable_scanners_too(self, track, mock_bluetooth):
         """A passive-only sighting still answers "is the lock in range?"."""
