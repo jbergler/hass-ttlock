@@ -97,9 +97,13 @@ class Lock(LockMacModel):
     passageMode: OnOff = OnOff.unknown
     passageModeAutoUnlock: OnOff = OnOff.unknown
     date: int
+    # Protocol dialect every BLE frame echoes back, see ble_protocol.LockVersion.
+    lockVersion: dict[str, int] | None = None
 
     # sensitive fields
     noKeyPwd: str = Field(alias="adminPwd")
+    # Per-lock AES key BLE frames are encrypted with. Undocumented, redacted.
+    aesKeyStr: str | None = None
 
 
 class LockSummary(LockMacModel):

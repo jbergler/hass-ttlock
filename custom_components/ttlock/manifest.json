@@ -12,7 +12,7 @@
   "homekit": {},
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/jbergler/hass-ttlock/issues",
-  "requirements": ["pydantic"],
+  "requirements": ["pydantic", "bleak-retry-connector>=4.4.0"],
   "ssdp": [],
   "version": "v0.0.0",
   "zeroconf": []

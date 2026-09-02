@@ -10,6 +10,10 @@ MOCK_LOCK_NAME = "S31_c401cc"
 # it.
 TTLOCK_SERVICE_UUID = "00001910-0000-1000-8000-00805f9b34fb"
 
+# aesKeyStr as lock/detail returns it. Comma-delimited hex, the one encoding
+# that is ambiguous with a Java signed-byte listing.
+MOCK_LOCK_AES_KEY = "0f,1e,2d,3c,4b,5a,69,78,87,96,a5,b4,c3,d2,e1,f0"
+
 BASIC_LOCK_DETAILS = {
     "date": 1669690212000,
     "lockAlias": "Front Door",
@@ -41,7 +45,7 @@ BASIC_LOCK_DETAILS = {
     "lockFlagPos": 0,
     "lockUpdateDate": 1682201024000,
     "keyboardPwdVersion": 4,
-    "aesKeyStr": "<REMOVED>",
+    "aesKeyStr": MOCK_LOCK_AES_KEY,
     "hardwareRevision": "1.6",
     "openDirection": 0,
     "lockVersion": {
