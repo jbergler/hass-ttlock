@@ -33,11 +33,11 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 # Home Assistant core depends on it and pins a version, so declaring it here
 # could only conflict with that pin.
 
+# Start-of-frame marker. Also what the reassembler resynchronises on.
 MAGIC = b"\x7f\x5a"
-"""Start-of-frame marker. Also what the reassembler resynchronises on."""
 
+# CR+LF, the last two bytes of every frame.
 TERMINATOR = b"\x0d\x0a"
-"""CR+LF, the last two bytes of every frame."""
 
 HEADER_LENGTH = 12
 TRAILER_LENGTH = 3  # CRC-8 + CR + LF
@@ -47,18 +47,18 @@ MAX_FRAME_LENGTH = HEADER_LENGTH + MAX_DATA_LENGTH + TRAILER_LENGTH
 AES_KEY_LENGTH = 16
 _AES_BLOCK_BITS = 128
 
+# TTLock's proprietary GATT service - the one carrying command traffic.
 SERVICE_UUID = "00001910-0000-1000-8000-00805f9b34fb"
-"""TTLock's proprietary GATT service - the one carrying command traffic."""
 
+# Write-without-response characteristic. Commands go out here.
 WRITE_UUID = "0000fff2-0000-1000-8000-00805f9b34fb"
-"""Write-without-response characteristic. Commands go out here."""
 
+# Notify characteristic. Responses and unsolicited events arrive here.
 NOTIFY_UUID = "0000fff4-0000-1000-8000-00805f9b34fb"
-"""Notify characteristic. Responses and unsolicited events arrive here."""
 
+# Standard Battery Level characteristic - a one-byte read needing no key,
+# session or framing.
 BATTERY_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
-"""Standard Battery Level characteristic - a one-byte read needing no key,
-session or framing."""
 
 
 class Command(IntEnum):
