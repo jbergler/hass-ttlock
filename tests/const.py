@@ -53,6 +53,11 @@ BASIC_LOCK_DETAILS = {
     },
     "sensitivity": -1,
 }
+
+# The lockVersion object lock/detail returns, identifying the protocol dialect
+# every BLE frame must echo back. Matches BASIC_LOCK_DETAILS above.
+MOCK_LOCK_VERSION = BASIC_LOCK_DETAILS["lockVersion"]
+
 LOCK_DETAILS_WITH_SENSOR = {
     **BASIC_LOCK_DETAILS,
     "featureValue": "F44354CF5F3",
