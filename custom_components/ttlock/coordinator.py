@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -29,7 +29,14 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .api import TTLockApi
-from .ble import BleData, async_bluetooth_available, async_track_address
+from .ble import (
+    BleData,
+    BleError,
+    async_bluetooth_available,
+    async_read_status,
+    async_track_address,
+)
+from .ble_protocol import LockStatus, LockVersion, ProtocolError, parse_aes_key
 from .capture import LockTrafficCapture
 from .const import (
     CONF_POLL_INTERVAL,
@@ -240,6 +247,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         # advertisement (or immediately, if the stack already has one)
         self.ble: BleData = BleData()
 
+        # What lock/detail told us about talking to the lock directly. Kept
+        # as received; parsed on use so an odd value costs a local read, not
+        # the poll.
+        self._ble_version: dict[str, int] | None = None
+        self._ble_key: str | None = None
+
         # Whether we've already made this restart's one-shot door-sensor
         # recheck (see _check_for_sensor) - deliberately in-memory, not
         # persisted, so it naturally resets to False on every restart.
@@ -299,6 +312,36 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self.ble = ble
         self.async_update_listeners()
 
+    def _ble_credentials(self) -> tuple[LockVersion, bytes] | None:
+        """The protocol dialect and AES key, or None if lock/detail's aren't usable."""
+        if self._ble_version is None or self._ble_key is None:
+            return None
+        with suppress(ValueError):
+            return LockVersion.from_cloud(self._ble_version), parse_aes_key(
+                self._ble_key
+            )
+        return None
+
+    async def async_read_state_ble(self) -> LockStatus | None:
+        """Read lock state over Bluetooth, or None if that isn't possible right now.
+
+        Never raises - the caller has the cloud to fall back on, and a lock that
+        is out of range or not answering is expected, not exceptional.
+        """
+        if not async_bluetooth_available(self.hass) or not self.ble.in_range:
+            return None
+        credentials = self._ble_credentials()
+        if credentials is None:
+            return None
+        version, aes_key = credentials
+        try:
+            return await async_read_status(
+                self.hass, self.data.mac, self.data.name, version, aes_key
+            )
+        except (BleError, ProtocolError) as err:
+            _LOGGER.debug("Local state read for lock %s failed: %s", self.lock_id, err)
+            return None
+
     async def _async_update_data(self) -> LockState:
         if not self.connectable:
             raise UpdateFailed(
@@ -325,6 +368,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 new_data.firmware_version = details.firmwareRevision
                 new_data.auto_lock_seconds = details.autoLockTime
                 new_data.lock_sound = bool(details.lockSound)
+                self._ble_version = details.lockVersion
+                self._ble_key = details.aesKeyStr
                 self._details_last_fetched = now
 
             if Features.door_sensor in new_data.features:
@@ -341,22 +386,34 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
             # Fast tier: re-verify lock (and door) state every poll - this is
             # the real-time-relevant signal and the reason the poll exists.
-            try:
-                state = await self.api.get_lock_state(self.lock_id)
-                new_data.locked = state.locked == State.locked
-                if sensor_present(new_data.sensor):
-                    new_data.sensor.opened = state.opened == SensorState.opened
-            except Exception as err:
-                if new_data.locked is None:
-                    # first-ever fetch: tolerate failure, entity shows "unknown"
-                    _LOGGER.debug("Failed to fetch initial lock state", exc_info=True)
-                else:
-                    # we previously had a verified state - a failure to re-verify now
-                    # means we can no longer trust it (e.g. gateway/webhooks silently
-                    # died), so surface it via the standard unavailable path
-                    raise UpdateFailed(
-                        f"Failed to re-verify lock state for {self.lock_id}"
-                    ) from err
+            # A lock in Bluetooth range answers the same question locally,
+            # without spending cloud quota; the cloud remains the fallback.
+            status = await self.async_read_state_ble()
+            if status is not None and status.locked is not None:
+                new_data.locked = status.locked
+                if status.battery is not None:
+                    new_data.battery_level = status.battery
+                if sensor_present(new_data.sensor) and status.door_open is not None:
+                    new_data.sensor.opened = status.door_open
+            else:
+                try:
+                    state = await self.api.get_lock_state(self.lock_id)
+                    new_data.locked = state.locked == State.locked
+                    if sensor_present(new_data.sensor):
+                        new_data.sensor.opened = state.opened == SensorState.opened
+                except Exception as err:
+                    if new_data.locked is None:
+                        # first-ever fetch: tolerate failure, entity shows "unknown"
+                        _LOGGER.debug(
+                            "Failed to fetch initial lock state", exc_info=True
+                        )
+                    else:
+                        # we previously had a verified state - a failure to re-verify now
+                        # means we can no longer trust it (e.g. gateway/webhooks silently
+                        # died), so surface it via the standard unavailable path
+                        raise UpdateFailed(
+                            f"Failed to re-verify lock state for {self.lock_id}"
+                        ) from err
 
             # Slow tier: passage-mode schedule config, rarely changes.
             if self._slow_tier_due(self._passage_last_fetched, now):

@@ -1,5 +1,6 @@
 """Global fixtures for ttlock integration."""
 
+import asyncio
 from collections.abc import Callable
 import sys
 from time import time
@@ -22,6 +23,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ttlock.api import TTLockApi
+from custom_components.ttlock.ble_protocol import FrameAssembler
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import DOMAIN, TT_LOCKS
 from custom_components.ttlock.coordinator import LockUpdateCoordinator
@@ -348,6 +350,10 @@ class BluetoothRecorder:
         self.seed: BluetoothServiceInfoBleak | None = None
         self.seed_address: str | None = None
         self.unsubscribed: list[str] = []
+        # What async_ble_device_from_address hands back, and what it was asked for.
+        self.device: BLEDevice | None = None
+        self.device_address: str | None = None
+        self.device_connectable: bool | None = None
 
 
 @pytest.fixture
@@ -411,10 +417,16 @@ def mock_bluetooth(
         recorder.seed_address = address
         return recorder.seed
 
+    def ble_device_from_address(hass, address, connectable=True):
+        recorder.device_address = address
+        recorder.device_connectable = connectable
+        return recorder.device
+
     stub = types.ModuleType("homeassistant.components.bluetooth")
     stub.async_register_callback = register_callback  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
     stub.async_track_unavailable = track_unavailable  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
     stub.async_last_service_info = last_service_info  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
+    stub.async_ble_device_from_address = ble_device_from_address  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
     stub.BluetoothScanningMode = BluetoothScanningMode  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
     stub.MONOTONIC_TIME = monotonic_time_coarse  # ty: ignore[unresolved-attribute] - types.ModuleType has no declared attrs, this is a test stub
 
@@ -422,4 +434,86 @@ def mock_bluetooth(
     monkeypatch.setattr(ha_components, "bluetooth", stub, raising=False)
     hass.config.components.add("bluetooth")
 
+    return recorder
+
+
+class GattRecorder:
+    """A connected BleakClient as ble.py sees it, recording every call.
+
+    `responder` plays the lock: it gets each complete inbound frame and
+    returns the chunks to notify back, delivered synchronously from within
+    write_gatt_char the way a real notification would race the write.
+    """
+
+    def __init__(self) -> None:
+        self.connect_error: Exception | None = None
+        self.connect_delay: float = 0.0
+        self.connects = 0
+        self.connected_name: str | None = None
+        self.max_attempts: int | None = None
+        self.disconnect_error: Exception | None = None
+        self.disconnects = 0
+        self.notify_error: Exception | None = None
+        self.notify_uuid: str | None = None
+        self.notify_handler: Callable | None = None
+        self.notify_stops: list[str] = []
+        self.write_error: Exception | None = None
+        self.writes: list[bytes] = []
+        self.written_uuids: list[str] = []
+        self.received: list[bytes] = []
+        self.responder: Callable[[bytes], list[bytes]] | None = None
+        self.mtu_size: int | None = 23
+        self._inbound = FrameAssembler()
+
+    async def start_notify(self, uuid: str, handler: Callable) -> None:
+        if self.notify_error is not None:
+            raise self.notify_error
+        self.notify_uuid = uuid
+        self.notify_handler = handler
+
+    async def stop_notify(self, uuid: str) -> None:
+        self.notify_stops.append(uuid)
+        if self.notify_error is not None:
+            raise self.notify_error
+
+    async def write_gatt_char(
+        self, uuid: str, data: bytes, response: bool = True
+    ) -> None:
+        if self.write_error is not None:
+            raise self.write_error
+        self.writes.append(bytes(data))
+        self.written_uuids.append(uuid)
+        for raw in self._inbound.feed(bytes(data)):
+            self.received.append(raw)
+            if self.responder is not None and self.notify_handler is not None:
+                for chunk in self.responder(raw):
+                    self.notify_handler(None, bytearray(chunk))
+
+    async def disconnect(self) -> None:
+        self.disconnects += 1
+        if self.disconnect_error is not None:
+            raise self.disconnect_error
+
+
+@pytest.fixture
+def mock_gatt(
+    monkeypatch: pytest.MonkeyPatch, mock_bluetooth: BluetoothRecorder
+) -> GattRecorder:
+    """Put the lock in connectable range and answer every connection with a GattRecorder."""
+    recorder = GattRecorder()
+    mock_bluetooth.device = BLEDevice(MOCK_LOCK_MAC, MOCK_LOCK_NAME, {})
+
+    async def establish_connection(client_class, device, name, **kwargs):
+        recorder.connects += 1
+        recorder.connected_name = name
+        recorder.max_attempts = kwargs.get("max_attempts")
+        if recorder.connect_delay:
+            await asyncio.sleep(recorder.connect_delay)
+        if recorder.connect_error is not None:
+            raise recorder.connect_error
+        return recorder
+
+    monkeypatch.setattr(
+        "bleak_retry_connector.establish_connection", establish_connection
+    )
     return recorder
