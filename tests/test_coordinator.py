@@ -9,6 +9,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ttlock.api import RequestFailed, TTLockApi
+from custom_components.ttlock.ble import BleData
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
     CONF_POLL_INTERVAL,
@@ -16,6 +17,8 @@ from custom_components.ttlock.const import (
     DOMAIN,
 )
 from custom_components.ttlock.coordinator import (
+    RETRY_INTERVAL,
+    REVERIFY_GRACE,
     GatewaysUpdateCoordinator,
     LockState,
     LockUpdateCoordinator,
@@ -350,6 +353,95 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
 
             assert coordinator.last_update_success is False
+
+    class TestReverifyGrace:
+        """A lock the radio can hear rides out a couple of failed state reads.
+
+        One connection that didn't take says nothing about the bolt; a lock
+        nothing can hear still goes unavailable on the first failure.
+        """
+
+        @pytest.fixture
+        async def verified(self, coordinator, mock_api_responses):
+            """The coordinator, holding a state it has verified once."""
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            assert coordinator.data.locked is False
+            return coordinator
+
+        @pytest.fixture
+        def cloud_state(self, monkeypatch):
+            """Control whether lock/queryOpenState answers; returns the switch."""
+            failing = False
+
+            async def get_lock_state(self, lock_id):
+                if failing:
+                    raise RequestFailed("boom")
+                return WireLockState.model_validate(LOCK_STATE_LOCKED)
+
+            def _set(fails: bool) -> None:
+                nonlocal failing
+                failing = fails
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_lock_state",
+                get_lock_state,
+            )
+            return _set
+
+        async def test_an_audible_lock_rides_out_one_failed_read(
+            self, verified, cloud_state
+        ):
+            verified.ble = BleData(rssi=-60, connectable=True)
+            cloud_state(fails=True)
+
+            await verified.async_refresh()
+
+            assert verified.last_update_success is True
+            assert verified.data.locked is False
+            assert verified.update_interval == RETRY_INTERVAL
+
+        async def test_the_grace_runs_out(self, verified, cloud_state):
+            verified.ble = BleData(rssi=-60, connectable=True)
+            cloud_state(fails=True)
+
+            for _ in range(REVERIFY_GRACE):
+                await verified.async_refresh()
+                assert verified.last_update_success is True
+            await verified.async_refresh()
+
+            assert verified.last_update_success is False
+
+        async def test_one_good_read_resets_the_grace(self, verified, cloud_state):
+            verified.ble = BleData(rssi=-60, connectable=True)
+            cloud_state(fails=True)
+            for _ in range(REVERIFY_GRACE):
+                await verified.async_refresh()
+
+            cloud_state(fails=False)
+            await verified.async_refresh()
+            assert verified.update_interval == timedelta(minutes=30)
+
+            cloud_state(fails=True)
+            for _ in range(REVERIFY_GRACE):
+                await verified.async_refresh()
+                assert verified.last_update_success is True
+
+        async def test_a_silent_lock_gets_no_grace(self, verified, cloud_state):
+            cloud_state(fails=True)
+
+            await verified.async_refresh()
+
+            assert verified.last_update_success is False
+            assert verified.update_interval == timedelta(minutes=30)
+
+        async def test_a_passive_sighting_gets_no_grace(self, verified, cloud_state):
+            verified.ble = BleData(rssi=-60, connectable=False)
+            cloud_state(fails=True)
+
+            await verified.async_refresh()
+
+            assert verified.last_update_success is False
 
     class TestGatewayLinks:
         """gateway/listByLock results feed LockState.gateways/best_gateway,
