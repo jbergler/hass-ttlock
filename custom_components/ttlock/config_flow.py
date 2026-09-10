@@ -14,6 +14,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -23,9 +24,11 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_BLUETOOTH_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_REGION,
     CONF_SLOW_POLL_INTERVAL,
+    DEFAULT_BLUETOOTH_ENABLED,
     DEFAULT_POLL_INTERVAL_MINUTES,
     DEFAULT_REGION,
     DEFAULT_SLOW_POLL_INTERVAL_HOURS,
@@ -96,25 +99,26 @@ class TTLockAuthFlowHandler(
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        """Get the options flow for tuning polling cadence."""
+        """Get the options flow for polling cadence and Bluetooth."""
         return TTLockOptionsFlow()
 
 
 class TTLockOptionsFlow(OptionsFlow):
-    """Let users tune how often the integration polls the TTLock cloud.
+    """Let users tune how the integration reaches their locks.
 
-    Two knobs, both global to the account entry: the fast poll interval that
-    re-verifies lock state, and the slow interval that governs how often
-    detail/passage/gateway data is re-fetched (see coordinator.py). Defaults
-    are gentle because webhooks carry real-time changes; users whose webhooks
-    are unreliable can dial the fast interval back down. Changing either
+    Three knobs, all global to the account entry: the fast poll interval
+    that re-verifies lock state, the slow interval that governs how often
+    detail/passage/gateway data is re-fetched (see coordinator.py), and
+    whether locks may be read over Bluetooth at all. Defaults are gentle
+    because webhooks carry real-time changes; users whose webhooks are
+    unreliable can dial the fast interval back down. Changing any of them
     reloads the entry so new coordinators pick the values up.
     """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the polling-cadence options."""
+        """Manage the polling and Bluetooth options."""
         if user_input is not None:
             return self.async_create_entry(data=user_input)
 
@@ -159,6 +163,12 @@ class TTLockOptionsFlow(OptionsFlow):
                         ),
                         vol.Coerce(int),
                     ),
+                    vol.Required(
+                        CONF_BLUETOOTH_ENABLED,
+                        default=options.get(
+                            CONF_BLUETOOTH_ENABLED, DEFAULT_BLUETOOTH_ENABLED
+                        ),
+                    ): BooleanSelector(),
                 }
             ),
         )

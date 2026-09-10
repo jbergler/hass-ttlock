@@ -411,6 +411,34 @@ class TestLockUpdateCoordinator:
             await verified.async_refresh()
 
             assert verified.last_update_success is False
+            assert verified.update_interval == verified._poll_interval
+
+        async def test_a_lock_that_stays_silent_is_not_retried_forever(
+            self, verified, cloud_state
+        ):
+            """Past the grace every poll is a failed GATT session; keep them rare."""
+            verified.ble = BleData(rssi=-60, connectable=True)
+            cloud_state(fails=True)
+            for _ in range(REVERIFY_GRACE):
+                await verified.async_refresh()
+
+            for _ in range(3):
+                await verified.async_refresh()
+                assert verified.last_update_success is False
+                assert verified.update_interval == verified._poll_interval
+
+        async def test_recovery_after_the_grace_ran_out(self, verified, cloud_state):
+            verified.ble = BleData(rssi=-60, connectable=True)
+            cloud_state(fails=True)
+            for _ in range(REVERIFY_GRACE + 1):
+                await verified.async_refresh()
+
+            cloud_state(fails=False)
+            await verified.async_refresh()
+
+            assert verified.last_update_success is True
+            assert verified._reverify_failures == 0
+            assert verified.update_interval == verified._poll_interval
 
         async def test_one_good_read_resets_the_grace(self, verified, cloud_state):
             verified.ble = BleData(rssi=-60, connectable=True)

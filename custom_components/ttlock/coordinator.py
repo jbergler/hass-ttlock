@@ -39,8 +39,10 @@ from .ble import (
 from .ble_protocol import LockStatus, LockVersion, ProtocolError, parse_aes_key
 from .capture import LockTrafficCapture
 from .const import (
+    CONF_BLUETOOTH_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
+    DEFAULT_BLUETOOTH_ENABLED,
     DEFAULT_POLL_INTERVAL_MINUTES,
     DEFAULT_SLOW_POLL_INTERVAL_HOURS,
     DOMAIN,
@@ -70,7 +72,8 @@ NOT_CONNECTABLE_REASON = (
 )
 
 # A lock the radio can still hear rides out this many failed state reads,
-# retried at this cadence, before it goes unavailable.
+# retried at this cadence, before it goes unavailable and the poll returns
+# to its normal interval.
 RETRY_INTERVAL = timedelta(minutes=1)
 REVERIFY_GRACE = 2
 
@@ -278,6 +281,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         )
         self._poll_interval = timedelta(minutes=poll_minutes)
         self._slow_interval = timedelta(hours=slow_hours)
+        self._ble_option: bool = options.get(
+            CONF_BLUETOOTH_ENABLED, DEFAULT_BLUETOOTH_ENABLED
+        )
         self._details_last_fetched: datetime | None = None
         self._passage_last_fetched: datetime | None = None
         self._gateways_last_fetched: datetime | None = None
@@ -306,11 +312,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         """Begin watching this lock's Bluetooth presence.
 
         Returns an unsubscribe callable for the caller to register with
-        `entry.async_on_unload`. When the bluetooth component isn't set up
-        there is nothing to watch, so this is a no-op that returns a no-op -
-        the lock keeps working over the cloud exactly as before.
+        `entry.async_on_unload`. When Bluetooth is off, or the bluetooth
+        component isn't set up, there is nothing to watch, so this is a
+        no-op that returns a no-op - the lock keeps working over the cloud
+        exactly as before.
         """
-        if not async_bluetooth_available(self.hass):
+        if not self.ble_enabled:
             return lambda: None
         return async_track_address(self.hass, self.data.mac, self._async_ble_updated)
 
@@ -326,8 +333,15 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         return dt_util.utcnow() - self._ble_verified_at <= self._proven_reachable_for
 
     @property
+    def ble_enabled(self) -> bool:
+        """Whether local Bluetooth is on for this entry and the component is loaded."""
+        return self._ble_option and async_bluetooth_available(self.hass)
+
+    @property
     def ble_reachable(self) -> bool:
         """Whether the local radio can reach the lock right now."""
+        if not self._ble_option:
+            return False
         return self.ble_proven or (self.ble.in_range and self.ble.connectable)
 
     @property
@@ -358,10 +372,15 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self.hass.async_create_task(self.async_request_refresh())
 
     @callback
-    def _async_note_verified(self) -> None:
-        self._reverify_failures = 0
+    def _async_resume_normal_polling(self) -> None:
+        """Drop back to the normal cadence after a burst of retries."""
         if self.update_interval == RETRY_INTERVAL:
             self.update_interval = self._poll_interval
+
+    @callback
+    def _async_note_verified(self) -> None:
+        self._reverify_failures = 0
+        self._async_resume_normal_polling()
 
     @callback
     def _async_tolerate_failed_verification(self) -> bool:
@@ -369,13 +388,18 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
         Only for a lock the radio can still hear: one connection that didn't
         take says nothing about the bolt. A lock nothing can hear goes
-        unavailable on the first failure, as before.
+        unavailable on the first failure. Retries are quick only while the
+        grace lasts - past it the lock is unavailable either way, and dialling
+        it every minute just spends its battery.
         """
         if not self.ble_reachable:
             return False
         self._reverify_failures += 1
+        if self._reverify_failures > REVERIFY_GRACE:
+            self._async_resume_normal_polling()
+            return False
         self.update_interval = RETRY_INTERVAL
-        return self._reverify_failures <= REVERIFY_GRACE
+        return True
 
     def _ble_credentials(self) -> tuple[LockVersion, bytes] | None:
         """The protocol dialect and AES key, or None if lock/detail's aren't usable."""
@@ -393,7 +417,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         Never raises - the caller has the cloud to fall back on, and a lock that
         is out of range or not answering is expected, not exceptional.
         """
-        if not async_bluetooth_available(self.hass) or not self.ble_reachable:
+        if not self.ble_enabled or not self.ble_reachable:
             return None
         credentials = self._ble_credentials()
         if credentials is None:
@@ -730,6 +754,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             "unique_id": self.unique_id,
             "connectable": self.connectable,
             "cloud_connectable": self.cloud_connectable,
+            "ble_enabled": self.ble_enabled,
             "ble_reachable": self.ble_reachable,
             "ble_proven": self.ble_proven,
             "has_gateway": self.has_gateway,

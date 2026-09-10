@@ -6,6 +6,7 @@ from unittest.mock import patch
 from custom_components.ttlock import async_remove_config_entry_device
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
+    CONF_BLUETOOTH_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
     CONF_WEBHOOK_STATUS,
@@ -57,6 +58,25 @@ async def test_changing_options_reloads_with_new_interval(
     # reload rebuilt the coordinators with the new cadence
     coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
     assert coordinator.update_interval == timedelta(minutes=90)
+
+
+async def test_disabling_bluetooth_tears_down_tracking(
+    hass, component_setup, mock_api_responses, mock_bluetooth
+):
+    """Turning the option off reloads the entry, which releases the radio."""
+    mock_api_responses("default")
+    await component_setup()
+    assert mock_bluetooth.advertisement is not None
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_BLUETOOTH_ENABLED: False}
+    )
+    await hass.async_block_till_done()
+
+    assert mock_bluetooth.unsubscribed == ["advertisement", "unavailable"]
+    coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
+    assert coordinator.ble_enabled is False
 
 
 async def test_capture_is_shared_across_config_entries(

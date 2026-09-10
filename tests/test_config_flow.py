@@ -7,6 +7,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ttlock.api import TTLockAuthImplementation
 from custom_components.ttlock.const import (
+    CONF_BLUETOOTH_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_REGION,
     CONF_SLOW_POLL_INTERVAL,
@@ -90,7 +91,11 @@ async def test_options_flow_saves_polling_cadence(hass: HomeAssistant):
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_POLL_INTERVAL: 45, CONF_SLOW_POLL_INTERVAL: 12},
+        {
+            CONF_POLL_INTERVAL: 45,
+            CONF_SLOW_POLL_INTERVAL: 12,
+            CONF_BLUETOOTH_ENABLED: True,
+        },
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -100,3 +105,22 @@ async def test_options_flow_saves_polling_cadence(hass: HomeAssistant):
     assert isinstance(entry.options[CONF_POLL_INTERVAL], int)
     assert entry.options[CONF_SLOW_POLL_INTERVAL] == 12
     assert isinstance(entry.options[CONF_SLOW_POLL_INTERVAL], int)
+    assert entry.options[CONF_BLUETOOTH_ENABLED] is True
+
+
+async def test_options_flow_can_disable_bluetooth(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_POLL_INTERVAL: 30,
+            CONF_SLOW_POLL_INTERVAL: 6,
+            CONF_BLUETOOTH_ENABLED: False,
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_BLUETOOTH_ENABLED] is False

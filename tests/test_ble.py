@@ -44,7 +44,11 @@ from custom_components.ttlock.ble_protocol import (
     parse_aes_key,
 )
 from custom_components.ttlock.capture import LockTrafficCapture
-from custom_components.ttlock.const import DEFAULT_POLL_INTERVAL_MINUTES, DOMAIN
+from custom_components.ttlock.const import (
+    CONF_BLUETOOTH_ENABLED,
+    DEFAULT_POLL_INTERVAL_MINUTES,
+    DOMAIN,
+)
 from custom_components.ttlock.coordinator import RETRY_INTERVAL, LockUpdateCoordinator
 from custom_components.ttlock.models import Lock, LockSummary
 from custom_components.ttlock.store import LockStateStore
@@ -67,17 +71,27 @@ LOCK_NAME = "Front Door"
 
 POLL_INTERVAL = timedelta(minutes=DEFAULT_POLL_INTERVAL_MINUTES)
 
+BLUETOOTH_OFF = {CONF_BLUETOOTH_ENABLED: False}
 
-def _gatewayless(hass: HomeAssistant, api) -> LockUpdateCoordinator:
-    """A coordinator for a lock the cloud has no route to."""
-    config_entry = MockConfigEntry(domain=DOMAIN)
+
+def _coordinator(
+    hass: HomeAssistant, api, summary: LockSummary, options: dict | None = None
+) -> LockUpdateCoordinator:
+    config_entry = MockConfigEntry(domain=DOMAIN, options=options or {})
     config_entry.add_to_hass(hass)
-    summary = LockSummary(
-        lockId=1, lockAlias="No Gateway", lockMac=LOCK_MAC, hasGateway=0
-    )
     return LockUpdateCoordinator(
         hass, config_entry, api, summary, LockTrafficCapture(), LockStateStore(hass)
     )
+
+
+def _gatewayless(
+    hass: HomeAssistant, api, options: dict | None = None
+) -> LockUpdateCoordinator:
+    """A coordinator for a lock the cloud has no route to."""
+    summary = LockSummary(
+        lockId=1, lockAlias="No Gateway", lockMac=LOCK_MAC, hasGateway=0
+    )
+    return _coordinator(hass, api, summary, options)
 
 
 def _cloud_state_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -763,6 +777,67 @@ class TestCoordinatorBleRead:
 
         assert coordinator.data.locked is False
         assert coordinator.data.sensor is None
+
+
+class TestBluetoothDisabled:
+    """Turning the option off leaves a lock reachable over the cloud only."""
+
+    @pytest.fixture
+    def cloud_backed(self, hass, api) -> LockUpdateCoordinator:
+        """A lock with a gateway, Bluetooth switched off for its entry."""
+        summary = LockSummary(
+            lockId=7252408,
+            lockAlias="Test Lock",
+            lockMac="00:00:00:00:00:00",
+            hasGateway=1,
+        )
+        return _coordinator(hass, api, summary, BLUETOOTH_OFF)
+
+    async def test_the_radio_is_on_by_default(self, hass, api, mock_bluetooth):
+        assert _gatewayless(hass, api).ble_enabled is True
+
+    async def test_the_option_alone_does_not_turn_the_radio_on(self, hass, api):
+        assert _gatewayless(hass, api).ble_enabled is False
+
+    async def test_a_disabled_radio_is_not_tracked(self, hass, api, mock_bluetooth):
+        unsubscribe = _gatewayless(hass, api, BLUETOOTH_OFF).async_start_ble_tracking()
+        unsubscribe()
+
+        assert mock_bluetooth.advertisement is None
+        assert mock_bluetooth.unsubscribed == []
+
+    async def test_a_disabled_radio_is_not_reachable(self, hass, api, mock_bluetooth):
+        gatewayless = _gatewayless(hass, api, BLUETOOTH_OFF)
+        gatewayless.ble = BleData(rssi=-60, connectable=True)
+
+        assert gatewayless.ble_reachable is False
+        assert gatewayless.connectable is False
+        assert gatewayless.update_interval is None
+
+    async def test_a_disabled_radio_leaves_the_cloud_to_answer(
+        self, cloud_backed, mock_api_responses, mock_bluetooth, speaking_lock, aes_key
+    ):
+        speaking_lock.answer(Command.RESPONSE, STATUS_LOCKED, key=aes_key)
+        cloud_backed.ble = BleData(rssi=-60, connectable=True)
+        mock_api_responses("default")
+
+        await cloud_backed.async_refresh()
+
+        assert cloud_backed.data.locked is False
+        assert speaking_lock.gatt.connects == 0
+
+    async def test_a_disabled_radio_gets_no_grace(
+        self, cloud_backed, mock_api_responses, mock_bluetooth, monkeypatch
+    ):
+        mock_api_responses("default")
+        await cloud_backed.async_refresh()
+        cloud_backed.ble = BleData(rssi=-60, connectable=True)
+        _cloud_state_fails(monkeypatch)
+
+        await cloud_backed.async_refresh()
+
+        assert cloud_backed.last_update_success is False
+        assert cloud_backed.update_interval == POLL_INTERVAL
 
 
 class TestCoordinatorReachability:

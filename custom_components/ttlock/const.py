@@ -44,6 +44,11 @@ CONF_SLOW_POLL_INTERVAL = "slow_poll_interval"
 DEFAULT_POLL_INTERVAL_MINUTES = 30
 DEFAULT_SLOW_POLL_INTERVAL_HOURS = 6
 
+# Local Bluetooth reads, tunable via the same options flow. On by default;
+# off leaves the lock reachable over the cloud only.
+CONF_BLUETOOTH_ENABLED = "bluetooth_enabled"
+DEFAULT_BLUETOOTH_ENABLED = True
+
 SIGNAL_NEW_DATA = f"{DOMAIN}.data_received"
 
 DEVICE_LOGGER_PREFIX = f"{__package__}.device."
