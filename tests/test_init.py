@@ -6,6 +6,7 @@ from unittest.mock import patch
 from custom_components.ttlock import async_remove_config_entry_device
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
+    CONF_BLUETOOTH_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
     CONF_WEBHOOK_STATUS,
@@ -57,6 +58,25 @@ async def test_changing_options_reloads_with_new_interval(
     # reload rebuilt the coordinators with the new cadence
     coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
     assert coordinator.update_interval == timedelta(minutes=90)
+
+
+async def test_disabling_bluetooth_tears_down_tracking(
+    hass, component_setup, mock_api_responses, mock_bluetooth
+):
+    """Turning the option off reloads the entry, which releases the radio."""
+    mock_api_responses("default")
+    await component_setup()
+    assert mock_bluetooth.advertisement is not None
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_BLUETOOTH_ENABLED: False}
+    )
+    await hass.async_block_till_done()
+
+    assert mock_bluetooth.unsubscribed == ["advertisement", "unavailable"]
+    coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
+    assert coordinator.ble_enabled is False
 
 
 async def test_capture_is_shared_across_config_entries(
@@ -180,6 +200,47 @@ async def test_setup_with_non_connectable_lock(
     assert "unavailable_reason" in unavailable_entity.extra_state_attributes
 
     assert "1 lock(s) have no gateway or WiFi" in caplog.text
+
+
+async def test_setup_with_a_gatewayless_lock_in_bluetooth_range(
+    hass,
+    component_setup,
+    mock_api_responses,
+    mock_bluetooth,
+    ble_advertisement,
+    monkeypatch,
+    caplog,
+):
+    """A lock only the radio can reach is polled and available from the start."""
+    mock_api_responses("default")
+
+    async def mock_get_locks(*args, **kwargs):
+        return [
+            LockSummary(
+                lockId=2,
+                lockAlias="No Gateway Lock",
+                lockMac="00:00:00:00:00:02",
+                hasGateway=0,
+            ),
+        ]
+
+    monkeypatch.setattr(
+        "custom_components.ttlock.api.TTLockApi.get_locks", mock_get_locks
+    )
+    mock_bluetooth.seed = ble_advertisement(address="00:00:00:00:00:02")
+
+    await component_setup()
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
+    assert coordinator.cloud_connectable is False
+    assert coordinator.connectable is True
+    assert coordinator.update_interval is not None
+
+    entity = next(iter(coordinator.entities))
+    assert entity.available is True
+    assert "have no gateway or WiFi" not in caplog.text
 
 
 async def test_webhook_registered_and_unregistered_once_across_shared_entries(

@@ -33,15 +33,17 @@
   "options": {
     "step": {
       "init": {
-        "title": "Polling cadence",
-        "description": "How often the integration polls the TTLock cloud. Locks also update in near real time via webhooks, so these can stay high to keep multi-lock accounts under TTLock's free-tier API-call limit. Lower the poll interval if your webhooks are unreliable.",
+        "title": "Polling and Bluetooth",
+        "description": "How often the integration polls the TTLock cloud, and whether it also reads locks over Bluetooth. Locks update in near real time via webhooks, so the intervals can stay high to keep multi-lock accounts under TTLock's free-tier API-call limit. Lower the poll interval if your webhooks are unreliable.",
         "data": {
           "poll_interval": "Poll interval",
-          "slow_poll_interval": "Detail refresh interval"
+          "slow_poll_interval": "Detail refresh interval",
+          "bluetooth_enabled": "Read locks over Bluetooth"
         },
         "data_description": {
           "poll_interval": "How often to re-check whether each lock is locked or unlocked, in minutes.",
-          "slow_poll_interval": "How often to refresh slow-changing detail (battery, name, autolock and passage-mode config, gateway signal), in hours."
+          "slow_poll_interval": "How often to refresh slow-changing detail (battery, name, autolock and passage-mode config, gateway signal), in hours.",
+          "bluetooth_enabled": "Read lock state directly from a lock in range of Home Assistant, instead of asking the TTLock cloud. Turn this off to use the cloud only."
         }
       }
     }

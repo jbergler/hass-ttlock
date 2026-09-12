@@ -7,7 +7,7 @@ refresh, which __init__.py runs in the background after platforms are set up
 confirms presence, not decided up front.
 """
 
-from custom_components.ttlock.const import DOMAIN
+from custom_components.ttlock.const import CONF_BLUETOOTH_ENABLED, DOMAIN, TT_LOCKS
 from custom_components.ttlock.models import GatewayLink, LockSummary
 from custom_components.ttlock.sensor import LockBleSignal
 from homeassistant.helpers import entity_registry as er
@@ -146,6 +146,24 @@ async def test_bluetooth_signal_entity_not_created_without_bluetooth(
     """A cloud-only host would only ever get an entity stuck on "unknown"."""
     mock_api_responses("default")
     coordinator = await component_setup()
+
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{coordinator.unique_id}-lockblesignal"
+    )
+    assert entity_id is None
+
+
+async def test_bluetooth_signal_entity_not_created_when_bluetooth_is_disabled(
+    hass, multi_account_credential, new_mocked_entry, mock_api_responses, mock_bluetooth
+):
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+    entry = new_mocked_entry(options={CONF_BLUETOOTH_ENABLED: False})
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
 
     registry = er.async_get(hass)
     entity_id = registry.async_get_entity_id(

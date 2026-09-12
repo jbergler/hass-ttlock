@@ -64,11 +64,15 @@ async def test_diagnostics_includes_connectable_and_health(
 
     locks_by_id = {lock["unique_id"]: lock for lock in diagnostics["locks"]}
     assert locks_by_id[f"{DOMAIN}-7252408"]["connectable"] is True
+    assert locks_by_id[f"{DOMAIN}-7252408"]["cloud_connectable"] is True
     assert locks_by_id[f"{DOMAIN}-7252408"]["last_update_success"] is True
     # non-connectable coordinators are never refreshed at all (update_interval=None,
     # excluded from the background detail fill), so last_update_success just sits at
     # its untouched default - `connectable` is the signal to look at for these.
     assert locks_by_id[f"{DOMAIN}-2"]["connectable"] is False
+    assert locks_by_id[f"{DOMAIN}-2"]["cloud_connectable"] is False
+    assert locks_by_id[f"{DOMAIN}-2"]["ble_reachable"] is False
+    assert locks_by_id[f"{DOMAIN}-2"]["ble_proven"] is False
 
 
 async def test_diagnostics_redacts_oauth_token(

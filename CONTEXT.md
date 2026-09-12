@@ -5,7 +5,7 @@ A Home Assistant integration bridging TTLock's cloud API into HA entities and se
 ## Language
 
 **Connectable**:
-Whether TTLock's cloud can currently reach a lock — via a paired gateway or the lock's own WiFi radio. Decided once when the lock is discovered; a non-connectable lock is never polled again on the assumption connectivity won't change until the integration reloads.
+Whether anything can currently reach a lock: TTLock's cloud (via a paired gateway or the lock's own WiFi radio) or Home Assistant's own Bluetooth radio (the lock is advertising in range, or a recent local read succeeded). The cloud half is decided once when the lock is discovered; the Bluetooth half changes while running, and polling starts and stops to match.
 _Avoid_: reachable, online (online/offline is used for gateways specifically, a separate concept)
 
 **Discovery**:

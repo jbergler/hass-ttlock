@@ -39,8 +39,10 @@ from .ble import (
 from .ble_protocol import LockStatus, LockVersion, ProtocolError, parse_aes_key
 from .capture import LockTrafficCapture
 from .const import (
+    CONF_BLUETOOTH_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
+    DEFAULT_BLUETOOTH_ENABLED,
     DEFAULT_POLL_INTERVAL_MINUTES,
     DEFAULT_SLOW_POLL_INTERVAL_HOURS,
     DOMAIN,
@@ -64,9 +66,16 @@ from .store import LockStateStore
 _LOGGER = logging.getLogger(__name__)
 
 NOT_CONNECTABLE_REASON = (
-    "No gateway paired and no WiFi — TTLock's cloud can't reach this lock. "
-    "Live data isn't available until connectivity is restored."
+    "No gateway paired, no WiFi, and not in Bluetooth range of Home Assistant - "
+    "nothing can reach this lock. Live data isn't available until one of those "
+    "changes."
 )
+
+# A lock the radio can still hear rides out this many failed state reads,
+# retried at this cadence, before it goes unavailable and the poll returns
+# to its normal interval.
+RETRY_INTERVAL = timedelta(minutes=1)
+REVERIFY_GRACE = 2
 
 # TTLock's doorSensor/query can't distinguish "no sensor paired" from a
 # transient failure (see api.get_sensor), so a lock only counts as confirmed
@@ -236,7 +245,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         """Initialize the update co-ordinator for a single lock."""
         self.api = api
         self.lock_id = summary.id
-        self.connectable = summary.connectable
+        self.cloud_connectable = summary.connectable
         self.has_gateway = summary.hasGateway
         self.feature_value = summary.featureValue
         self._capture = capture
@@ -246,6 +255,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         # Empty until async_start_ble_tracking hears the first
         # advertisement (or immediately, if the stack already has one)
         self.ble: BleData = BleData()
+        self._ble_verified_at: datetime | None = None
+        self._reverify_failures = 0
 
         # What lock/detail told us about talking to the lock directly. Kept
         # as received; parsed on use so an odd value costs a local read, not
@@ -268,19 +279,26 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         slow_hours = options.get(
             CONF_SLOW_POLL_INTERVAL, DEFAULT_SLOW_POLL_INTERVAL_HOURS
         )
+        self._poll_interval = timedelta(minutes=poll_minutes)
         self._slow_interval = timedelta(hours=slow_hours)
+        self._ble_option: bool = options.get(
+            CONF_BLUETOOTH_ENABLED, DEFAULT_BLUETOOTH_ENABLED
+        )
         self._details_last_fetched: datetime | None = None
         self._passage_last_fetched: datetime | None = None
         self._gateways_last_fetched: datetime | None = None
+
+        # A successful local read vouches for the lock this long - longer
+        # than the poll, so a healthy lock isn't unproven while waiting for
+        # the poll that would confirm it.
+        self._proven_reachable_for = 2 * self._poll_interval
 
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             config_entry=config_entry,
-            update_interval=(
-                timedelta(minutes=poll_minutes) if self.connectable else None
-            ),
+            update_interval=self._poll_interval if self.connectable else None,
         )
 
         self.data = LockState(
@@ -294,23 +312,94 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         """Begin watching this lock's Bluetooth presence.
 
         Returns an unsubscribe callable for the caller to register with
-        `entry.async_on_unload`. When the bluetooth component isn't set up
-        there is nothing to watch, so this is a no-op that returns a no-op -
-        the lock keeps working over the cloud exactly as before.
+        `entry.async_on_unload`. When Bluetooth is off, or the bluetooth
+        component isn't set up, there is nothing to watch, so this is a
+        no-op that returns a no-op - the lock keeps working over the cloud
+        exactly as before.
         """
-        if not async_bluetooth_available(self.hass):
+        if not self.ble_enabled:
             return lambda: None
         return async_track_address(self.hass, self.data.mac, self._async_ble_updated)
+
+    @property
+    def ble_proven(self) -> bool:
+        """Whether a local read succeeded recently enough to vouch for the lock.
+
+        TTLock locks advertise in bursts minutes apart, so a completed read
+        is better evidence of reachability than the age of the last packet.
+        """
+        if self._ble_verified_at is None:
+            return False
+        return dt_util.utcnow() - self._ble_verified_at <= self._proven_reachable_for
+
+    @property
+    def ble_enabled(self) -> bool:
+        """Whether local Bluetooth is on for this entry and the component is loaded."""
+        return self._ble_option and async_bluetooth_available(self.hass)
+
+    @property
+    def ble_reachable(self) -> bool:
+        """Whether the local radio can reach the lock right now."""
+        if not self._ble_option:
+            return False
+        return self.ble_proven or (self.ble.in_range and self.ble.connectable)
+
+    @property
+    def connectable(self) -> bool:
+        """Whether anything - cloud or radio - can reach the lock."""
+        return self.cloud_connectable or self.ble_reachable
 
     @callback
     def _async_ble_updated(self, ble: BleData) -> None:
         """Record new presence and let entities re-read it.
 
-        This is passive - a presence change never triggers a cloud poll or a
-        connection, it only refreshes what the RSSI sensor reports.
+        Advertisements themselves never trigger a poll or a connection; only
+        the lock becoming (un)reachable starts or stops the poll.
         """
+        was_connectable = self.connectable
         self.ble = ble
         self.async_update_listeners()
+        if self.connectable != was_connectable:
+            self._async_reconcile_polling()
+
+    @callback
+    def _async_reconcile_polling(self) -> None:
+        """Start or stop the poll to match what can reach the lock now."""
+        if not self.connectable:
+            self.update_interval = None
+            return
+        self.update_interval = self._poll_interval
+        self.hass.async_create_task(self.async_request_refresh())
+
+    @callback
+    def _async_resume_normal_polling(self) -> None:
+        """Drop back to the normal cadence after a burst of retries."""
+        if self.update_interval == RETRY_INTERVAL:
+            self.update_interval = self._poll_interval
+
+    @callback
+    def _async_note_verified(self) -> None:
+        self._reverify_failures = 0
+        self._async_resume_normal_polling()
+
+    @callback
+    def _async_tolerate_failed_verification(self) -> bool:
+        """Whether to keep the last known state after a failed state read.
+
+        Only for a lock the radio can still hear: one connection that didn't
+        take says nothing about the bolt. A lock nothing can hear goes
+        unavailable on the first failure. Retries are quick only while the
+        grace lasts - past it the lock is unavailable either way, and dialling
+        it every minute just spends its battery.
+        """
+        if not self.ble_reachable:
+            return False
+        self._reverify_failures += 1
+        if self._reverify_failures > REVERIFY_GRACE:
+            self._async_resume_normal_polling()
+            return False
+        self.update_interval = RETRY_INTERVAL
+        return True
 
     def _ble_credentials(self) -> tuple[LockVersion, bytes] | None:
         """The protocol dialect and AES key, or None if lock/detail's aren't usable."""
@@ -328,24 +417,27 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         Never raises - the caller has the cloud to fall back on, and a lock that
         is out of range or not answering is expected, not exceptional.
         """
-        if not async_bluetooth_available(self.hass) or not self.ble.in_range:
+        if not self.ble_enabled or not self.ble_reachable:
             return None
         credentials = self._ble_credentials()
         if credentials is None:
             return None
         version, aes_key = credentials
         try:
-            return await async_read_status(
+            status = await async_read_status(
                 self.hass, self.data.mac, self.data.name, version, aes_key
             )
         except (BleError, ProtocolError) as err:
             _LOGGER.debug("Local state read for lock %s failed: %s", self.lock_id, err)
+            self._ble_verified_at = None
             return None
+        self._ble_verified_at = dt_util.utcnow()
+        return status
 
     async def _async_update_data(self) -> LockState:
         if not self.connectable:
             raise UpdateFailed(
-                f"Lock {self.lock_id} has no gateway or WiFi connectivity"
+                f"Lock {self.lock_id} has no gateway, WiFi or Bluetooth route"
             )
 
         try:
@@ -390,6 +482,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             # without spending cloud quota; the cloud remains the fallback.
             status = await self.async_read_state_ble()
             if status is not None and status.locked is not None:
+                self._async_note_verified()
                 new_data.locked = status.locked
                 if status.battery is not None:
                     new_data.battery_level = status.battery
@@ -398,6 +491,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             else:
                 try:
                     state = await self.api.get_lock_state(self.lock_id)
+                    self._async_note_verified()
                     new_data.locked = state.locked == State.locked
                     if sensor_present(new_data.sensor):
                         new_data.sensor.opened = state.opened == SensorState.opened
@@ -406,6 +500,14 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                         # first-ever fetch: tolerate failure, entity shows "unknown"
                         _LOGGER.debug(
                             "Failed to fetch initial lock state", exc_info=True
+                        )
+                    elif self._async_tolerate_failed_verification():
+                        _LOGGER.debug(
+                            "Keeping the last known state of lock %s after "
+                            "%d failed read(s)",
+                            self.lock_id,
+                            self._reverify_failures,
+                            exc_info=True,
                         )
                     else:
                         # we previously had a verified state - a failure to re-verify now
@@ -651,6 +753,10 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         return {
             "unique_id": self.unique_id,
             "connectable": self.connectable,
+            "cloud_connectable": self.cloud_connectable,
+            "ble_enabled": self.ble_enabled,
+            "ble_reachable": self.ble_reachable,
+            "ble_proven": self.ble_proven,
             "has_gateway": self.has_gateway,
             "feature_value": self.feature_value,
             "last_update_success": self.last_update_success,

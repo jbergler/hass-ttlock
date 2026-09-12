@@ -141,8 +141,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if skipped := [coordinator for coordinator in locks if not coordinator.connectable]:
         _LOGGER.warning(
-            "%d lock(s) have no gateway or WiFi and will show as unavailable "
-            "until connectivity is restored: %s",
+            "%d lock(s) have no gateway or WiFi and are not in Bluetooth range; "
+            "they will show as unavailable until one of those changes: %s",
             len(skipped),
             ", ".join(
                 f"{coordinator.data.name} ({coordinator.lock_id})"

@@ -141,9 +141,10 @@ def new_mocked_entry():
     sharing one client_id.
     """
 
-    def _new_entry(**extra_data) -> MockConfigEntry:
+    def _new_entry(options=None, **extra_data) -> MockConfigEntry:
         return MockConfigEntry(
             domain=DOMAIN,
+            options=options or {},
             data={
                 "auth_implementation": "mocked",
                 "token": {

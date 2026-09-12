@@ -21,7 +21,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .ble import async_bluetooth_available
 from .coordinator import async_add_when_sensor_present, lock_coordinators
 from .entity import BaseLockEntity
 
@@ -37,8 +36,6 @@ async def async_setup_entry(
 
     coordinators = list(lock_coordinators(hass, entry))
 
-    with_bluetooth = async_bluetooth_available(hass)
-
     async_add_entities(
         [
             entity
@@ -48,7 +45,7 @@ async def async_setup_entry(
                 LockOperator(coordinator),
                 LockTrigger(coordinator),
                 *([LockGateway(coordinator)] if coordinator.has_gateway else []),
-                *([LockBleSignal(coordinator)] if with_bluetooth else []),
+                *([LockBleSignal(coordinator)] if coordinator.ble_enabled else []),
             )
         ]
     )
