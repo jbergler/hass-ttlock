@@ -30,6 +30,7 @@ from custom_components.ttlock.models import (
     WebhookEvent,
 )
 from custom_components.ttlock.store import LockStateStore
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -393,6 +394,84 @@ class TestLockUpdateCoordinator:
                 DOMAIN,
                 "00:00:00:00:00:02",
             )
+
+        async def test_refresh_links_lock_device_to_gateway_by_id(
+            self,
+            hass,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            """_async_refresh_finished links the lock's device to the gateway
+            via via_device_id (resolved ourselves), not the deprecated
+            `via_device` identifier tuple removed in HA 2027.8.0."""
+            mock_api_responses("default")
+
+            assert coordinator.config_entry is not None
+            registry = dr.async_get(hass)
+            gateway = registry.async_get_or_create(
+                config_entry_id=coordinator.config_entry.entry_id,
+                identifiers={(DOMAIN, "00:00:00:00:00:02")},
+                name="Strong",
+            )
+
+            async def mock_get_gateways_for_lock(*args, **kwargs):
+                return [
+                    GatewayLink(
+                        gatewayId=2,
+                        gatewayName="Strong",
+                        gatewayMac="00:00:00:00:00:02",
+                        rssi=-60,
+                    ),
+                ]
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_gateways_for_lock",
+                mock_get_gateways_for_lock,
+            )
+
+            await coordinator.async_refresh()
+
+            lock_device = registry.async_get_device(
+                identifiers={(DOMAIN, coordinator.data.mac)}
+            )
+            assert lock_device is not None
+            assert lock_device.via_device_id == gateway.id
+
+        async def test_refresh_tolerates_unregistered_gateway(
+            self,
+            hass,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            """If the best gateway isn't in the device registry yet, the lock
+            device is still created, just without a via_device link."""
+            mock_api_responses("default")
+
+            async def mock_get_gateways_for_lock(*args, **kwargs):
+                return [
+                    GatewayLink(
+                        gatewayId=2,
+                        gatewayName="Strong",
+                        gatewayMac="00:00:00:00:00:02",
+                        rssi=-60,
+                    ),
+                ]
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_gateways_for_lock",
+                mock_get_gateways_for_lock,
+            )
+
+            await coordinator.async_refresh()
+
+            registry = dr.async_get(hass)
+            lock_device = registry.async_get_device(
+                identifiers={(DOMAIN, coordinator.data.mac)}
+            )
+            assert lock_device is not None
+            assert lock_device.via_device_id is None
 
         async def test_no_gateways_in_range_omits_via_device(
             self,

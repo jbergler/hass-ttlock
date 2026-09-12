@@ -535,9 +535,21 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         in sync with later successful refreshes.
         """
         if self.last_update_success and self.config_entry is not None:
-            dr.async_get(self.hass).async_get_or_create(
-                config_entry_id=self.config_entry.entry_id, **self.device_info
+            registry = dr.async_get(self.hass)
+            info = self.device_info
+            # Resolve the gateway link ourselves and set via_device_id rather
+            # than passing the identifier tuple as `via_device` to
+            # async_get_or_create - that parameter is deprecated and removed in
+            # HA 2027.8.0. If the gateway device isn't registered yet, leave the
+            # link untouched, mirroring async_get_or_create's own behaviour.
+            via_device = info.pop("via_device", None)
+            device = registry.async_get_or_create(
+                config_entry_id=self.config_entry.entry_id, **info
             )
+            if via_device is not None:
+                gateway = registry.async_get_device(identifiers={via_device})
+                if gateway is not None:
+                    registry.async_update_device(device.id, via_device_id=gateway.id)
 
     @callback
     def _process_webhook_data(self, event: WebhookEvent):
