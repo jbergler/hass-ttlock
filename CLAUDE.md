@@ -25,17 +25,19 @@ Fast inner loop while editing one file: `uv run ruff check --fix <file>` / `uv r
 
 ## How the TTLock API works
 
-This integration talks to TTLock's cloud API, not the locks directly — locks connect via a TTLock gateway or WiFi, and the gateway/lock relays commands from TTLock's cloud. Everything goes through `TTLockApi` in `api.py` — see its module docstring for auth and per-request quirk detail. Full API docs: `docs/ttlock-cloud-api/` (mirrored from https://euopen.ttlock.com/document; EU region — this integration is hardcoded to `https://euapi.ttlock.com`, there's no multi-region support).
+This integration talks to TTLock's cloud API — locks connect via a TTLock gateway or WiFi, and the gateway/lock relays commands from TTLock's cloud — and, for reading state, to the lock itself over Home Assistant's Bluetooth (`ble.py`, `ble_protocol.py`; see `docs/adr/0003-local-ble-transport.md` for what the radio can and can't do). Every cloud call goes through `TTLockApi` in `api.py` — see its module docstring for auth and per-request quirk detail. Full API docs: `docs/ttlock-cloud-api/` (mirrored from https://euopen.ttlock.com/document; EU region — this integration is hardcoded to `https://euapi.ttlock.com`, there's no multi-region support).
 
-State reaches HA two ways — polling (`coordinator.py`, 15-minute interval) and webhook push (`webhook.py`, near-real-time) — both merging into `LockUpdateCoordinator`. See each module's docstring for mechanism detail. Don't remove the webhook path in favor of "just poll faster."
+State reaches HA three ways — polling (`coordinator.py`, 15-minute interval), webhook push (`webhook.py`, near-real-time) and, for a lock in Bluetooth range, a local read that serves the poll's state check and a 5-minute local refresh for locks the cloud can't reach — all merging into `LockUpdateCoordinator`. See each module's docstring for mechanism detail. Don't remove the webhook path in favor of "just poll faster," and don't make the poll itself faster to refresh the one value BLE gives for free: a poll also fetches `lock/detail`, passage mode and the gateway list.
 
 ## File map
 
 - `api.py` — `TTLockApi`, the TTLock cloud REST client, plus the OAuth2 implementation classes
 - `application_credentials.py` — wires up HA's `application_credentials` component for OAuth2 setup
+- `ble.py` — Bluetooth glue over `homeassistant.components.bluetooth`: presence tracking per lock MAC, and the GATT session that sends one command and reassembles the reply. All bluetooth imports are deferred and gated on the component being loaded
+- `ble_protocol.py` — the TTLock BLE wire format as pure functions (framing, CRC, AES); no I/O, no logger — it handles key material
 - `config_flow.py` — OAuth2-based config flow (`TTLockAuthFlowHandler`)
 - `const.py` — domain, service names, config keys
-- `coordinator.py` — `LockUpdateCoordinator` (per-lock polling `DataUpdateCoordinator`, also merges in push updates from the webhook) and `GatewaysUpdateCoordinator` (polls TTLock gateways for online/offline status)
+- `coordinator.py` — `LockUpdateCoordinator` (per-lock polling `DataUpdateCoordinator`, also merges in push updates from the webhook and local reads over Bluetooth; owns what `connectable` means) and `GatewaysUpdateCoordinator` (polls TTLock gateways for online/offline status)
 - `entity.py` — `BaseLockEntity`, the shared entity base most platform classes inherit from
 - `models.py` — pydantic v2 models for TTLock API payloads (`Lock`, `LockState`, `Passcode`, `LockRecord`, etc.). Migrated from pydantic v1 — don't reintroduce v1 patterns (`Config` class, `.dict()`, unparameterized `Optional`)
 - `webhook.py` — receives TTLock's push notifications; see its module docstring
