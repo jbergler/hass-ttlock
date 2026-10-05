@@ -6,6 +6,7 @@ from unittest.mock import call, patch
 import pytest
 import voluptuous as vol
 
+from custom_components.ttlock.api import RequestFailed
 from custom_components.ttlock.const import (
     DOMAIN,
     SVC_CLEANUP_PASSCODES,
@@ -33,7 +34,10 @@ from custom_components.ttlock.models import (
     RecordType,
 )
 from homeassistant.const import ATTR_ENTITY_ID
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Context, HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.script import Script
 from homeassistant.util import dt as dt_util
 
 
@@ -1053,3 +1057,53 @@ class Test_delete_fingerprint:
             )
             await hass.async_block_till_done()
             assert mock.call_args_list == [call(coordinator.lock_id, 224242)]
+
+
+class Test_cloud_errors:
+    @pytest.mark.parametrize(
+        ("service", "method", "data"),
+        [
+            (SVC_LIST_CARDS, "list_cards", {}),
+            (SVC_RENAME_CARD, "rename_card", {"card_id": 124242, "name": "New"}),
+            (SVC_DELETE_CARD, "delete_card", {"card_id": 124242}),
+        ],
+    )
+    async def test_cloud_error_is_a_home_assistant_error(
+        self, single_lock_entity_id, hass: HomeAssistant, service, method, data
+    ):
+        """A TTLock errcode surfaces from the action as a HomeAssistantError."""
+        with (
+            patch(
+                f"custom_components.ttlock.api.TTLockApi.{method}",
+                side_effect=RequestFailed("API returned: errcode -3003"),
+            ),
+            pytest.raises(HomeAssistantError),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                service,
+                {ATTR_ENTITY_ID: single_lock_entity_id, **data},
+                blocking=True,
+                return_response=service == SVC_LIST_CARDS,
+            )
+
+    async def test_continue_on_error_skips_a_failed_action(
+        self, single_lock_entity_id, hass: HomeAssistant
+    ):
+        """continue_on_error in a script carries on past a cloud error."""
+        step = {
+            "action": f"{DOMAIN}.{SVC_DELETE_CARD}",
+            "target": {"entity_id": single_lock_entity_id},
+            "data": {"card_id": 124242},
+            "continue_on_error": True,
+        }
+        script = Script(hass, cv.SCRIPT_SCHEMA([step, step]), "test", DOMAIN)
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.delete_card",
+            side_effect=RequestFailed("API returned: errcode -3003"),
+        ) as mock:
+            await script.async_run(context=Context())
+            await hass.async_block_till_done()
+
+        assert mock.call_count == 2

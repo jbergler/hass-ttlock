@@ -39,6 +39,7 @@ from urllib.parse import urljoin
 from aiohttp import ClientResponse, ClientSession
 
 from homeassistant.components.application_credentials import AuthImplementation
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_entry_oauth2_flow
 
 from .capture import LockTrafficCapture, log_and_capture
@@ -68,8 +69,13 @@ _LOGGER = logging.getLogger(__name__)
 GW_LOCK = asyncio.Lock()
 
 
-class RequestFailed(Exception):
-    """Exception when TTLock API returns an error."""
+class RequestFailed(HomeAssistantError):
+    """Exception when TTLock API returns an error.
+
+    A HomeAssistantError so a failing service action surfaces as a normal
+    action error and honours `continue_on_error` in scripts/automations
+    (HA only lets that flag swallow HomeAssistantError).
+    """
 
 
 class TTLockAuthImplementation(
