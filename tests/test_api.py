@@ -784,6 +784,68 @@ class TestRenameCard:
         assert await api.rename_card(163377, 124242, "New name") is False
 
 
+class TestAddCard:
+    async def test_success(self, api):
+        api.post = AsyncMock(return_value={"cardId": 124242})
+
+        assert await api.add_card(163377, "1723612378", "Card for mom") == 124242
+        api.post.assert_awaited_once_with(
+            "identityCard/add",
+            lockId=163377,
+            cardNumber="1723612378",
+            cardName="Card for mom",
+            startDate=0,
+            endDate=0,
+            addType=2,
+        )
+
+    async def test_with_dates(self, api):
+        api.post = AsyncMock(return_value={"cardId": 124242})
+
+        await api.add_card(163377, "1723612378", "Card for mom", 10, 20)
+
+        api.post.assert_awaited_once_with(
+            "identityCard/add",
+            lockId=163377,
+            cardNumber="1723612378",
+            cardName="Card for mom",
+            startDate=10,
+            endDate=20,
+            addType=2,
+        )
+
+    async def test_reversed_number_uses_other_endpoint(self, api):
+        api.post = AsyncMock(return_value={"cardId": 124242})
+
+        await api.add_card(163377, "3661413478", "Card for mom", reversed_number=True)
+
+        api.post.assert_awaited_once_with(
+            "identityCard/addForReversedCardNumber",
+            lockId=163377,
+            cardNumber="3661413478",
+            cardName="Card for mom",
+            startDate=0,
+            endDate=0,
+            addType=2,
+        )
+
+    async def test_missing_card_id_raises(self, api):
+        api.post = AsyncMock(return_value={"errcode": 0, "errmsg": "none"})
+
+        with pytest.raises(RequestFailed, match="without cardId"):
+            await api.add_card(163377, "1723612378", "Card for mom")
+
+    async def test_errcode_raises(
+        self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker
+    ):
+        mocker.post(
+            f"{BASE}identityCard/add", json={"errcode": -3003, "errmsg": "busy"}
+        )
+
+        with pytest.raises(RequestFailed):
+            await ttlock_api.add_card(163377, "1723612378", "Card for mom")
+
+
 class TestDeleteCard:
     async def test_success(self, api):
         api.post = AsyncMock(return_value={"errcode": 0, "errmsg": "none"})

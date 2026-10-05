@@ -445,6 +445,44 @@ class TTLockApi:
 
         return True
 
+    async def add_card(
+        self,
+        lock_id: int,
+        card_number: str,
+        name: str,
+        start_ms: int = 0,
+        end_ms: int = 0,
+        reversed_number: bool = False,
+    ) -> int:
+        """Add an IC card to a lock via gateway, returning the new card id.
+
+        start_ms == end_ms == 0 makes the card permanent. By default the number
+        is sent as the cloud reports it (identityCard/add); reversed_number uses
+        identityCard/addForReversedCardNumber for numbers read by an external
+        reader in the opposite byte order.
+        """
+
+        path = (
+            "identityCard/addForReversedCardNumber"
+            if reversed_number
+            else "identityCard/add"
+        )
+        async with GW_LOCK:
+            res = await self.post(
+                path,
+                lockId=lock_id,
+                cardNumber=card_number,
+                cardName=name,
+                startDate=start_ms,
+                endDate=end_ms,
+                addType=2,  # via gateway
+            )
+
+        if "cardId" not in res:
+            raise RequestFailed(f"{path}: response without cardId: {res}")
+
+        return int(res["cardId"])
+
     async def delete_card(self, lock_id: int, card_id: int) -> bool:
         """Delete an IC card from a lock."""
 
