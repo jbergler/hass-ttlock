@@ -6,13 +6,16 @@ import asyncio
 import contextlib
 import logging
 
+from aiohttp import ClientError, ClientResponseError
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_WEBHOOK_ID, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
 from homeassistant.helpers.device_registry import DeviceEntry
 
-from .api import TTLockApi
+from .api import RequestFailed, TTLockApi
 from .capture import LockTrafficCapture
 from .const import (
     CONF_REGION,
@@ -51,7 +54,34 @@ _STORE_KEY = "_lock_state_store"
 # so _reload_on_options_update can ignore non-options entry updates.
 _OPTIONS_KEY = "_options_snapshot"
 
+# TTLock errcodes (docs/ttlock-cloud-api/errorCode.md) meaning the account's
+# credentials themselves are bad - retrying setup won't fix these, so they stay
+# a hard setup error. Every other errcode (90000 internal server error, 30006
+# rate limit, 80000 clock skew right after boot, ...) is treated as transient.
+_AUTH_ERRCODES = frozenset({10000, 10001, 10003, 10004, 10007, 10011})
+
+# HTTP statuses worth retrying; other 4xx (eg. a 400/401 from a rejected
+# token refresh) mean the credentials need fixing, not that the cloud is down.
+_TRANSIENT_HTTP_STATUSES = frozenset({408, 429})
+
 _LOGGER = logging.getLogger(__name__)
+
+
+def _not_ready_reason(err: ClientError | TimeoutError | RequestFailed) -> str | None:
+    """Return why setup should be retried, or None if err isn't transient.
+
+    The reason is shown in the UI and logs, so it never includes str(err) -
+    aiohttp's messages embed the request URL, accessToken and clientId included.
+    """
+    if isinstance(err, RequestFailed):
+        if err.errcode in _AUTH_ERRCODES:
+            return None
+        return f"TTLock cloud returned error {err.errcode}"
+    if isinstance(err, ClientResponseError):
+        if err.status < 500 and err.status not in _TRANSIENT_HTTP_STATUSES:
+            return None
+        return f"TTLock cloud returned HTTP {err.status}"
+    return f"Unable to reach the TTLock cloud ({type(err).__name__})"
 
 
 def setup(hass: HomeAssistant, config: ConfigEntry) -> bool:
@@ -108,27 +138,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         region=entry.data.get(CONF_REGION, DEFAULT_REGION),
     )
 
-    domain_data[entry.entry_id] = {
-        TT_API: client,
-        TT_CAPTURE: capture,
-        # Snapshot of the options the coordinators below were built with, so
-        # the update listener can tell a real options change from the entry.data
-        # writes webhook.py makes during setup (which must not trigger a reload).
-        _OPTIONS_KEY: dict(entry.options),
-    }
+    # First cloud call of setup, and the one that also refreshes the OAuth
+    # token if needed - when the network isn't up yet (eg. HA booting after a
+    # power outage) it has to end in a retry, not a permanent setup error.
+    try:
+        summaries = await client.get_locks()
+    except (ClientError, TimeoutError, RequestFailed) as err:
+        if (reason := _not_ready_reason(err)) is None:
+            raise
+        raise ConfigEntryNotReady(reason) from err
 
     locks = [
         LockUpdateCoordinator(hass, entry, client, summary, capture, store)
-        for summary in await client.get_locks()
+        for summary in summaries
     ]
-    hass.data[DOMAIN][entry.entry_id][TT_LOCKS] = locks
 
     for coordinator in locks:
         entry.async_on_unload(coordinator.async_start_ble_tracking())
 
+    # Wraps any failure in ConfigEntryNotReady itself.
     gateway_coordinator = GatewaysUpdateCoordinator(hass, entry, client)
     await gateway_coordinator.async_config_entry_first_refresh()
-    hass.data[DOMAIN][entry.entry_id][TT_GATEWAYS] = gateway_coordinator
+
+    # Only published once the cloud calls above succeeded, so an entry waiting
+    # in SETUP_RETRY doesn't leave half-initialized runtime data behind for
+    # async_remove_config_entry_device / async_unload_entry to trip over.
+    domain_data[entry.entry_id] = {
+        TT_API: client,
+        TT_CAPTURE: capture,
+        TT_LOCKS: locks,
+        TT_GATEWAYS: gateway_coordinator,
+        # Snapshot of the options the coordinators above were built with, so
+        # the update listener can tell a real options change from the entry.data
+        # writes webhook.py makes during setup (which must not trigger a reload).
+        _OPTIONS_KEY: dict(entry.options),
+    }
 
     await WebhookHandler(
         hass,
