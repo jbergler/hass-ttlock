@@ -126,8 +126,10 @@ class TestGetAndPost:
             f"{BASE}lock/detail", json={"errcode": 10003, "errmsg": "lock not found"}
         )
 
-        with pytest.raises(RequestFailed):
+        with pytest.raises(RequestFailed) as excinfo:
             await ttlock_api.get("lock/detail", lockId=1)
+
+        assert excinfo.value.errcode == 10003
 
     async def test_region_selects_api_base_host(
         self, mock_oauth_session, mocker: AiohttpClientMocker
