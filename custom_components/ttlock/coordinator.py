@@ -25,6 +25,7 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, Entity
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -76,6 +77,11 @@ NOT_CONNECTABLE_REASON = (
 # to its normal interval.
 RETRY_INTERVAL = timedelta(minutes=1)
 REVERIFY_GRACE = 2
+
+# A lock only the radio can reach has no webhook, so between polls nothing
+# would notice a manual turn. Each refresh is a connect and costs the lock's
+# battery, hence minutes rather than seconds.
+LOCAL_REFRESH_INTERVAL = timedelta(minutes=5)
 
 # TTLock's doorSensor/query can't distinguish "no sensor paired" from a
 # transient failure (see api.get_sensor), so a lock only counts as confirmed
@@ -320,6 +326,51 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         if not self.ble_enabled:
             return lambda: None
         return async_track_address(self.hass, self.data.mac, self._async_ble_updated)
+
+    @callback
+    def async_start_local_refresh(self) -> CALLBACK_TYPE:
+        """Re-read state over the radio between polls, for locks that need it.
+
+        Registered for every lock; whether a tick does anything is decided
+        then, because both halves of that decision change while running.
+        """
+        return async_track_time_interval(
+            self.hass,
+            self._async_local_refresh,
+            LOCAL_REFRESH_INTERVAL,
+            name=f"ttlock local state refresh for {self.lock_id}",
+        )
+
+    async def _async_local_refresh(self, now: datetime) -> None:
+        """Read the bolt over the radio and publish it if it moved.
+
+        Only for a lock the cloud can't reach: one it can already has the
+        webhook, which is faster and costs the lock nothing. A failed read
+        publishes nothing and doesn't count against the poll's grace -
+        availability stays the poll's call. Publishes without
+        `async_set_updated_data`, which would reschedule the poll and, at
+        this cadence, starve the slow tier that supplies the AES key.
+        """
+        if self.cloud_connectable or not self.ble_reachable:
+            return
+
+        status = await self.async_read_state_ble()
+        if status is None or status.locked is None:
+            return
+
+        self._async_note_verified()
+
+        new_data = deepcopy(self.data)
+        new_data.locked = status.locked
+        if status.battery is not None:
+            new_data.battery_level = status.battery
+        if sensor_present(new_data.sensor) and status.door_open is not None:
+            new_data.sensor.opened = status.door_open
+
+        if new_data == self.data:
+            return
+        self.data = new_data
+        self.async_update_listeners()
 
     @property
     def ble_proven(self) -> bool:

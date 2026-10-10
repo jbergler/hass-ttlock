@@ -2,21 +2,27 @@
 
 import asyncio
 from datetime import timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import dateparser
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.ttlock.api import RequestFailed, TTLockApi
 from custom_components.ttlock.ble import BleData
+from custom_components.ttlock.ble_protocol import LockStatus
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
+    CONF_BLUETOOTH_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
     DOMAIN,
 )
 from custom_components.ttlock.coordinator import (
+    LOCAL_REFRESH_INTERVAL,
     RETRY_INTERVAL,
     REVERIFY_GRACE,
     GatewaysUpdateCoordinator,
@@ -471,6 +477,182 @@ class TestLockUpdateCoordinator:
             await verified.async_refresh()
 
             assert verified.last_update_success is False
+
+    class TestLocalRefresh:
+        """Between polls, a lock only the radio can reach is asked again.
+
+        Asking costs the lock's battery, so every test here is about not
+        asking when it buys nothing.
+        """
+
+        @staticmethod
+        def _gatewayless(hass, api, options=None) -> LockUpdateCoordinator:
+            config_entry = MockConfigEntry(domain=DOMAIN, options=options or {})
+            config_entry.add_to_hass(hass)
+            summary = LockSummary(
+                lockId=1,
+                lockAlias="No Gateway",
+                lockMac="00:00:00:00:00:00",
+                hasGateway=0,
+            )
+            return LockUpdateCoordinator(
+                hass,
+                config_entry,
+                api,
+                summary,
+                LockTrafficCapture(),
+                LockStateStore(hass),
+            )
+
+        @pytest.fixture
+        def gatewayless(self, hass, api) -> LockUpdateCoordinator:
+            return self._gatewayless(hass, api)
+
+        @pytest.fixture
+        def heard(self, gatewayless) -> LockUpdateCoordinator:
+            gatewayless.ble = BleData(rssi=-60, connectable=True)
+            gatewayless.data.locked = False
+            return gatewayless
+
+        @pytest.fixture
+        def radio(self, monkeypatch):
+            """Script what the radio answers; returns the setter."""
+
+            def _answers(status: LockStatus | None) -> None:
+                async def async_read_state_ble(self):
+                    return status
+
+                monkeypatch.setattr(
+                    LockUpdateCoordinator, "async_read_state_ble", async_read_state_ble
+                )
+
+            return _answers
+
+        @pytest.fixture
+        def radio_untouched(self, monkeypatch):
+            async def async_read_state_ble(self):
+                raise AssertionError("the radio should not have been used")
+
+            monkeypatch.setattr(
+                LockUpdateCoordinator, "async_read_state_ble", async_read_state_ble
+            )
+
+        async def test_a_cloud_reachable_lock_is_left_alone(
+            self, coordinator, radio_untouched
+        ):
+            """It already has the webhook, which is faster and free."""
+            coordinator.ble = BleData(rssi=-60, connectable=True)
+
+            await coordinator._async_local_refresh(dt_util.utcnow())
+
+        async def test_a_lock_out_of_range_is_not_dialled(
+            self, gatewayless, radio_untouched
+        ):
+            await gatewayless._async_local_refresh(dt_util.utcnow())
+
+        async def test_a_lock_with_bluetooth_turned_off_is_not_dialled(
+            self, hass, api, radio_untouched
+        ):
+            lock = self._gatewayless(hass, api, {CONF_BLUETOOTH_ENABLED: False})
+            lock.ble = BleData(rssi=-60, connectable=True)
+
+            await lock._async_local_refresh(dt_util.utcnow())
+
+        async def test_a_bolt_that_moved_is_published(self, heard, radio):
+            heard.data.sensor = SensorData(battery=50)
+            radio(LockStatus(battery=87, locked=True, door_open=False))
+            notified = Mock()
+            heard.async_update_listeners = notified
+
+            await heard._async_local_refresh(dt_util.utcnow())
+
+            assert heard.data.locked is True
+            assert heard.data.battery_level == 87
+            assert heard.data.sensor.opened is False
+            assert notified.call_count == 1
+
+        async def test_a_lock_without_a_sensor_gets_no_door_state(self, heard, radio):
+            heard.data.sensor = SensorData()
+            radio(LockStatus(battery=87, locked=True, door_open=False))
+
+            await heard._async_local_refresh(dt_util.utcnow())
+
+            assert heard.data.locked is True
+            assert heard.data.sensor.opened is None
+
+        async def test_publishing_does_not_reschedule_the_poll(self, heard, radio):
+            """`async_set_updated_data` would restart the poll timer; at this
+            cadence the poll, and the lock/detail read with it, would never
+            come round again."""
+            radio(LockStatus(battery=87, locked=True, door_open=None))
+            set_updated = Mock()
+            heard.async_set_updated_data = set_updated
+
+            await heard._async_local_refresh(dt_util.utcnow())
+
+            assert heard.data.locked is True
+            assert set_updated.call_count == 0
+
+        async def test_a_failed_read_publishes_nothing_and_spends_no_grace(
+            self, heard, radio
+        ):
+            radio(None)
+            notified = Mock()
+            heard.async_update_listeners = notified
+
+            await heard._async_local_refresh(dt_util.utcnow())
+
+            assert heard.data.locked is False
+            assert heard._reverify_failures == 0
+            assert notified.call_count == 0
+
+        async def test_a_reply_without_a_bolt_publishes_nothing(self, heard, radio):
+            radio(LockStatus(battery=None, locked=None, door_open=None))
+            notified = Mock()
+            heard.async_update_listeners = notified
+
+            await heard._async_local_refresh(dt_util.utcnow())
+
+            assert heard.data.locked is False
+            assert notified.call_count == 0
+
+        async def test_a_bolt_that_did_not_move_notifies_nobody(self, heard, radio):
+            heard.data.locked = True
+            heard.data.battery_level = 87
+            radio(LockStatus(battery=87, locked=True, door_open=None))
+            notified = Mock()
+            heard.async_update_listeners = notified
+
+            await heard._async_local_refresh(dt_util.utcnow())
+
+            assert notified.call_count == 0
+
+        async def test_a_successful_read_ends_the_grace_period(self, heard, radio):
+            heard._reverify_failures = 2
+            heard.update_interval = RETRY_INTERVAL
+            radio(LockStatus(battery=87, locked=True, door_open=None))
+
+            await heard._async_local_refresh(dt_util.utcnow())
+
+            assert heard._reverify_failures == 0
+            assert heard.update_interval == heard._poll_interval
+
+        async def test_the_timer_fires_on_schedule(self, hass, heard, radio):
+            radio(LockStatus(battery=87, locked=True, door_open=None))
+            unsubscribe = heard.async_start_local_refresh()
+
+            async_fire_time_changed(hass, dt_util.utcnow() + LOCAL_REFRESH_INTERVAL)
+            await hass.async_block_till_done()
+
+            assert heard.data.locked is True
+            unsubscribe()
+
+        async def test_the_timer_is_unsubscribable(self, hass, heard, radio_untouched):
+            unsubscribe = heard.async_start_local_refresh()
+            unsubscribe()
+
+            async_fire_time_changed(hass, dt_util.utcnow() + LOCAL_REFRESH_INTERVAL)
+            await hass.async_block_till_done()
 
     class TestGatewayLinks:
         """gateway/listByLock results feed LockState.gateways/best_gateway,
