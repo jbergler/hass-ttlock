@@ -163,24 +163,36 @@ class LockState:
 
 
 def sensor_present(instance: SensorData | None) -> TypeGuard[SensorData]:
-    """Check if a sensor is present."""
+    """Check if a door sensor accessory is paired."""
     return instance is not None and instance.present
 
 
+def door_state_known(instance: SensorData | None) -> TypeGuard[SensorData]:
+    """Check if a door state is available, whatever reported it.
+
+    A lock with a built-in door contact reports the door over the radio but
+    has no accessory for doorSensor/query to describe, so an accessory is the
+    wrong thing to wait for before publishing a door state.
+    """
+    return instance is not None and (instance.present or instance.opened is not None)
+
+
 def async_add_when_sensor_present(
-    coordinator: LockUpdateCoordinator, add_entities: Callable[[], None]
+    coordinator: LockUpdateCoordinator,
+    add_entities: Callable[[], None],
+    ready: Callable[[SensorData | None], bool] = sensor_present,
 ) -> None:
-    """Call `add_entities` once presence is confirmed - now, or later.
+    """Call `add_entities` once `ready` holds - now, or later.
 
     Door-sensor presence isn't known at the cheap lock/list stage entities
     are created from at platform setup - it's only filled in once the
     coordinator's first refresh completes, which __init__.py runs in the
     background *after* platforms are set up (see _fill_lock_details), so
     sensor-backed entities can't just check coordinator.data.sensor at setup
-    time. Instead: add immediately if presence is already known, otherwise
-    watch for the update that confirms it and add then.
+    time. Instead: add immediately if `ready` already holds, otherwise watch
+    for the update that makes it true and add then.
     """
-    if sensor_present(coordinator.data.sensor):
+    if ready(coordinator.data.sensor):
         add_entities()
         return
 
@@ -188,7 +200,7 @@ def async_add_when_sensor_present(
 
     @callback
     def _check_and_add() -> None:
-        if sensor_present(coordinator.data.sensor):
+        if ready(coordinator.data.sensor):
             add_entities()
             if remove is not None:
                 remove()
@@ -368,7 +380,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         new_data.locked = status.locked
         if status.battery is not None:
             new_data.battery_level = status.battery
-        if sensor_present(new_data.sensor) and status.door_open is not None:
+        if new_data.sensor is not None and status.door_open is not None:
             new_data.sensor.opened = status.door_open
 
         if new_data == self.data:
@@ -541,14 +553,17 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 new_data.locked = status.locked
                 if status.battery is not None:
                     new_data.battery_level = status.battery
-                if sensor_present(new_data.sensor) and status.door_open is not None:
+                if new_data.sensor is not None and status.door_open is not None:
                     new_data.sensor.opened = status.door_open
             else:
                 try:
                     state = await self.api.get_lock_state(self.lock_id)
                     self._async_note_verified()
                     new_data.locked = state.locked == State.locked
-                    if sensor_present(new_data.sensor):
+                    if sensor_present(new_data.sensor) and state.opened in (
+                        SensorState.opened,
+                        SensorState.closed,
+                    ):
                         new_data.sensor.opened = state.opened == SensorState.opened
                 except Exception as err:
                     if new_data.locked is None:
@@ -734,7 +749,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 new_data.last_user = event.user
                 new_data.last_reason = event.event.description
 
-        if new_data.sensor and new_data.sensor.present and event.sensorState:
+        if door_state_known(new_data.sensor) and event.sensorState:
             if event.sensorState.opened == SensorState.opened:
                 new_data.sensor.opened = True
             if event.sensorState.opened == SensorState.closed:

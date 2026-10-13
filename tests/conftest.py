@@ -50,6 +50,7 @@ from .const import (
     LOCK_DETAILS_WITH_SENSOR,
     LOCK_STATE_LOCKED,
     LOCK_STATE_UNLOCKED,
+    LOCK_STATE_UNLOCKED_DOOR_CLOSED,
     MOCK_LOCK_MAC,
     MOCK_LOCK_NAME,
     PASSAGE_MODE_6_TO_6_7_DAYS,
@@ -206,6 +207,11 @@ def mock_data_factory():
                 ),
             ),
             "with_sensor": MockApiData(
+                lock=Lock.model_validate(LOCK_DETAILS_WITH_SENSOR),
+                sensor=Sensor.model_validate(SENSOR_DETAILS),
+                state=LockState.model_validate(LOCK_STATE_UNLOCKED_DOOR_CLOSED),
+            ),
+            "sensor_state_unknown": MockApiData(
                 lock=Lock.model_validate(LOCK_DETAILS_WITH_SENSOR),
                 sensor=Sensor.model_validate(SENSOR_DETAILS),
                 state=LockState.model_validate(LOCK_STATE_UNLOCKED),
