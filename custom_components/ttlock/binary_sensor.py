@@ -18,6 +18,7 @@ from .const import DOMAIN
 from .coordinator import (
     GatewaysUpdateCoordinator,
     async_add_when_sensor_present,
+    door_state_known,
     gateway_coordinator,
     lock_coordinators,
 )
@@ -43,6 +44,7 @@ async def async_setup_entry(
             lambda lock_coordinator=lock_coordinator: async_add_entities(
                 [Sensor(lock_coordinator)]
             ),
+            ready=door_state_known,
         )
 
     coordinator = gateway_coordinator(hass, entry)

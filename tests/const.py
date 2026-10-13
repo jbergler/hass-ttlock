@@ -80,6 +80,10 @@ LOCK_STATE_LOCKED = {"state": 0, "electricQuantity": 90, "lockTime": 16214592000
 
 LOCK_STATE_UNLOCKED = {"state": 1, "electricQuantity": 90, "lockTime": 1621459200000}
 
+# A lock with a working door sensor reports it alongside the bolt; one that
+# can't read its door right now omits the field - see SensorState.unknown.
+LOCK_STATE_UNLOCKED_DOOR_CLOSED = {**LOCK_STATE_UNLOCKED, "sensorState": 1}
+
 PASSAGE_MODE_6_TO_6_7_DAYS = {
     "autoUnlock": 2,
     "isAllDay": 2,
