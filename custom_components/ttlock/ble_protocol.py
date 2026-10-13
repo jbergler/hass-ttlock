@@ -553,6 +553,10 @@ class LockStatus:
     without a session, so the local state read needs none of the
     authentication built for changing state.
 
+    The door byte is the SDK's own: its `COMM_SEARCH_BICYCLE_STATUS` handler
+    passes `data[2]` and `data[4]` - battery and door state - to
+    `onGetDoorSensorState`, with no accessory involved.
+
     `door_open` is `None` on a lock that does not report a door; callers must
     gate on the value being present rather than assuming a default.
     """
