@@ -560,7 +560,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                     state = await self.api.get_lock_state(self.lock_id)
                     self._async_note_verified()
                     new_data.locked = state.locked == State.locked
-                    if sensor_present(new_data.sensor) and state.opened in (
+                    # Not sensor_present: a lock with a built-in door contact
+                    # reports the door here while doorSensor/query has no
+                    # accessory to describe, so waiting for one discards a
+                    # door state the cloud just gave us. Matches the BLE
+                    # branch above, which never asked for an accessory.
+                    if new_data.sensor is not None and state.opened in (
                         SensorState.opened,
                         SensorState.closed,
                     ):

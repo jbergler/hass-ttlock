@@ -216,6 +216,13 @@ def mock_data_factory():
                 sensor=Sensor.model_validate(SENSOR_DETAILS),
                 state=LockState.model_validate(LOCK_STATE_UNLOCKED),
             ),
+            # The KT170 case: the lock reads its own door and reports it in
+            # queryOpenState, while doorSensor/query has no accessory to
+            # describe.
+            "door_without_accessory": MockApiData(
+                lock=Lock.model_validate(LOCK_DETAILS_WITH_SENSOR),
+                state=LockState.model_validate(LOCK_STATE_UNLOCKED_DOOR_CLOSED),
+            ),
             "sensor_not_installed": MockApiData(
                 lock=Lock.model_validate(LOCK_DETAILS_WITH_SENSOR),
                 state=LockState.model_validate(LOCK_STATE_UNLOCKED),

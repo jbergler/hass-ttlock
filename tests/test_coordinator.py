@@ -272,6 +272,20 @@ class TestLockUpdateCoordinator:
 
             assert coordinator.data.sensor.opened is True
 
+        async def test_a_cloud_door_state_needs_no_accessory(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses
+        ):
+            """A lock with a built-in door contact reports the door in
+            queryOpenState and has no accessory for doorSensor/query to
+            describe, so requiring one threw that door state away.
+            """
+            mock_api_responses("door_without_accessory")
+            await coordinator.async_refresh()
+
+            assert coordinator.data.sensor is not None
+            assert coordinator.data.sensor.present is False
+            assert coordinator.data.sensor.opened is False
+
         async def test_coordinator_handles_missing_sensor(
             self, coordinator: LockUpdateCoordinator, mock_api_responses
         ):
