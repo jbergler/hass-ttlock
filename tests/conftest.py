@@ -49,6 +49,7 @@ from .const import (
     BASIC_LOCK_DETAILS,
     LOCK_DETAILS_WITH_SENSOR,
     LOCK_STATE_LOCKED,
+    LOCK_STATE_UNKNOWN,
     LOCK_STATE_UNLOCKED,
     MOCK_LOCK_MAC,
     MOCK_LOCK_NAME,
@@ -217,6 +218,13 @@ def mock_data_factory():
             "locked": MockApiData(
                 lock=Lock.model_validate(BASIC_LOCK_DETAILS),
                 state=LockState.model_validate(LOCK_STATE_LOCKED),
+                passage_mode=PassageModeConfig.model_validate(
+                    PASSAGE_MODE_6_TO_6_7_DAYS
+                ),
+            ),
+            "state_unknown": MockApiData(
+                lock=Lock.model_validate(BASIC_LOCK_DETAILS),
+                state=LockState.model_validate(LOCK_STATE_UNKNOWN),
                 passage_mode=PassageModeConfig.model_validate(
                     PASSAGE_MODE_6_TO_6_7_DAYS
                 ),
