@@ -576,7 +576,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                     # above already takes the battery from the same reply.
                     if state.battery_level is not None:
                         new_data.battery_level = state.battery_level
-                    if sensor_present(new_data.sensor) and state.opened in (
+                    if new_data.sensor is not None and state.opened in (
                         SensorState.opened,
                         SensorState.closed,
                     ):
