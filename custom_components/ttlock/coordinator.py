@@ -275,6 +275,10 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self.ble: BleData = BleData()
         self._ble_verified_at: datetime | None = None
         self._reverify_failures = 0
+        # Whether a state read has ever landed, whatever it said. A lock that
+        # answers "unknown" publishes that, so the state itself can no longer
+        # stand in for "we have never managed to read this lock".
+        self._state_ever_read = False
 
         # What lock/detail told us about talking to the lock directly. Kept
         # as received; parsed on use so an odd value costs a local read, not
@@ -457,6 +461,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
     @callback
     def _async_note_verified(self) -> None:
+        self._state_ever_read = True
         self._reverify_failures = 0
         self._async_resume_normal_polling()
 
@@ -570,7 +575,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 try:
                     state = await self.api.get_lock_state(self.lock_id)
                     self._async_note_verified()
-                    new_data.locked = state.locked == State.locked
+                    # `2` is the lock declining to answer - a bolt we could
+                    # not read is not an unlocked one, so report neither.
+                    if state.locked in (State.locked, State.unlocked):
+                        new_data.locked = state.locked == State.locked
+                    else:
+                        new_data.locked = None
                     # Read at the same moment as the bolt, where lock/detail's
                     # is as old as the lock's last check-in. The BLE branch
                     # above already takes the battery from the same reply.
@@ -582,8 +592,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                     ):
                         new_data.sensor.opened = state.opened == SensorState.opened
                 except Exception as err:
-                    if new_data.locked is None:
-                        # first-ever fetch: tolerate failure, entity shows "unknown"
+                    if not self._state_ever_read:
+                        # no read has ever landed: tolerate the failure so
+                        # setup doesn't fail, entity shows "unknown"
                         _LOGGER.debug(
                             "Failed to fetch initial lock state", exc_info=True
                         )
