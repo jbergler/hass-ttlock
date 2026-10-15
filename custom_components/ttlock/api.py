@@ -39,6 +39,7 @@ from urllib.parse import urljoin
 from aiohttp import ClientResponse, ClientSession
 
 from homeassistant.components.application_credentials import AuthImplementation
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_entry_oauth2_flow
 
 from .capture import LockTrafficCapture, log_and_capture
@@ -68,8 +69,13 @@ _LOGGER = logging.getLogger(__name__)
 GW_LOCK = asyncio.Lock()
 
 
-class RequestFailed(Exception):
-    """Exception when TTLock API returns an error."""
+class RequestFailed(HomeAssistantError):
+    """Exception when TTLock API returns an error.
+
+    A HomeAssistantError so a failing service action surfaces as a normal
+    action error and honours `continue_on_error` in scripts/automations
+    (HA only lets that flag swallow HomeAssistantError).
+    """
 
     def __init__(self, message: str, errcode: int | None = None) -> None:
         """Keep the API's errcode around so callers can classify the failure."""
@@ -443,6 +449,44 @@ class TTLockApi:
             return False
 
         return True
+
+    async def add_card(
+        self,
+        lock_id: int,
+        card_number: str,
+        name: str,
+        start_ms: int = 0,
+        end_ms: int = 0,
+        reversed_number: bool = False,
+    ) -> int:
+        """Add an IC card to a lock via gateway, returning the new card id.
+
+        start_ms == end_ms == 0 makes the card permanent. By default the number
+        is sent as the cloud reports it (identityCard/add); reversed_number uses
+        identityCard/addForReversedCardNumber for numbers read by an external
+        reader in the opposite byte order.
+        """
+
+        path = (
+            "identityCard/addForReversedCardNumber"
+            if reversed_number
+            else "identityCard/add"
+        )
+        async with GW_LOCK:
+            res = await self.post(
+                path,
+                lockId=lock_id,
+                cardNumber=card_number,
+                cardName=name,
+                startDate=start_ms,
+                endDate=end_ms,
+                addType=2,  # via gateway
+            )
+
+        if "cardId" not in res:
+            raise RequestFailed(f"{path}: response without cardId: {res}")
+
+        return int(res["cardId"])
 
     async def delete_card(self, lock_id: int, card_id: int) -> bool:
         """Delete an IC card from a lock."""

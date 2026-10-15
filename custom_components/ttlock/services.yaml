@@ -303,6 +303,46 @@ delete_card:
           min: 1
           mode: box
 
+add_card:
+  name: Add an IC card
+  description: Adds an IC card to the selected lock via gateway or WiFi lock, given its card number (for example from the List IC cards action on another lock).
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    card_number:
+      name: Card number
+      description: The physical card number, as reported by the List IC cards action
+      required: true
+      selector:
+        text:
+    name:
+      name: Card name
+      description: The name for this card
+      required: true
+      selector:
+        text:
+    start_time:
+      name: Start Time
+      description: When the card becomes valid (leave empty with End Time for a permanent card)
+      required: false
+      selector:
+        datetime:
+    end_time:
+      name: End Time
+      description: When the card stops being valid (leave empty with Start Time for a permanent card)
+      required: false
+      selector:
+        datetime:
+    reversed_number:
+      name: Reversed number
+      description: Use for numbers read by an external reader in the opposite byte order (identityCard/addForReversedCardNumber)
+      required: false
+      default: false
+      selector:
+        boolean:
+
 list_fingerprints:
   name: List fingerprints
   description: Lists all fingerprints enrolled on the selected lock, including their names and validity periods.

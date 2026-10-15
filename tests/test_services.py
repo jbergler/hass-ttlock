@@ -6,8 +6,10 @@ from unittest.mock import call, patch
 import pytest
 import voluptuous as vol
 
+from custom_components.ttlock.api import RequestFailed
 from custom_components.ttlock.const import (
     DOMAIN,
+    SVC_ADD_CARD,
     SVC_CLEANUP_PASSCODES,
     SVC_CONFIG_AUTOLOCK,
     SVC_CREATE_PASSCODE,
@@ -22,18 +24,23 @@ from custom_components.ttlock.const import (
     SVC_RENAME_CARD,
     SVC_RENAME_FINGERPRINT,
     SVC_UPDATE_STATE,
+    TT_LOCKS,
 )
 from custom_components.ttlock.models import (
     AddPasscodeConfig,
     Card,
     Fingerprint,
     LockRecord,
+    LockSummary,
     Passcode,
     PasscodeType,
     RecordType,
 )
 from homeassistant.const import ATTR_ENTITY_ID
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Context, HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.script import Script
 from homeassistant.util import dt as dt_util
 
 
@@ -914,6 +921,256 @@ class Test_rename_card:
             ]
 
 
+class Test_add_card:
+    async def test_can_add_card(
+        self, hass: HomeAssistant, component_setup, mock_api_responses
+    ):
+        """Test adding a card, with the new card id in the response."""
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = coordinator.entities[0].entity_id
+
+        start_time = dt_util.now() - timedelta(days=1)
+        end_time = dt_util.now() + timedelta(weeks=2)
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.add_card", return_value=124242
+        ) as mock:
+            response = await hass.services.async_call(
+                DOMAIN,
+                SVC_ADD_CARD,
+                {
+                    ATTR_ENTITY_ID: entity_id,
+                    "card_number": "1723612378",
+                    "name": "Card for mom",
+                    "start_time": start_time,
+                    "end_time": end_time,
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert mock.call_args_list == [
+            call(
+                coordinator.lock_id,
+                "1723612378",
+                "Card for mom",
+                int(start_time.timestamp() * 1000),
+                int(end_time.timestamp() * 1000),
+                False,
+            )
+        ]
+        assert response == {"cards": {entity_id: {"card_id": 124242, "error": None}}}
+
+    async def test_add_card_without_dates_is_permanent(
+        self, single_lock_entity_id, hass: HomeAssistant
+    ):
+        """Without start/end the card is sent with 0/0 (permanent)."""
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.add_card", return_value=124242
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_ADD_CARD,
+                {
+                    ATTR_ENTITY_ID: single_lock_entity_id,
+                    "card_number": "1723612378",
+                    "name": "Card for mom",
+                },
+                blocking=True,
+            )
+
+        assert mock.call_args.args[1:] == ("1723612378", "Card for mom", 0, 0, False)
+
+    async def test_add_card_accepts_number_as_int(
+        self, single_lock_entity_id, hass: HomeAssistant
+    ):
+        """A template rendering only digits arrives as an int and is accepted."""
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.add_card", return_value=124242
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_ADD_CARD,
+                {
+                    ATTR_ENTITY_ID: single_lock_entity_id,
+                    "card_number": 1723612378,
+                    "name": "Card for mom",
+                },
+                blocking=True,
+            )
+
+        assert mock.call_args.args[1] == "1723612378"
+
+    async def test_add_card_passes_reversed_number(
+        self, single_lock_entity_id, hass: HomeAssistant
+    ):
+        """reversed_number is passed through to the API."""
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.add_card", return_value=124242
+        ) as mock:
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_ADD_CARD,
+                {
+                    ATTR_ENTITY_ID: single_lock_entity_id,
+                    "card_number": "3661413478",
+                    "name": "Card for mom",
+                    "reversed_number": True,
+                },
+                blocking=True,
+            )
+
+        assert mock.call_args.args[5] is True
+
+    @pytest.mark.parametrize("card_number", ["", "12ab34", "-1", "1" * 21])
+    async def test_add_card_rejects_invalid_number(
+        self, single_lock_entity_id, hass: HomeAssistant, card_number
+    ):
+        """Card numbers must be 1-20 digits."""
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_ADD_CARD,
+                {
+                    ATTR_ENTITY_ID: single_lock_entity_id,
+                    "card_number": card_number,
+                    "name": "Card for mom",
+                },
+                blocking=True,
+            )
+
+    @pytest.mark.parametrize("given", ["start_time", "end_time"])
+    async def test_add_card_rejects_only_one_of_start_and_end(
+        self, single_lock_entity_id, hass: HomeAssistant, given
+    ):
+        """start_time and end_time must be provided together."""
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_ADD_CARD,
+                {
+                    ATTR_ENTITY_ID: single_lock_entity_id,
+                    "card_number": "1723612378",
+                    "name": "Card for mom",
+                    given: dt_util.now(),
+                },
+                blocking=True,
+            )
+
+    async def test_add_card_failure_with_response(
+        self, single_lock_entity_id, hass: HomeAssistant
+    ):
+        """When the caller asks for the response, a failure is reported in it."""
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.add_card",
+            side_effect=RequestFailed("API returned: errcode -3003"),
+        ):
+            response = await hass.services.async_call(
+                DOMAIN,
+                SVC_ADD_CARD,
+                {
+                    ATTR_ENTITY_ID: single_lock_entity_id,
+                    "card_number": "1723612378",
+                    "name": "Card for mom",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert response == {
+            "cards": {
+                single_lock_entity_id: {
+                    "card_id": None,
+                    "error": "API returned: errcode -3003",
+                }
+            }
+        }
+
+    async def test_add_card_failure_without_response_raises(
+        self, single_lock_entity_id, hass: HomeAssistant
+    ):
+        """Without a response to report it in, a failure raises."""
+        with (
+            patch(
+                "custom_components.ttlock.api.TTLockApi.add_card",
+                side_effect=RequestFailed("API returned: errcode -3003"),
+            ),
+            pytest.raises(HomeAssistantError, match=single_lock_entity_id),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SVC_ADD_CARD,
+                {
+                    ATTR_ENTITY_ID: single_lock_entity_id,
+                    "card_number": "1723612378",
+                    "name": "Card for mom",
+                },
+                blocking=True,
+            )
+
+    async def test_add_card_one_failing_lock_does_not_hide_the_others(
+        self, hass: HomeAssistant, component_setup, mock_api_responses, monkeypatch
+    ):
+        """Each lock is attempted and reported on its own."""
+        mock_api_responses("default")
+
+        async def mock_get_locks(*args, **kwargs):
+            return [
+                LockSummary(
+                    lockId=7252408,
+                    lockAlias="Front Door",
+                    lockMac="00:00:00:00:00:01",
+                    hasGateway=1,
+                ),
+                LockSummary(
+                    lockId=2,
+                    lockAlias="Back Door",
+                    lockMac="00:00:00:00:00:02",
+                    hasGateway=1,
+                ),
+            ]
+
+        monkeypatch.setattr(
+            "custom_components.ttlock.api.TTLockApi.get_locks", mock_get_locks
+        )
+        await component_setup()
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        entity_ids = {
+            coordinator.lock_id: coordinator.entities[0].entity_id
+            for coordinator in hass.data[DOMAIN][entry.entry_id][TT_LOCKS]
+        }
+
+        async def add_card(lock_id, *args):
+            if lock_id == 2:
+                raise RequestFailed("API returned: errcode -3003")
+            return 124242
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.add_card", side_effect=add_card
+        ):
+            response = await hass.services.async_call(
+                DOMAIN,
+                SVC_ADD_CARD,
+                {
+                    ATTR_ENTITY_ID: [entity_ids[2], entity_ids[7252408]],
+                    "card_number": "1723612378",
+                    "name": "Card for mom",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert response == {
+            "cards": {
+                entity_ids[2]: {
+                    "card_id": None,
+                    "error": "API returned: errcode -3003",
+                },
+                entity_ids[7252408]: {"card_id": 124242, "error": None},
+            }
+        }
+
+
 class Test_delete_card:
     async def test_can_delete_card(
         self, hass: HomeAssistant, component_setup, mock_api_responses
@@ -1053,3 +1310,53 @@ class Test_delete_fingerprint:
             )
             await hass.async_block_till_done()
             assert mock.call_args_list == [call(coordinator.lock_id, 224242)]
+
+
+class Test_cloud_errors:
+    @pytest.mark.parametrize(
+        ("service", "method", "data"),
+        [
+            (SVC_LIST_CARDS, "list_cards", {}),
+            (SVC_RENAME_CARD, "rename_card", {"card_id": 124242, "name": "New"}),
+            (SVC_DELETE_CARD, "delete_card", {"card_id": 124242}),
+        ],
+    )
+    async def test_cloud_error_is_a_home_assistant_error(
+        self, single_lock_entity_id, hass: HomeAssistant, service, method, data
+    ):
+        """A TTLock errcode surfaces from the action as a HomeAssistantError."""
+        with (
+            patch(
+                f"custom_components.ttlock.api.TTLockApi.{method}",
+                side_effect=RequestFailed("API returned: errcode -3003"),
+            ),
+            pytest.raises(HomeAssistantError),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                service,
+                {ATTR_ENTITY_ID: single_lock_entity_id, **data},
+                blocking=True,
+                return_response=service == SVC_LIST_CARDS,
+            )
+
+    async def test_continue_on_error_skips_a_failed_action(
+        self, single_lock_entity_id, hass: HomeAssistant
+    ):
+        """continue_on_error in a script carries on past a cloud error."""
+        step = {
+            "action": f"{DOMAIN}.{SVC_DELETE_CARD}",
+            "target": {"entity_id": single_lock_entity_id},
+            "data": {"card_id": 124242},
+            "continue_on_error": True,
+        }
+        script = Script(hass, cv.SCRIPT_SCHEMA([step, step]), "test", DOMAIN)
+
+        with patch(
+            "custom_components.ttlock.api.TTLockApi.delete_card",
+            side_effect=RequestFailed("API returned: errcode -3003"),
+        ) as mock:
+            await script.async_run(context=Context())
+            await hass.async_block_till_done()
+
+        assert mock.call_count == 2

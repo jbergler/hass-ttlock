@@ -12,6 +12,7 @@ from homeassistant.core import (
     ServiceResponse,
     SupportsResponse,
 )
+from homeassistant.exceptions import HomeAssistantError
 import homeassistant.helpers.config_validation as cv
 from homeassistant.util.dt import as_utc
 
@@ -23,6 +24,7 @@ from .const import (
     CONF_START_TIME,
     CONF_WEEK_DAYS,
     DOMAIN,
+    SVC_ADD_CARD,
     SVC_CLEANUP_PASSCODES,
     SVC_CONFIG_AUTOLOCK,
     SVC_CONFIG_PASSAGE_MODE,
@@ -235,6 +237,29 @@ class Services:
                     vol.Required("name"): cv.string,
                 }
             ),
+        )
+
+        self.hass.services.register(
+            DOMAIN,
+            SVC_ADD_CARD,
+            self.handle_add_card,
+            schema=vol.All(  # ty: ignore[invalid-argument-type] - vol.All is a valid voluptuous validator
+                vol.Schema(
+                    {
+                        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+                        # cv.string first: a template rendering only digits arrives as an int
+                        vol.Required("card_number"): vol.All(
+                            cv.string, cv.matches_regex(r"^[0-9]{1,20}\Z")
+                        ),
+                        vol.Required("name"): cv.string,
+                        vol.Optional("start_time"): cv.datetime,
+                        vol.Optional("end_time"): cv.datetime,
+                        vol.Optional("reversed_number", default=False): cv.boolean,
+                    }
+                ),
+                _validate_start_and_end_time_together,
+            ),
+            supports_response=SupportsResponse.OPTIONAL,
         )
 
         self.hass.services.register(
@@ -530,6 +555,37 @@ class Services:
 
         for coordinator in self._get_coordinators(call).values():
             await coordinator.api.rename_card(coordinator.lock_id, card_id, name)
+
+    async def handle_add_card(self, call: ServiceCall) -> ServiceResponse:
+        """Add an IC card to the given entities, reporting the outcome per lock."""
+        start_ms = end_ms = 0
+        if start_time := call.data.get("start_time"):
+            start_ms = int(as_utc(start_time).timestamp() * 1000)
+        if end_time := call.data.get("end_time"):
+            end_ms = int(as_utc(end_time).timestamp() * 1000)
+
+        results: dict[str, dict[str, int | str | None]] = {}
+        for entity_id, coordinator in self._get_coordinators(call).items():
+            try:
+                card_id = await coordinator.api.add_card(
+                    coordinator.lock_id,
+                    call.data["card_number"],
+                    call.data["name"],
+                    start_ms,
+                    end_ms,
+                    call.data["reversed_number"],
+                )
+            except Exception as err:  # noqa: BLE001 - one failing lock must not hide the others
+                _LOGGER.error("Failed to add card for %s: %s", entity_id, err)
+                results[entity_id] = {"card_id": None, "error": str(err)}
+            else:
+                results[entity_id] = {"card_id": card_id, "error": None}
+
+        failed = [e for e, r in results.items() if r["error"] is not None]
+        if failed and not call.return_response:
+            raise HomeAssistantError(f"Failed to add card for {', '.join(failed)}")
+
+        return {"cards": results}  # ty: ignore[invalid-return-type] - dict/list generics are invariant, so this structurally-JSON-safe dict isn't recognized as a dict[str, JsonValueType] subtype
 
     async def handle_delete_card(self, call: ServiceCall):
         """Delete an IC card from the given entities."""
