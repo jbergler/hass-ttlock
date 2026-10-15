@@ -547,7 +547,11 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 try:
                     state = await self.api.get_lock_state(self.lock_id)
                     self._async_note_verified()
-                    new_data.locked = state.locked == State.locked
+                    # An unknown state is not an unlocked one - the webhook
+                    # path already leaves it alone, and the last state we were
+                    # sure of beats reporting a sleeping lock unlocked.
+                    if state.locked in (State.locked, State.unlocked):
+                        new_data.locked = state.locked == State.locked
                     if sensor_present(new_data.sensor):
                         new_data.sensor.opened = state.opened == SensorState.opened
                 except Exception as err:

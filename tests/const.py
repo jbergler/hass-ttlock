@@ -80,6 +80,10 @@ LOCK_STATE_LOCKED = {"state": 0, "electricQuantity": 90, "lockTime": 16214592000
 
 LOCK_STATE_UNLOCKED = {"state": 1, "electricQuantity": 90, "lockTime": 1621459200000}
 
+# What queryOpenState returns for a lock it could not reach - a WiFi lock
+# asleep, or a gateway that didn't answer in time.
+LOCK_STATE_UNKNOWN = {"state": 2, "electricQuantity": 90, "lockTime": 1621459200000}
+
 PASSAGE_MODE_6_TO_6_7_DAYS = {
     "autoUnlock": 2,
     "isAllDay": 2,

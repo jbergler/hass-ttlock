@@ -46,6 +46,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     BASIC_LOCK_DETAILS,
     LOCK_STATE_LOCKED,
+    LOCK_STATE_UNKNOWN,
     PASSAGE_MODE_6_TO_6_7_DAYS,
     PASSAGE_MODE_ALL_DAY_WEEKDAYS,
     WEBHOOK_LOCK_10AM_UTC,
@@ -291,6 +292,38 @@ class TestLockUpdateCoordinator:
 
             await coordinator.async_refresh()
             assert coordinator.data.locked is True
+
+        async def test_a_cloud_unknown_does_not_claim_the_lock_is_unlocked(
+            self,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            """queryOpenState answers `2` for a lock it could not reach; the
+            last state we were sure of beats reporting it unlocked.
+            """
+            mock_api_responses("locked")
+            await coordinator.async_refresh()
+            assert coordinator.data.locked is True
+
+            async def mock_get_lock_state_unknown(*args, **kwargs):
+                return WireLockState.model_validate(LOCK_STATE_UNKNOWN)
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_lock_state",
+                mock_get_lock_state_unknown,
+            )
+
+            await coordinator.async_refresh()
+            assert coordinator.data.locked is True
+
+        async def test_a_lock_that_only_ever_answers_unknown_stays_unknown(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses
+        ):
+            mock_api_responses("state_unknown")
+            await coordinator.async_refresh()
+
+            assert coordinator.data.locked is None
 
         async def test_first_lock_state_fetch_failure_tolerated(
             self,
