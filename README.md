@@ -14,6 +14,7 @@ This integration uses the TTLock Cloud to communicate with your lock. It support
 - Locking and unlocking
 - Discovery of locks on startup
 - Real-time updates via a webhook (no periodic polling which wastes battery)
+- Local state reads over Home Assistant's own Bluetooth, so a lock in range keeps reporting without a gateway (see [Bluetooth](#bluetooth))
 - Additional sensors for battery, last operator + reason
 - Add new pass codes
 - Delete expired pass codes
@@ -39,6 +40,7 @@ This integration uses the TTLock Cloud to communicate with your lock. It support
 1. A TTLock based smart lock
 1. A Gateway (if your lock doesn't have integrated wifi)
    - These can be purchased from the vendor of your lock or direct from [Aliexpress](https://s.click.aliexpress.com/e/_DEPpClx)
+   - Without one, a lock within Bluetooth range of Home Assistant still reports its state (see [Bluetooth](#bluetooth)), but can't be locked or unlocked
 1. Remote unlock must be enabled for each lock
    - This must be done while in bluetooth range of the lock, from the mobile app
    - Here is a [youtube video](https://www.youtube.com/watch?v=ni-38QpoNA4) which explains the process
@@ -57,6 +59,15 @@ This integration uses the TTLock Cloud to communicate with your lock. It support
    - Test by unlocking your door
    - If the event data was received by home assistant the repair notice will resolve itself, indicating that everything is working.
 
+## Bluetooth
+
+If Home Assistant's [Bluetooth](https://www.home-assistant.io/integrations/bluetooth/) integration is set up and a lock is in range of its adapter (or an ESPHome Bluetooth proxy), the integration reads lock, battery and door state from the lock directly. Nothing to set up: the key comes from the TTLock cloud along with the rest of the lock's details.
+
+- A lock with a gateway keeps using the cloud and the webhook; the local read only replaces the state check the poll already did, saving API calls.
+- A lock without a gateway stays available while the radio can reach it, and is re-read every 5 minutes so a manual turn shows up without a reload. Locking and unlocking still need a gateway: the credentials TTLock's developer API provides don't include the key the lock requires to move.
+- A diagnostic signal-strength sensor per lock shows whether it's in range. Around -80 dBm and below, connections get slow or fail; move the adapter, or add a proxy near the door.
+- Bluetooth can be turned off in the integration's options ("Read locks over Bluetooth"). The locks then use the cloud only, as before.
+
 # Troubleshooting
 
 ## Common issues
@@ -71,7 +82,7 @@ This integration uses the TTLock Cloud to communicate with your lock. It support
 1. "Failed to execute the action lock/lock." or "The function is not supported for this lock"
    - This is most likely because you haven't enabled remote unlock, please follow the instructions in the requirements section.
 1. Entities are unavailable and debug logs show `hasGateway: 0`
-   - TTLock cloud can occasionally lose the gateway association for a lock.
+   - TTLock cloud can occasionally lose the gateway association for a lock. If the lock is in Bluetooth range of Home Assistant it stays available meanwhile (see [Bluetooth](#bluetooth)); either way, the gateway needs to come back for lock/unlock to work.
    - First, reboot your TTLock gateway/hub (for example, G2) and re-check the integration.
    - If that does not fix it, remove and re-add the lock in the TTLock app.
 

@@ -1,9 +1,19 @@
 """Test ttlock setup process."""
 
 from datetime import timedelta
-from unittest.mock import patch
+from time import time
+from unittest.mock import MagicMock, patch
+
+from aiohttp import ClientConnectorError, ClientResponseError, ConnectionTimeoutError
+import pytest
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.ttlock import async_remove_config_entry_device
+from custom_components.ttlock.api import RequestFailed
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
     CONF_BLUETOOTH_ENABLED,
@@ -16,10 +26,19 @@ from custom_components.ttlock.const import (
 )
 from custom_components.ttlock.models import Gateway, LockSummary
 from custom_components.ttlock.webhook import WebhookHandler
+from homeassistant.components.application_credentials import (
+    ClientCredential,
+    async_import_client_credential,
+)
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_WEBHOOK_ID, EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.network import NoURLAvailableError
+from homeassistant.setup import async_setup_component
+from homeassistant.util import dt as dt_util
+
+TOKEN_URL = "https://euapi.ttlock.com/oauth2/token"
 
 
 async def test_setup_unload_and_reload_entry(hass, component_setup, mock_api_responses):
@@ -494,3 +513,141 @@ async def test_removing_entry_whose_cloudhook_was_never_created_is_a_noop(
     entry = hass.config_entries.async_entries(DOMAIN)[0]
 
     assert await hass.config_entries.async_remove(entry.entry_id)
+
+
+async def _setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Set up entry without asserting it loaded - component_setup assumes it did."""
+    assert await async_setup_component(hass, "application_credentials", {})
+    await async_import_client_credential(
+        hass,
+        DOMAIN,
+        ClientCredential("client-id", "client-secret"),
+        entry.data["auth_implementation"],
+    )
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ClientConnectorError(MagicMock(), OSError("Network is unreachable")),
+        ConnectionTimeoutError(
+            "Connection timeout to host https://euapi.ttlock.com/v3/lock/list"
+            "?clientId=client-id&accessToken=mock-access-token"
+        ),
+        TimeoutError(),
+        ClientResponseError(MagicMock(), (), status=503),
+        RequestFailed("API returned: internal server error", errcode=90000),
+    ],
+    ids=["connector", "connection_timeout", "timeout", "http_503", "errcode_90000"],
+)
+async def test_transient_get_locks_failure_retries_setup(
+    hass, config_entry, mock_api_responses, error
+):
+    """Cloud unreachable at startup (eg. HA booted before the internet came
+    back after a power outage) must end in SETUP_RETRY so HA retries on its
+    own, not in a permanent SETUP_ERROR.
+    """
+    mock_api_responses("default")
+    with patch("custom_components.ttlock.api.TTLockApi.get_locks", side_effect=error):
+        await _setup_entry(hass, config_entry)
+
+    assert config_entry.state is ConfigEntryState.SETUP_RETRY
+    # the reason is user-visible - aiohttp's own message would leak the
+    # request URL, accessToken included
+    assert config_entry.reason is not None
+    assert "mock-access-token" not in config_entry.reason
+    # no half-initialized runtime data left behind while waiting to retry
+    assert config_entry.entry_id not in hass.data[DOMAIN]
+
+
+async def test_setup_recovers_once_cloud_is_reachable(
+    hass, config_entry, mock_api_responses
+):
+    """A transient failure on the first attempt, then success on HA's retry."""
+    mock_api_responses("default")
+    with patch(
+        "custom_components.ttlock.api.TTLockApi.get_locks",
+        side_effect=ConnectionTimeoutError(),
+    ):
+        await _setup_entry(hass, config_entry)
+    assert config_entry.state is ConfigEntryState.SETUP_RETRY
+
+    # connectivity is back: mock_api_responses' get_locks answers again
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=1))
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert config_entry.state is ConfigEntryState.LOADED
+    assert len(hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS]) == 1
+
+
+@pytest.mark.parametrize("errcode", [10003, 10004, 10011])
+async def test_auth_errcode_from_get_locks_is_a_setup_error(
+    hass, config_entry, mock_api_responses, errcode
+):
+    """Invalid/revoked credentials won't fix themselves on retry. There's no
+    reauth flow to hand them to, so these stay a hard setup error.
+    """
+    mock_api_responses("default")
+    with patch(
+        "custom_components.ttlock.api.TTLockApi.get_locks",
+        side_effect=RequestFailed("API returned: token invalid", errcode=errcode),
+    ):
+        await _setup_entry(hass, config_entry)
+
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+
+
+def _entry_with_expired_token() -> MockConfigEntry:
+    return MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            "auth_implementation": "mocked",
+            "token": {
+                "refresh_token": "mock-refresh-token",
+                "access_token": "mock-access-token",
+                "type": "Bearer",
+                "expires_in": 60,
+                "expires_at": time() - 1000,
+                "scope": "",
+            },
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "token_response",
+    [
+        {"exc": ClientConnectorError(MagicMock(), OSError("Network is unreachable"))},
+        {"exc": TimeoutError()},
+        {"status": 502},
+    ],
+    ids=["connector", "timeout", "http_502"],
+)
+async def test_transient_token_refresh_failure_retries_setup(
+    hass, aioclient_mock: AiohttpClientMocker, token_response
+):
+    """get_locks is the first call to need the token, so an expired one is
+    refreshed right there - that refresh hitting a dead network must retry too.
+    """
+    aioclient_mock.post(TOKEN_URL, **token_response)
+    entry = _entry_with_expired_token()
+
+    await _setup_entry(hass, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert aioclient_mock.call_count == 1
+
+
+async def test_rejected_token_refresh_is_a_setup_error(
+    hass, aioclient_mock: AiohttpClientMocker
+):
+    """A refresh token the server rejects needs the user, not a retry."""
+    aioclient_mock.post(TOKEN_URL, status=401, json={"error": "invalid_grant"})
+    entry = _entry_with_expired_token()
+
+    await _setup_entry(hass, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR

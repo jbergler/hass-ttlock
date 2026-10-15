@@ -77,6 +77,11 @@ class RequestFailed(HomeAssistantError):
     (HA only lets that flag swallow HomeAssistantError).
     """
 
+    def __init__(self, message: str, errcode: int | None = None) -> None:
+        """Keep the API's errcode around so callers can classify the failure."""
+        super().__init__(message)
+        self.errcode = errcode
+
 
 class TTLockAuthImplementation(
     AuthImplementation,
@@ -188,7 +193,7 @@ class TTLockApi:
         res = cast(dict, await resp.json())
         if res.get("errcode", 0) != 0:
             self._debug(logger, lock_id, "[%s] API returned: %s", log_id, res)
-            raise RequestFailed(f"API returned: {res}")
+            raise RequestFailed(f"API returned: {res}", errcode=res["errcode"])
 
         return cast(dict, await resp.json())
 
