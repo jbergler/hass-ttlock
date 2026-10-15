@@ -548,6 +548,11 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                     state = await self.api.get_lock_state(self.lock_id)
                     self._async_note_verified()
                     new_data.locked = state.locked == State.locked
+                    # Read at the same moment as the bolt, where lock/detail's
+                    # is as old as the lock's last check-in. The BLE branch
+                    # above already takes the battery from the same reply.
+                    if state.battery_level is not None:
+                        new_data.battery_level = state.battery_level
                     if sensor_present(new_data.sensor):
                         new_data.sensor.opened = state.opened == SensorState.opened
                 except Exception as err:

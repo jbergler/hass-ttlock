@@ -171,6 +171,7 @@ class LockState(BaseModel):
 
     locked: State | None = Field(State.unknown, alias="state")
     opened: SensorState | None = Field(SensorState.unknown, alias="sensorState")
+    battery_level: int | None = Field(None, alias="electricQuantity")
 
 
 class PassageModeConfig(BaseModel):
