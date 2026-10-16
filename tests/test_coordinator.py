@@ -46,6 +46,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     BASIC_LOCK_DETAILS,
     LOCK_STATE_LOCKED,
+    LOCK_STATE_UNLOCKED,
     PASSAGE_MODE_6_TO_6_7_DAYS,
     PASSAGE_MODE_ALL_DAY_WEEKDAYS,
     WEBHOOK_LOCK_10AM_UTC,
@@ -226,6 +227,33 @@ class TestLockUpdateCoordinator:
             assert coordinator.data.sensor.last_fetched > dt_util.now() - timedelta(
                 seconds=3
             )
+
+        async def test_a_cloud_read_refreshes_the_battery(
+            self,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            """queryOpenState reads the battery at the same moment as the
+            bolt, where lock/detail's copy is as old as the lock's last
+            check-in.
+            """
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            assert coordinator.data.battery_level == 90
+
+            async def mock_get_lock_state_half_empty(*args, **kwargs):
+                return WireLockState.model_validate(
+                    {**LOCK_STATE_UNLOCKED, "electricQuantity": 55}
+                )
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_lock_state",
+                mock_get_lock_state_half_empty,
+            )
+
+            await coordinator.async_refresh()
+            assert coordinator.data.battery_level == 55
 
         async def test_coordinator_handles_missing_sensor(
             self, coordinator: LockUpdateCoordinator, mock_api_responses
