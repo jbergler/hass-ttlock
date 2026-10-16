@@ -154,6 +154,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ]
 
     for coordinator in locks:
+        entry.async_on_unload(coordinator.async_start_webhook_tracking())
         entry.async_on_unload(coordinator.async_start_ble_tracking())
         entry.async_on_unload(coordinator.async_start_local_refresh())
 

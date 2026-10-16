@@ -21,10 +21,11 @@ from custom_components.ttlock.const import (
     CONF_SLOW_POLL_INTERVAL,
     CONF_WEBHOOK_STATUS,
     DOMAIN,
+    SIGNAL_NEW_DATA,
     TT_CAPTURE,
     TT_LOCKS,
 )
-from custom_components.ttlock.models import Gateway, LockSummary
+from custom_components.ttlock.models import Gateway, LockSummary, WebhookEvent
 from custom_components.ttlock.webhook import WebhookHandler
 from homeassistant.components.application_credentials import (
     ClientCredential,
@@ -34,9 +35,12 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_WEBHOOK_ID, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import NoURLAvailableError
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
+
+from .const import WEBHOOK_LOCK_10AM_UTC
 
 TOKEN_URL = "https://euapi.ttlock.com/oauth2/token"
 
@@ -55,6 +59,33 @@ async def test_setup_unload_and_reload_entry(hass, component_setup, mock_api_res
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert entry.state == ConfigEntryState.NOT_LOADED
+
+
+async def test_reload_releases_the_webhook_listener(
+    hass, component_setup, mock_api_responses
+):
+    """The coordinator a reload replaced must stop handling webhook events.
+
+    It is unreferenced but the dispatcher still holds it, so a leak is only
+    visible through the stale object: it keeps updating its own state.
+    """
+    mock_api_responses("default")
+    await component_setup()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    stale = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
+    assert stale.data.locked is False
+
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0] is not stale
+
+    async_dispatcher_send(
+        hass, SIGNAL_NEW_DATA, WebhookEvent.model_validate(WEBHOOK_LOCK_10AM_UTC)
+    )
+    await hass.async_block_till_done()
+
+    assert stale.data.locked is False
 
 
 async def test_changing_options_reloads_with_new_interval(

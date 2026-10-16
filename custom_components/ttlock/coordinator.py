@@ -315,7 +315,18 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             name=summary.name, mac=summary.mac, features=summary.features
         )
 
-        async_dispatcher_connect(self.hass, SIGNAL_NEW_DATA, self._process_webhook_data)
+    @callback
+    def async_start_webhook_tracking(self) -> CALLBACK_TYPE:
+        """Begin handling the webhook events webhook.py dispatches.
+
+        Returns an unsubscribe callable for the caller to register with
+        `entry.async_on_unload`. Without it a reload leaves the replaced
+        coordinator subscribed, so every later event is handled once per
+        reload the entry has seen.
+        """
+        return async_dispatcher_connect(
+            self.hass, SIGNAL_NEW_DATA, self._process_webhook_data
+        )
 
     @callback
     def async_start_ble_tracking(self) -> CALLBACK_TYPE:
