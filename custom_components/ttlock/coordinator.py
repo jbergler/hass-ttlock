@@ -731,17 +731,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 config_entry_id=self.config_entry.entry_id, **info
             )
             if via_device is not None:
-                get_gateway = getattr(registry, "async_get_device_by_identifier", None)
-                if get_gateway is not None:
-                    gateway = get_gateway(via_device, self.config_entry.entry_id)
-                else:
-                    # Compatibility with HA versions before the scoped lookup API.
-                    gateway = registry.async_get_device(identifiers={via_device})
-                    if (
-                        gateway is not None
-                        and self.config_entry.entry_id not in gateway.config_entries
-                    ):
-                        gateway = None
+                gateway = registry.async_get_device_by_identifier(  # ty: ignore[unresolved-attribute] - API added in HA 2026.10; test environment pins HA 2025.12.
+                    via_device, self.config_entry.entry_id
+                )
                 if gateway is not None:
                     registry.async_update_device(device.id, via_device_id=gateway.id)
 

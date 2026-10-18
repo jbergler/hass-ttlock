@@ -773,11 +773,18 @@ class TestLockUpdateCoordinator:
 
         async def test_best_gateway_by_rssi_and_via_device(
             self,
+            hass,
             coordinator: LockUpdateCoordinator,
             mock_api_responses,
             monkeypatch,
         ):
             mock_api_responses("default")
+            monkeypatch.setattr(
+                dr.async_get(hass),
+                "async_get_device_by_identifier",
+                Mock(return_value=None),
+                raising=False,
+            )
 
             async def mock_get_gateways_for_lock(*args, **kwargs):
                 return [
@@ -809,14 +816,12 @@ class TestLockUpdateCoordinator:
                 "00:00:00:00:00:02",
             )
 
-        @pytest.mark.parametrize("scoped_lookup", [False, True])
         async def test_refresh_links_lock_device_to_gateway_by_id(
             self,
             hass,
             coordinator: LockUpdateCoordinator,
             mock_api_responses,
             monkeypatch,
-            scoped_lookup,
         ):
             """_async_refresh_finished links the lock's device to the gateway
             via via_device_id (resolved ourselves), not the deprecated
@@ -830,16 +835,15 @@ class TestLockUpdateCoordinator:
                 identifiers={(DOMAIN, "00:00:00:00:00:02")},
                 name="Strong",
             )
-            if scoped_lookup:
-                lookup = Mock(return_value=gateway)
-                monkeypatch.setattr(
-                    registry, "async_get_device_by_identifier", lookup, raising=False
-                )
-                monkeypatch.setattr(
-                    registry,
-                    "async_get_device",
-                    Mock(side_effect=AssertionError("Deprecated lookup called")),
-                )
+            lookup = Mock(return_value=gateway)
+            monkeypatch.setattr(
+                registry, "async_get_device_by_identifier", lookup, raising=False
+            )
+            monkeypatch.setattr(
+                registry,
+                "async_get_device",
+                Mock(side_effect=AssertionError("Deprecated lookup called")),
+            )
 
             async def mock_get_gateways_for_lock(*args, **kwargs):
                 return [
@@ -865,20 +869,17 @@ class TestLockUpdateCoordinator:
             )
             assert lock_device is not None
             assert lock_device.via_device_id == gateway.id
-            if scoped_lookup:
-                lookup.assert_called_once_with(
-                    (DOMAIN, "00:00:00:00:00:02"), coordinator.config_entry.entry_id
-                )
+            lookup.assert_called_once_with(
+                (DOMAIN, "00:00:00:00:00:02"), coordinator.config_entry.entry_id
+            )
 
         @pytest.mark.parametrize("other_entry_gateway", [False, True])
-        @pytest.mark.parametrize("scoped_lookup", [False, True])
         async def test_refresh_tolerates_unregistered_gateway(
             self,
             hass,
             coordinator: LockUpdateCoordinator,
             mock_api_responses,
             monkeypatch,
-            scoped_lookup,
             other_entry_gateway,
         ):
             """If the best gateway isn't in the device registry yet, the lock
@@ -894,16 +895,15 @@ class TestLockUpdateCoordinator:
                     identifiers={(DOMAIN, "00:00:00:00:00:02")},
                     name="Other account gateway",
                 )
-            if scoped_lookup:
-                lookup = Mock(return_value=None)
-                monkeypatch.setattr(
-                    registry, "async_get_device_by_identifier", lookup, raising=False
-                )
-                monkeypatch.setattr(
-                    registry,
-                    "async_get_device",
-                    Mock(side_effect=AssertionError("Deprecated lookup called")),
-                )
+            lookup = Mock(return_value=None)
+            monkeypatch.setattr(
+                registry, "async_get_device_by_identifier", lookup, raising=False
+            )
+            monkeypatch.setattr(
+                registry,
+                "async_get_device",
+                Mock(side_effect=AssertionError("Deprecated lookup called")),
+            )
 
             async def mock_get_gateways_for_lock(*args, **kwargs):
                 return [
@@ -929,10 +929,9 @@ class TestLockUpdateCoordinator:
             )
             assert lock_device is not None
             assert lock_device.via_device_id is None
-            if scoped_lookup:
-                lookup.assert_called_once_with(
-                    (DOMAIN, "00:00:00:00:00:02"), coordinator.config_entry.entry_id
-                )
+            lookup.assert_called_once_with(
+                (DOMAIN, "00:00:00:00:00:02"), coordinator.config_entry.entry_id
+            )
 
         async def test_no_gateways_in_range_omits_via_device(
             self,
