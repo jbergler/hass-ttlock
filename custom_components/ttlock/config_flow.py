@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-import voluptuous as vol
+import probatio as vol
 
 from homeassistant.config_entries import (
     ConfigEntry,

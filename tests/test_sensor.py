@@ -7,12 +7,10 @@ refresh, which __init__.py runs in the background after platforms are set up
 confirms presence, not decided up front.
 """
 
-from unittest.mock import Mock
-
 from custom_components.ttlock.const import CONF_BLUETOOTH_ENABLED, DOMAIN, TT_LOCKS
 from custom_components.ttlock.models import GatewayLink, LockSummary
 from custom_components.ttlock.sensor import LockBleSignal
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import entity_registry as er
 
 from .const import MOCK_LOCK_MAC
 
@@ -70,12 +68,6 @@ async def test_gateway_signal_entity_reports_best_gateway_and_others(
     hass, component_setup, mock_api_responses, monkeypatch
 ):
     mock_api_responses("default")
-    monkeypatch.setattr(
-        dr.async_get(hass),
-        "async_get_device_by_identifier",
-        Mock(return_value=None),
-        raising=False,
-    )
 
     async def mock_get_gateways_for_lock(*args, **kwargs):
         return [

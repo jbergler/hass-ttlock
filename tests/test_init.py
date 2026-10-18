@@ -452,8 +452,8 @@ async def test_remove_config_entry_device_blocks_active_lock(
     await component_setup()
 
     entry = hass.config_entries.async_entries(DOMAIN)[0]
-    device = dr.async_get(hass).async_get_device(
-        identifiers={(DOMAIN, "16:72:4C:CC:01:C4")}
+    device = dr.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, "16:72:4C:CC:01:C4"), entry.entry_id
     )
     assert device is not None
 
@@ -515,14 +515,15 @@ async def test_remove_config_entry_device_allows_when_entry_data_missing(
     await component_setup()
 
     entry = hass.config_entries.async_entries(DOMAIN)[0]
-    device = dr.async_get(hass).async_get_device(
-        identifiers={(DOMAIN, "16:72:4C:CC:01:C4")}
+    device = dr.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, "16:72:4C:CC:01:C4"), entry.entry_id
     )
     assert device is not None
 
-    hass.data[DOMAIN].pop(entry.entry_id)
+    entry_data = hass.data[DOMAIN].pop(entry.entry_id)
 
     assert await async_remove_config_entry_device(hass, entry, device) is True
+    hass.data[DOMAIN][entry.entry_id] = entry_data
 
 
 async def test_removing_entry_whose_cloudhook_was_never_created_is_a_noop(

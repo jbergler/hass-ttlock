@@ -768,10 +768,10 @@ class TestLockUpdateCoordinator:
 
     class TestGatewayLinks:
         """gateway/listByLock results feed LockState.gateways/best_gateway,
-        and device_info.via_device (see coordinator.py's device_info
+        and device_info.via_device_id (see coordinator.py's device_info
         docstring for why this matters)."""
 
-        async def test_best_gateway_by_rssi_and_via_device(
+        async def test_best_gateway_by_rssi_and_via_device_id(
             self,
             hass,
             coordinator: LockUpdateCoordinator,
@@ -779,11 +779,11 @@ class TestLockUpdateCoordinator:
             monkeypatch,
         ):
             mock_api_responses("default")
-            monkeypatch.setattr(
-                dr.async_get(hass),
-                "async_get_device_by_identifier",
-                Mock(return_value=None),
-                raising=False,
+            assert coordinator.config_entry is not None
+            gateway = dr.async_get(hass).async_get_or_create(
+                config_entry_id=coordinator.config_entry.entry_id,
+                identifiers={(DOMAIN, "00:00:00:00:00:02")},
+                name="Strong",
             )
 
             async def mock_get_gateways_for_lock(*args, **kwargs):
@@ -811,10 +811,7 @@ class TestLockUpdateCoordinator:
 
             assert coordinator.data.best_gateway is not None
             assert coordinator.data.best_gateway.name == "Strong"
-            assert coordinator.device_info["via_device"] == (
-                DOMAIN,
-                "00:00:00:00:00:02",
-            )
+            assert coordinator.device_info["via_device_id"] == gateway.id
 
         async def test_refresh_links_lock_device_to_gateway_by_id(
             self,
@@ -835,10 +832,8 @@ class TestLockUpdateCoordinator:
                 identifiers={(DOMAIN, "00:00:00:00:00:02")},
                 name="Strong",
             )
-            lookup = Mock(return_value=gateway)
-            monkeypatch.setattr(
-                registry, "async_get_device_by_identifier", lookup, raising=False
-            )
+            lookup = Mock(wraps=registry.async_get_device_by_identifier)
+            monkeypatch.setattr(registry, "async_get_device_by_identifier", lookup)
             monkeypatch.setattr(
                 registry,
                 "async_get_device",
@@ -862,14 +857,12 @@ class TestLockUpdateCoordinator:
 
             await coordinator.async_refresh()
 
-            lock_device = next(
-                device
-                for device in registry.devices.values()
-                if (DOMAIN, coordinator.data.mac) in device.identifiers
+            lock_device = registry.async_get_device_by_identifier(
+                (DOMAIN, coordinator.data.mac), coordinator.config_entry.entry_id
             )
             assert lock_device is not None
             assert lock_device.via_device_id == gateway.id
-            lookup.assert_called_once_with(
+            lookup.assert_any_call(
                 (DOMAIN, "00:00:00:00:00:02"), coordinator.config_entry.entry_id
             )
 
@@ -895,10 +888,8 @@ class TestLockUpdateCoordinator:
                     identifiers={(DOMAIN, "00:00:00:00:00:02")},
                     name="Other account gateway",
                 )
-            lookup = Mock(return_value=None)
-            monkeypatch.setattr(
-                registry, "async_get_device_by_identifier", lookup, raising=False
-            )
+            lookup = Mock(wraps=registry.async_get_device_by_identifier)
+            monkeypatch.setattr(registry, "async_get_device_by_identifier", lookup)
             monkeypatch.setattr(
                 registry,
                 "async_get_device",
@@ -922,18 +913,16 @@ class TestLockUpdateCoordinator:
 
             await coordinator.async_refresh()
 
-            lock_device = next(
-                device
-                for device in registry.devices.values()
-                if (DOMAIN, coordinator.data.mac) in device.identifiers
+            lock_device = registry.async_get_device_by_identifier(
+                (DOMAIN, coordinator.data.mac), coordinator.config_entry.entry_id
             )
             assert lock_device is not None
             assert lock_device.via_device_id is None
-            lookup.assert_called_once_with(
+            lookup.assert_any_call(
                 (DOMAIN, "00:00:00:00:00:02"), coordinator.config_entry.entry_id
             )
 
-        async def test_no_gateways_in_range_omits_via_device(
+        async def test_no_gateways_in_range_omits_via_device_id(
             self,
             coordinator: LockUpdateCoordinator,
             mock_api_responses,
@@ -943,7 +932,7 @@ class TestLockUpdateCoordinator:
             await coordinator.async_refresh()
 
             assert coordinator.data.best_gateway is None
-            assert "via_device" not in coordinator.device_info
+            assert "via_device_id" not in coordinator.device_info
 
         async def test_wifi_only_lock_never_fetches_gateways(
             self, hass, api, mock_api_responses, monkeypatch

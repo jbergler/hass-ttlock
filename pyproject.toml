@@ -1,13 +1,13 @@
 [project]
 name = "hass-ttlock"
 version = "0.1.0"
-requires-python = ">=3.13.2"
+requires-python = ">=3.14.2"
 dependencies = [
-    "homeassistant>=2025.12.4",
+    "homeassistant>=2026.10.0",
 ]
 
 [tool.ty.environment]
-python-version = "3.13"
+python-version = "3.14"
 
 [tool.coverage.run]
 source = ["custom_components.ttlock"]
@@ -232,6 +232,6 @@ combine-as-imports = true
 [dependency-groups]
 dev = [
     "dateparser>=1.2.2",
-    "pytest-homeassistant-custom-component>=0.13.301",
+    "pytest-homeassistant-custom-component>=0.13.373",
     "ty>=0.0.61",
 ]
