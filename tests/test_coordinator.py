@@ -809,12 +809,14 @@ class TestLockUpdateCoordinator:
                 "00:00:00:00:00:02",
             )
 
+        @pytest.mark.parametrize("scoped_lookup", [False, True])
         async def test_refresh_links_lock_device_to_gateway_by_id(
             self,
             hass,
             coordinator: LockUpdateCoordinator,
             mock_api_responses,
             monkeypatch,
+            scoped_lookup,
         ):
             """_async_refresh_finished links the lock's device to the gateway
             via via_device_id (resolved ourselves), not the deprecated
@@ -828,6 +830,16 @@ class TestLockUpdateCoordinator:
                 identifiers={(DOMAIN, "00:00:00:00:00:02")},
                 name="Strong",
             )
+            if scoped_lookup:
+                lookup = Mock(return_value=gateway)
+                monkeypatch.setattr(
+                    registry, "async_get_device_by_identifier", lookup, raising=False
+                )
+                monkeypatch.setattr(
+                    registry,
+                    "async_get_device",
+                    Mock(side_effect=AssertionError("Deprecated lookup called")),
+                )
 
             async def mock_get_gateways_for_lock(*args, **kwargs):
                 return [
@@ -846,22 +858,52 @@ class TestLockUpdateCoordinator:
 
             await coordinator.async_refresh()
 
-            lock_device = registry.async_get_device(
-                identifiers={(DOMAIN, coordinator.data.mac)}
+            lock_device = next(
+                device
+                for device in registry.devices.values()
+                if (DOMAIN, coordinator.data.mac) in device.identifiers
             )
             assert lock_device is not None
             assert lock_device.via_device_id == gateway.id
+            if scoped_lookup:
+                lookup.assert_called_once_with(
+                    (DOMAIN, "00:00:00:00:00:02"), coordinator.config_entry.entry_id
+                )
 
+        @pytest.mark.parametrize("other_entry_gateway", [False, True])
+        @pytest.mark.parametrize("scoped_lookup", [False, True])
         async def test_refresh_tolerates_unregistered_gateway(
             self,
             hass,
             coordinator: LockUpdateCoordinator,
             mock_api_responses,
             monkeypatch,
+            scoped_lookup,
+            other_entry_gateway,
         ):
             """If the best gateway isn't in the device registry yet, the lock
             device is still created, just without a via_device link."""
             mock_api_responses("default")
+            assert coordinator.config_entry is not None
+            registry = dr.async_get(hass)
+            if other_entry_gateway:
+                other_entry = MockConfigEntry(domain=DOMAIN)
+                other_entry.add_to_hass(hass)
+                registry.async_get_or_create(
+                    config_entry_id=other_entry.entry_id,
+                    identifiers={(DOMAIN, "00:00:00:00:00:02")},
+                    name="Other account gateway",
+                )
+            if scoped_lookup:
+                lookup = Mock(return_value=None)
+                monkeypatch.setattr(
+                    registry, "async_get_device_by_identifier", lookup, raising=False
+                )
+                monkeypatch.setattr(
+                    registry,
+                    "async_get_device",
+                    Mock(side_effect=AssertionError("Deprecated lookup called")),
+                )
 
             async def mock_get_gateways_for_lock(*args, **kwargs):
                 return [
@@ -880,12 +922,17 @@ class TestLockUpdateCoordinator:
 
             await coordinator.async_refresh()
 
-            registry = dr.async_get(hass)
-            lock_device = registry.async_get_device(
-                identifiers={(DOMAIN, coordinator.data.mac)}
+            lock_device = next(
+                device
+                for device in registry.devices.values()
+                if (DOMAIN, coordinator.data.mac) in device.identifiers
             )
             assert lock_device is not None
             assert lock_device.via_device_id is None
+            if scoped_lookup:
+                lookup.assert_called_once_with(
+                    (DOMAIN, "00:00:00:00:00:02"), coordinator.config_entry.entry_id
+                )
 
         async def test_no_gateways_in_range_omits_via_device(
             self,
