@@ -135,7 +135,7 @@ class LockGateway(BaseLockEntity, SensorEntity):
     """RSSI of the gateway currently used to reach the lock.
 
     Diagnostic and disabled by default - the same connectivity is already
-    surfaced via device_info.via_device (coordinator.py); this is for
+    surfaced via device_info.via_device_id (coordinator.py); this is for
     troubleshooting placement/coverage, not everyday use.
     """
 
