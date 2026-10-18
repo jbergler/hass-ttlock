@@ -30,6 +30,7 @@ from custom_components.ttlock.coordinator import (
     LockUpdateCoordinator,
     SensorData,
     async_add_when_sensor_present,
+    door_state_known,
 )
 from custom_components.ttlock.models import (
     GatewayLink,
@@ -184,6 +185,34 @@ class TestAsyncAddWhenSensorPresent:
 
         assert calls == [True]
 
+    async def test_a_door_state_alone_is_enough_for_the_door_entity(
+        self, coordinator: LockUpdateCoordinator
+    ):
+        """A lock with a built-in contact reports the door and has no
+        accessory, so the door entity waits for the state, not the accessory.
+        """
+        calls = []
+
+        async_add_when_sensor_present(
+            coordinator, lambda: calls.append(True), ready=door_state_known
+        )
+        coordinator.data.sensor = SensorData(opened=True)
+        coordinator.async_update_listeners()
+
+        assert calls == [True]
+
+    async def test_a_door_state_alone_does_not_add_the_accessory_battery(
+        self, coordinator: LockUpdateCoordinator
+    ):
+        """There is no accessory to report a battery for."""
+        calls = []
+
+        async_add_when_sensor_present(coordinator, lambda: calls.append(True))
+        coordinator.data.sensor = SensorData(opened=True)
+        coordinator.async_update_listeners()
+
+        assert calls == []
+
     async def test_listener_is_removed_after_firing(
         self, coordinator: LockUpdateCoordinator
     ):
@@ -254,6 +283,36 @@ class TestLockUpdateCoordinator:
 
             await coordinator.async_refresh()
             assert coordinator.data.battery_level == 55
+
+        async def test_a_cloud_unknown_does_not_claim_the_door_is_closed(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses
+        ):
+            """queryOpenState omits sensorState when the lock can't read its
+            door; the last known state beats inventing a closed one.
+            """
+            mock_api_responses("sensor_state_unknown")
+            await coordinator.async_refresh()
+            assert coordinator.data.sensor is not None
+            assert coordinator.data.sensor.opened is None
+
+            coordinator.data.sensor.opened = True
+            await coordinator.async_refresh()
+
+            assert coordinator.data.sensor.opened is True
+
+        async def test_a_cloud_door_state_needs_no_accessory(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses
+        ):
+            """A lock with a built-in door contact reports the door in
+            queryOpenState and has no accessory for doorSensor/query to
+            describe, so requiring one threw that door state away.
+            """
+            mock_api_responses("door_without_accessory")
+            await coordinator.async_refresh()
+
+            assert coordinator.data.sensor is not None
+            assert coordinator.data.sensor.present is False
+            assert coordinator.data.sensor.opened is False
 
         async def test_coordinator_handles_missing_sensor(
             self, coordinator: LockUpdateCoordinator, mock_api_responses
@@ -599,14 +658,39 @@ class TestLockUpdateCoordinator:
             assert heard.data.sensor.opened is False
             assert notified.call_count == 1
 
-        async def test_a_lock_without_a_sensor_gets_no_door_state(self, heard, radio):
+        async def test_a_lock_without_a_door_gets_no_door_state(self, heard, radio):
+            """No door byte in the reply, so there is nothing to publish."""
             heard.data.sensor = SensorData()
-            radio(LockStatus(battery=87, locked=True, door_open=False))
+            radio(LockStatus(battery=87, locked=True, door_open=None))
 
             await heard._async_local_refresh(dt_util.utcnow())
 
             assert heard.data.locked is True
             assert heard.data.sensor.opened is None
+
+        async def test_a_door_reported_by_the_lock_needs_no_accessory(
+            self, heard, radio
+        ):
+            """Only a lock with a door to report sends the byte, and a door
+            built into the lock has no accessory for doorSensor/query to find -
+            so the reading is the whole evidence of presence.
+            """
+            heard.data.sensor = SensorData()
+            radio(LockStatus(battery=87, locked=True, door_open=True))
+
+            await heard._async_local_refresh(dt_util.utcnow())
+
+            assert heard.data.sensor.opened is True
+            assert door_state_known(heard.data.sensor)
+
+        async def test_a_lock_that_cannot_have_a_door_is_left_alone(self, heard, radio):
+            """No door-sensor feature bit, so there is no sensor to fill in."""
+            heard.data.sensor = None
+            radio(LockStatus(battery=87, locked=True, door_open=True))
+
+            await heard._async_local_refresh(dt_util.utcnow())
+
+            assert heard.data.sensor is None
 
         async def test_publishing_does_not_reschedule_the_poll(self, heard, radio):
             """`async_set_updated_data` would restart the poll timer; at this
@@ -1381,6 +1465,22 @@ class TestLockUpdateCoordinator:
 
             # the timer from before the lock doesn't fire
             assert coordinator.data.locked is False
+
+        async def test_a_door_without_an_accessory_still_follows_events(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses
+        ):
+            """A door built into the lock has no accessory, but the events it
+            reports are the same ones.
+            """
+            mock_api_responses("sensor_not_installed")
+            await coordinator.async_refresh()
+            assert coordinator.data.sensor is not None
+            coordinator.data.sensor.opened = False
+
+            event = WebhookEvent.model_validate(WEBHOOK_SENSOR_OPEN)
+            coordinator._process_webhook_data(event)
+
+            assert coordinator.data.sensor.opened is True
 
         async def test_ignores_events_for_other_locks(
             self, coordinator: LockUpdateCoordinator, mock_api_responses
