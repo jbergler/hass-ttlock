@@ -289,11 +289,65 @@ class TestGetLocks:
             },
         )
 
+        mocker.get(f"{BASE}lock/detail", json={"lockId": 2, "hasGateway": 0})
+
         locks = await ttlock_api.get_locks()
 
         assert [lock.id for lock in locks] == [1, 2]
         assert locks[0].connectable is True
         assert locks[1].connectable is False
+
+    async def test_detail_overrides_list_for_unreachable_looking_lock(
+        self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker
+    ):
+        # Seen on a WiFi lock (SN476, firmware 6.7.18): lock/list says
+        # hasGateway=0 and the WiFi bit is missing from featureValue, but
+        # lock/detail says hasGateway=1 and the cloud controls the lock fine.
+        mocker.get(
+            f"{BASE}lock/list",
+            json={
+                "list": [
+                    {
+                        "lockId": 3,
+                        "lockAlias": "Front Door",
+                        "lockMac": "00:00:00:00:00:03",
+                        "hasGateway": 0,
+                        "featureValue": "200000800803C2F4475CCF5F7",
+                    }
+                ]
+            },
+        )
+        mocker.get(f"{BASE}lock/detail", json={"lockId": 3, "hasGateway": 1})
+
+        locks = await ttlock_api.get_locks()
+
+        assert locks[0].connectable is True
+
+    async def test_detail_failure_keeps_list_value(
+        self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker
+    ):
+        mocker.get(
+            f"{BASE}lock/list",
+            json={
+                "list": [
+                    {
+                        "lockId": 4,
+                        "lockAlias": "Shed",
+                        "lockMac": "00:00:00:00:00:04",
+                        "hasGateway": 0,
+                        "featureValue": "0",
+                    }
+                ]
+            },
+        )
+        mocker.get(
+            f"{BASE}lock/detail",
+            json={"errcode": -3036, "errmsg": "The lock is offline"},
+        )
+
+        locks = await ttlock_api.get_locks()
+
+        assert locks[0].connectable is False
 
 
 class TestGetSensor:
