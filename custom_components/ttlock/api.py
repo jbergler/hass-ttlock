@@ -244,7 +244,21 @@ class TTLockApi:
     async def get_locks(self) -> list[LockSummary]:
         """Enumerate all locks in the account (connectable and not)."""
         res = await self.get("lock/list", pageNo=1, pageSize=1000)
-        return [LockSummary.model_validate(lock) for lock in res["list"]]
+        locks = [LockSummary.model_validate(lock) for lock in res["list"]]
+        # lock/list can report hasGateway=0 for a WiFi lock whose featureValue
+        # lacks the WiFi bit, while lock/detail for the same lock reports
+        # hasGateway=1. Trust the detail for locks the list calls unreachable.
+        for lock in locks:
+            if lock.connectable:
+                continue
+            try:
+                detail = await self.get("lock/detail", lockId=lock.id)
+            except RequestFailed as err:
+                _LOGGER.debug("lock/detail failed for %s: %s", lock.id, err)
+                continue
+            if int(detail.get("hasGateway") or 0):
+                lock.hasGateway = 1
+        return locks
 
     async def get_gateways(self) -> list[Gateway]:
         """Enumerate all gateways in the account."""
