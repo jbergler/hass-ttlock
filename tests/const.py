@@ -84,6 +84,10 @@ LOCK_STATE_UNLOCKED = {"state": 1, "electricQuantity": 90, "lockTime": 162145920
 # can't read its door right now omits the field - see SensorState.unknown.
 LOCK_STATE_UNLOCKED_DOOR_CLOSED = {**LOCK_STATE_UNLOCKED, "sensorState": 1}
 
+# What queryOpenState returns for a lock it could not reach - a WiFi lock
+# asleep, or a gateway that didn't answer in time.
+LOCK_STATE_UNKNOWN = {"state": 2, "electricQuantity": 90, "lockTime": 1621459200000}
+
 PASSAGE_MODE_6_TO_6_7_DAYS = {
     "autoUnlock": 2,
     "isAllDay": 2,

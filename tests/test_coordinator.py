@@ -47,6 +47,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     BASIC_LOCK_DETAILS,
     LOCK_STATE_LOCKED,
+    LOCK_STATE_UNKNOWN,
     LOCK_STATE_UNLOCKED,
     PASSAGE_MODE_6_TO_6_7_DAYS,
     PASSAGE_MODE_ALL_DAY_WEEKDAYS,
@@ -378,6 +379,69 @@ class TestLockUpdateCoordinator:
 
             await coordinator.async_refresh()
             assert coordinator.data.locked is True
+
+        async def test_a_cloud_unknown_does_not_claim_the_lock_is_unlocked(
+            self,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            """queryOpenState answers `2` for a lock it could not reach.
+
+            A bolt nobody could read is neither locked nor unlocked, and the
+            lock entity says so instead of picking one.
+            """
+            mock_api_responses("locked")
+            await coordinator.async_refresh()
+            assert coordinator.data.locked is True
+
+            async def mock_get_lock_state_unknown(*args, **kwargs):
+                return WireLockState.model_validate(LOCK_STATE_UNKNOWN)
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_lock_state",
+                mock_get_lock_state_unknown,
+            )
+
+            await coordinator.async_refresh()
+            assert coordinator.data.locked is None
+
+        async def test_a_lock_that_only_ever_answers_unknown_stays_unknown(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses
+        ):
+            mock_api_responses("state_unknown")
+            await coordinator.async_refresh()
+
+            assert coordinator.data.locked is None
+
+        async def test_a_lock_that_answered_unknown_still_goes_unavailable(
+            self,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            """An unknown answer is still an answer.
+
+            Not being able to read the lock at all is a different thing from
+            the lock telling us it doesn't know, and keeps the unavailable
+            path that a published `None` can no longer stand in for.
+            """
+            mock_api_responses("state_unknown")
+            await coordinator.async_refresh()
+            assert coordinator.data.locked is None
+            assert coordinator.last_update_success is True
+
+            async def mock_get_lock_state_fails(*args, **kwargs):
+                raise RequestFailed("boom")
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_lock_state",
+                mock_get_lock_state_fails,
+            )
+
+            await coordinator.async_refresh()
+
+            assert coordinator.last_update_success is False
 
         async def test_first_lock_state_fetch_failure_tolerated(
             self,

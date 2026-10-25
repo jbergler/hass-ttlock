@@ -33,12 +33,14 @@ class Lock(BaseLockEntity, LockEntity):
         self._attr_name = self.coordinator.data.name
 
         self._attr_is_locked = self.coordinator.data.locked
-        self._attr_is_locking = (
-            self.coordinator.data.action_pending and not self.coordinator.data.locked
+        # Which way the bolt is moving is only knowable from where it was, so
+        # an action on a lock we couldn't read leaves the state unknown
+        # rather than claiming a direction.
+        pending = (
+            self.coordinator.data.action_pending and self._attr_is_locked is not None
         )
-        self._attr_is_unlocking = (
-            self.coordinator.data.action_pending and self.coordinator.data.locked
-        )
+        self._attr_is_locking = pending and not self._attr_is_locked
+        self._attr_is_unlocking = pending and self._attr_is_locked
 
     async def async_lock(self, **kwargs: Any) -> None:
         """Try to lock the lock."""
