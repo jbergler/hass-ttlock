@@ -265,6 +265,17 @@ class TTLockApi:
         res = await self.get("lock/detail", lockId=lock_id)
         return Lock.model_validate(res)
 
+    async def get_lock_summary(self, lock_id: int) -> LockSummary:
+        """Build a LockSummary straight from lock/detail.
+
+        For a lockId lock/list doesn't return (see CONF_MANUAL_LOCK_IDS) -
+        lock/detail carries every field LockSummary needs (lockId, lockMac,
+        lockAlias, featureValue, hasGateway), so no separate enumeration
+        call is required to bootstrap one manually-configured lock.
+        """
+        res = await self.get("lock/detail", lockId=lock_id)
+        return LockSummary.model_validate(res)
+
     async def get_sensor(self, lock_id: int) -> Sensor | None:
         """Get the Sensor."""
 

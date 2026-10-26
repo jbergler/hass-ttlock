@@ -18,6 +18,7 @@ from homeassistant.helpers.device_registry import DeviceEntry
 from .api import RequestFailed, TTLockApi
 from .capture import LockTrafficCapture
 from .const import (
+    CONF_MANUAL_LOCK_IDS,
     CONF_REGION,
     DEFAULT_REGION,
     DOMAIN,
@@ -27,6 +28,7 @@ from .const import (
     TT_LOCKS,
 )
 from .coordinator import GatewaysUpdateCoordinator, LockUpdateCoordinator
+from .models import LockSummary
 from .services import Services
 from .store import LockStateStore
 from .webhook import WebhookHandler
@@ -82,6 +84,31 @@ def _not_ready_reason(err: ClientError | TimeoutError | RequestFailed) -> str | 
             return None
         return f"TTLock cloud returned HTTP {err.status}"
     return f"Unable to reach the TTLock cloud ({type(err).__name__})"
+
+
+async def _manual_lock_summaries(
+    client: TTLockApi, manual_lock_ids: list[int], known_ids: set[int]
+) -> list[LockSummary]:
+    """Fetch a LockSummary for each manually-configured lockId lock/list missed.
+
+    CONF_MANUAL_LOCK_IDS exists because lock/list hides some accounts' locks
+    entirely - a known TTLock Open API bug - even though lock/detail proves
+    full admin access to the same lockId. Unlike the get_locks() failure
+    above, a bad/stale manual ID here just logs a warning and is skipped:
+    it's user-entered and may go stale, and it must not block every other
+    lock in the entry from loading.
+    """
+    summaries = []
+    for lock_id in manual_lock_ids:
+        if lock_id in known_ids:
+            continue
+        try:
+            summaries.append(await client.get_lock_summary(lock_id))
+        except (ClientError, TimeoutError, RequestFailed) as err:
+            _LOGGER.warning(
+                "Could not add manually-configured lock %s: %s", lock_id, err
+            )
+    return summaries
 
 
 def setup(hass: HomeAssistant, config: ConfigEntry) -> bool:
@@ -147,6 +174,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if (reason := _not_ready_reason(err)) is None:
             raise
         raise ConfigEntryNotReady(reason) from err
+
+    summaries = list(summaries) + await _manual_lock_summaries(
+        client,
+        entry.options.get(CONF_MANUAL_LOCK_IDS, []),
+        {summary.id for summary in summaries},
+    )
 
     locks = [
         LockUpdateCoordinator(hass, entry, client, summary, capture, store)
