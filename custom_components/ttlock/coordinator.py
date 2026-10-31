@@ -735,16 +735,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         """
         if self.last_update_success and self.config_entry is not None:
             registry = dr.async_get(self.hass)
-            info = self.device_info
-            # Resolve the gateway link ourselves and set via_device_id
-            via_device = info.pop("via_device", None)
-            device = registry.async_get_or_create(
-                config_entry_id=self.config_entry.entry_id, **info
+            registry.async_get_or_create(
+                config_entry_id=self.config_entry.entry_id, **self.device_info
             )
-            if via_device is not None:
-                gateway = registry.async_get_device(identifiers={via_device})
-                if gateway is not None:
-                    registry.async_update_device(device.id, via_device_id=gateway.id)
 
     @callback
     def _process_webhook_data(self, event: WebhookEvent):
@@ -835,7 +828,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     def device_info(self) -> DeviceInfo:
         """Device info for the lock.
 
-        via_device links to the best-RSSI gateway currently in range (see
+        via_device_id links to the best-RSSI gateway currently in range (see
         GatewayLink), matching the identifier GatewaySensor registers in
         binary_sensor.py - this is what makes the lock's device page show
         "via device: <gateway>". Re-pushed on every successful poll by
@@ -850,8 +843,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             sw_version=self.data.firmware_version,
             hw_version=self.data.hardware_version,
         )
-        if best_gateway := self.data.best_gateway:
-            info["via_device"] = (DOMAIN, best_gateway.mac)
+        if self.config_entry is not None and (best_gateway := self.data.best_gateway):
+            gateway = dr.async_get(self.hass).async_get_device_by_identifier(
+                (DOMAIN, best_gateway.mac), self.config_entry.entry_id
+            )
+            if gateway is not None:
+                info["via_device_id"] = gateway.id
         return info
 
     @property

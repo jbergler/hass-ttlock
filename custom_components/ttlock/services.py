@@ -3,7 +3,7 @@
 from datetime import time
 import logging
 
-import voluptuous as vol
+import probatio as vol
 
 from homeassistant.const import ATTR_ENTITY_ID, CONF_ENABLED, WEEKDAYS
 from homeassistant.core import (
@@ -99,7 +99,7 @@ class Services:
             DOMAIN,
             SVC_CREATE_PASSCODE,
             self.handle_create_passcode,
-            schema=vol.All(  # ty: ignore[invalid-argument-type] - vol.All is a valid voluptuous validator
+            schema=vol.All(  # ty: ignore[invalid-argument-type] - vol.All is a valid probatio validator
                 vol.Schema(
                     {
                         vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
@@ -117,7 +117,7 @@ class Services:
             DOMAIN,
             SVC_MODIFY_PASSCODE,
             self.handle_modify_passcode,
-            schema=vol.All(  # ty: ignore[invalid-argument-type] - vol.All is a valid voluptuous validator
+            schema=vol.All(  # ty: ignore[invalid-argument-type] - vol.All is a valid probatio validator
                 vol.Schema(
                     {
                         vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
@@ -243,7 +243,7 @@ class Services:
             DOMAIN,
             SVC_ADD_CARD,
             self.handle_add_card,
-            schema=vol.All(  # ty: ignore[invalid-argument-type] - vol.All is a valid voluptuous validator
+            schema=vol.All(  # ty: ignore[invalid-argument-type] - vol.All is a valid probatio validator
                 vol.Schema(
                     {
                         vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
