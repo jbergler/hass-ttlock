@@ -866,8 +866,8 @@ class TestLockUpdateCoordinator:
 
             await coordinator.async_refresh()
 
-            device = registry.async_get_device(
-                identifiers={(DOMAIN, coordinator.data.mac)}
+            device = registry.async_get_device_by_identifier(
+                (DOMAIN, coordinator.data.mac), coordinator.config_entry.entry_id
             )
             assert device is not None
             assert device.name == info["name"]
