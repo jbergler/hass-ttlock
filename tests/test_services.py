@@ -3,8 +3,8 @@
 from datetime import timedelta
 from unittest.mock import call, patch
 
+import probatio as vol
 import pytest
-import voluptuous as vol
 
 from custom_components.ttlock.api import RequestFailed
 from custom_components.ttlock.const import (

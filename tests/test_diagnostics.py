@@ -152,8 +152,8 @@ async def test_device_diagnostics_matches_config_entry_lock_entry(
 
     entry = hass.config_entries.async_entries(DOMAIN)[0]
     device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(
-        identifiers={(DOMAIN, "00:00:00:00:00:02")}
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, "00:00:00:00:00:02"), entry.entry_id
     )
     assert device is not None
 
