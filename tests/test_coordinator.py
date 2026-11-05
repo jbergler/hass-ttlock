@@ -2,7 +2,8 @@
 
 import asyncio
 from datetime import timedelta
-from unittest.mock import AsyncMock, Mock
+from types import MappingProxyType
+from unittest.mock import AsyncMock, Mock, PropertyMock
 
 import dateparser
 import pytest
@@ -834,6 +835,45 @@ class TestLockUpdateCoordinator:
         """gateway/listByLock results feed LockState.gateways/best_gateway,
         and device_info.via_device (see coordinator.py's device_info
         docstring for why this matters)."""
+
+        @pytest.mark.parametrize("with_gateway", [False, True])
+        async def test_refresh_accepts_device_info_without_pop(
+            self,
+            hass,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+            with_gateway,
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+
+            info = dict(coordinator.device_info)
+            assert coordinator.config_entry is not None
+            registry = dr.async_get(hass)
+            gateway = registry.async_get_or_create(
+                config_entry_id=coordinator.config_entry.entry_id,
+                identifiers={(DOMAIN, "00:00:00:00:00:02")},
+                name="Strong",
+            )
+            if with_gateway:
+                info["via_device"] = (DOMAIN, "00:00:00:00:00:02")
+            monkeypatch.setattr(
+                LockUpdateCoordinator,
+                "device_info",
+                PropertyMock(return_value=MappingProxyType(info)),
+            )
+
+            await coordinator.async_refresh()
+
+            device = registry.async_get_device(
+                identifiers={(DOMAIN, coordinator.data.mac)}
+            )
+            assert device is not None
+            assert device.name == info["name"]
+            assert device.model == info["model"]
+            assert device.via_device_id == (gateway.id if with_gateway else None)
+            assert ("via_device" in info) == with_gateway
 
         async def test_best_gateway_by_rssi_and_via_device(
             self,

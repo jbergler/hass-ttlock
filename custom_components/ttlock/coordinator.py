@@ -18,7 +18,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
-from typing import TypeGuard
+from typing import Any, TypeGuard
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
@@ -735,7 +735,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         """
         if self.last_update_success and self.config_entry is not None:
             registry = dr.async_get(self.hass)
-            info = self.device_info
+            info: dict[str, Any] = dict(self.device_info)
             # Resolve the gateway link ourselves and set via_device_id
             via_device = info.pop("via_device", None)
             device = registry.async_get_or_create(
