@@ -763,7 +763,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 self._cancel_auto_lock()
             elif state.locked == State.unlocked:
                 new_data.locked = False
-                self._handle_auto_lock(event.lock_ts, event.server_ts)
+                self._handle_auto_lock(event.lock_ts)
 
             if state.locked is not None:
                 new_data.last_user = event.user
@@ -790,34 +790,89 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self._cancel_auto_lock()
         await super().async_shutdown()
 
-    def _handle_auto_lock(self, lock_ts: datetime, server_ts: datetime):
+    def _handle_auto_lock(self, lock_ts: datetime):
         """Handle auto-locking the lock."""
 
         # a newer unlock restarts the lock's auto-lock countdown
         self._cancel_auto_lock()
 
         auto_lock_delay = self.data.auto_lock_delay(lock_ts)
-        computed_msg_delay = max(0, (server_ts - lock_ts).total_seconds())
 
         if auto_lock_delay is None:
             _LOGGER.debug("Auto-lock is disabled")
 
             return
 
-        async def _auto_locked(seconds: int, offset: float = 0):
-            if seconds > 0 and (seconds - offset) > 0:
-                await asyncio.sleep(seconds - offset)
-
-            new_data = deepcopy(self.data)
-            new_data.locked = True
-            new_data.last_reason = "Auto Lock"
-
-            _LOGGER.debug("Assuming lock auto locked after %s seconds", auto_lock_delay)
-            self.async_set_updated_data(new_data)
+        # The full delay, counted from when the unlock reached us. The lock's
+        # own clock (lockDate) can't shorten it: a lock clock running slow by
+        # more than the delay would otherwise check the bolt before it moved.
+        # Waiting from receipt can only check late, and late is still right.
+        async def _auto_locked(seconds: int):
+            await asyncio.sleep(seconds)
+            await self._async_verify_auto_lock()
 
         self._auto_lock_task = self.hass.async_create_task(
-            _auto_locked(auto_lock_delay, computed_msg_delay), eager_start=False
+            _auto_locked(auto_lock_delay), eager_start=False
         )
+
+    async def _async_verify_auto_lock(self) -> None:
+        """Read the bolt once auto-lock should have run, and publish what it says.
+
+        The countdown running out says the lock *should* have locked, not that
+        it did: the door may be held open or the bolt may have jammed. So ask
+        the lock - over the radio when it's in range, else the cloud - instead
+        of assuming. Like _async_local_refresh, a failed or unanswered read
+        publishes nothing and leaves availability to the poll, and a lock
+        nothing can reach isn't asked at all.
+        """
+        if not self.connectable:
+            return
+
+        status = await self.async_read_state_ble()
+        if status is not None and status.locked is not None:
+            locked = status.locked
+            battery = status.battery
+            door_open = status.door_open
+        else:
+            try:
+                state = await self.api.get_lock_state(self.lock_id)
+            except Exception:  # noqa: BLE001 - the poll is the one to act on failures
+                _LOGGER.debug(
+                    "Could not check lock %s after its auto-lock delay",
+                    self.lock_id,
+                    exc_info=True,
+                )
+                return
+            if state.locked not in (State.locked, State.unlocked):
+                return
+            locked = state.locked == State.locked
+            battery = state.battery_level
+            door_open = (
+                state.opened == SensorState.opened
+                if state.opened in (SensorState.opened, SensorState.closed)
+                else None
+            )
+
+        self._async_note_verified()
+        _LOGGER.debug(
+            "Lock %s reads %s after its auto-lock delay",
+            self.lock_id,
+            "locked" if locked else "unlocked",
+        )
+
+        new_data = deepcopy(self.data)
+        if locked and not new_data.locked:
+            new_data.last_reason = "Auto Lock"
+        new_data.locked = locked
+        if battery is not None:
+            new_data.battery_level = battery
+        if new_data.sensor is not None and door_open is not None:
+            new_data.sensor.opened = door_open
+
+        if new_data == self.data:
+            return
+        self.data = new_data
+        self.async_update_listeners()
 
     @property
     def unique_id(self) -> str:
