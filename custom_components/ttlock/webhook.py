@@ -345,10 +345,24 @@ class WebhookHandler:
                     self._capture, logger, lock_id, "Got webhook data: %s", data
                 )
                 for raw_records in data.getall("records", []):
-                    for record in json.loads(raw_records):  # ty: ignore[invalid-argument-type] - always a JSON string, never a file upload
-                        async_dispatcher_send(
-                            hass, SIGNAL_NEW_DATA, WebhookEvent.model_validate(record)
-                        )
+                    try:
+                        records = json.loads(raw_records)  # ty: ignore[invalid-argument-type] - always a JSON string, never a file upload
+                    except ValueError:
+                        logger.exception("Exception parsing webhook data")
+                        continue
+                    for record in records:
+                        try:
+                            event = WebhookEvent.model_validate(record)
+                        except ValueError:
+                            # TTLock keeps adding record types and Event only
+                            # describes the ones it knows, so an unknown one
+                            # has to cost its own record and nothing else: a
+                            # gateway sends its whole backlog as one array,
+                            # and the lock/door events behind the unknown
+                            # record are the state this integration runs on.
+                            logger.warning("Ignoring unparsed record: %s", record)
+                            continue
+                        async_dispatcher_send(hass, SIGNAL_NEW_DATA, event)
                         success = True
             else:
                 _LOGGER.debug("handle_webhook, empty payload: %s", await request.text())
