@@ -49,6 +49,14 @@ DEFAULT_SLOW_POLL_INTERVAL_HOURS = 6
 CONF_BLUETOOTH_ENABLED = "bluetooth_enabled"
 DEFAULT_BLUETOOTH_ENABLED = True
 
+# lockIds to add even if lock/list doesn't return them - a known TTLock Open
+# API bug hides some accounts' locks from that enumeration call entirely,
+# even though lock/detail proves full admin access to the same lockId (see
+# issue reports referencing this). Additive fallback alongside lock/list,
+# tunable via the same options flow; __init__.py merges these in by calling
+# TTLockApi.get_lock_summary() for any ID lock/list didn't already return.
+CONF_MANUAL_LOCK_IDS = "manual_lock_ids"
+
 SIGNAL_NEW_DATA = f"{DOMAIN}.data_received"
 
 DEVICE_LOGGER_PREFIX = f"{__package__}.device."

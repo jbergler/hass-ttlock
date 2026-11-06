@@ -8,6 +8,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.ttlock.api import TTLockAuthImplementation
 from custom_components.ttlock.const import (
     CONF_BLUETOOTH_ENABLED,
+    CONF_MANUAL_LOCK_IDS,
     CONF_POLL_INTERVAL,
     CONF_REGION,
     CONF_SLOW_POLL_INTERVAL,
@@ -124,3 +125,63 @@ async def test_options_flow_can_disable_bluetooth(hass: HomeAssistant):
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options[CONF_BLUETOOTH_ENABLED] is False
+
+
+async def test_options_flow_saves_manual_lock_ids(hass: HomeAssistant):
+    """Manually-added lockIds (the lock/list discovery-bug fallback) are
+    parsed from the comma-separated text field into a list of ints."""
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_POLL_INTERVAL: 30,
+            CONF_SLOW_POLL_INTERVAL: 6,
+            CONF_BLUETOOTH_ENABLED: True,
+            CONF_MANUAL_LOCK_IDS: "99999999, 20",
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_MANUAL_LOCK_IDS] == [99999999, 20]
+
+
+async def test_options_flow_manual_lock_ids_defaults_to_empty(hass: HomeAssistant):
+    """Leaving the field blank stores no manual lock IDs."""
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_POLL_INTERVAL: 30,
+            CONF_SLOW_POLL_INTERVAL: 6,
+            CONF_BLUETOOTH_ENABLED: True,
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_MANUAL_LOCK_IDS] == []
+
+
+async def test_options_flow_rejects_non_numeric_manual_lock_ids(hass: HomeAssistant):
+    """A typo in the lockId list re-shows the form instead of saving garbage."""
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_POLL_INTERVAL: 30,
+            CONF_SLOW_POLL_INTERVAL: 6,
+            CONF_BLUETOOTH_ENABLED: True,
+            CONF_MANUAL_LOCK_IDS: "99999999, oops",
+        },
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_MANUAL_LOCK_IDS: "invalid_lock_id"}

@@ -21,10 +21,13 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
 )
 
 from .const import (
     CONF_BLUETOOTH_ENABLED,
+    CONF_MANUAL_LOCK_IDS,
     CONF_POLL_INTERVAL,
     CONF_REGION,
     CONF_SLOW_POLL_INTERVAL,
@@ -35,6 +38,28 @@ from .const import (
     DOMAIN,
     REGIONS,
 )
+
+
+def _parse_manual_lock_ids(raw: str) -> list[int]:
+    """Parse the options form's comma-separated lockId list.
+
+    Only syntax is validated here - whether a lockId is real, reachable, or
+    already discovered is for __init__.py's lock/detail call to find out.
+    """
+    ids = []
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if not chunk.isdigit():
+            raise ValueError(f"Invalid lock ID: {chunk}")
+        ids.append(int(chunk))
+    return ids
+
+
+def _format_manual_lock_ids(lock_ids: list[int]) -> str:
+    """Render stored manual lockIds back into the form's text field."""
+    return ", ".join(str(lock_id) for lock_id in lock_ids)
 
 
 class TTLockAuthFlowHandler(
@@ -106,23 +131,35 @@ class TTLockAuthFlowHandler(
 class TTLockOptionsFlow(OptionsFlow):
     """Let users tune how the integration reaches their locks.
 
-    Three knobs, all global to the account entry: the fast poll interval
-    that re-verifies lock state, the slow interval that governs how often
-    detail/passage/gateway data is re-fetched (see coordinator.py), and
-    whether locks may be read over Bluetooth at all. Defaults are gentle
-    because webhooks carry real-time changes; users whose webhooks are
-    unreliable can dial the fast interval back down. Changing any of them
-    reloads the entry so new coordinators pick the values up.
+    Global to the account entry: the fast poll interval that re-verifies
+    lock state, the slow interval that governs how often detail/passage/
+    gateway data is re-fetched (see coordinator.py), whether locks may be
+    read over Bluetooth at all, and a list of lockIds to add manually
+    (CONF_MANUAL_LOCK_IDS) even if lock/list doesn't return them. Defaults
+    are gentle because webhooks carry real-time changes; users whose
+    webhooks are unreliable can dial the fast interval back down. Changing
+    any of them reloads the entry so new coordinators pick the values up.
     """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the polling and Bluetooth options."""
-        if user_input is not None:
-            return self.async_create_entry(data=user_input)
-
+        """Manage the polling, Bluetooth, and manual-lock options."""
+        errors: dict[str, str] = {}
         options = self.config_entry.options
+
+        if user_input is not None:
+            try:
+                manual_lock_ids = _parse_manual_lock_ids(
+                    user_input[CONF_MANUAL_LOCK_IDS]
+                )
+            except ValueError:
+                errors[CONF_MANUAL_LOCK_IDS] = "invalid_lock_id"
+            else:
+                return self.async_create_entry(
+                    data={**user_input, CONF_MANUAL_LOCK_IDS: manual_lock_ids}
+                )
+
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -169,6 +206,13 @@ class TTLockOptionsFlow(OptionsFlow):
                             CONF_BLUETOOTH_ENABLED, DEFAULT_BLUETOOTH_ENABLED
                         ),
                     ): BooleanSelector(),
+                    vol.Optional(
+                        CONF_MANUAL_LOCK_IDS,
+                        default=_format_manual_lock_ids(
+                            options.get(CONF_MANUAL_LOCK_IDS, [])
+                        ),
+                    ): TextSelector(TextSelectorConfig()),
                 }
             ),
+            errors=errors,
         )

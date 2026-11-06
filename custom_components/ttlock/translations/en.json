@@ -38,14 +38,19 @@
         "data": {
           "poll_interval": "Poll interval",
           "slow_poll_interval": "Detail refresh interval",
-          "bluetooth_enabled": "Read locks over Bluetooth"
+          "bluetooth_enabled": "Read locks over Bluetooth",
+          "manual_lock_ids": "Manually add lock IDs"
         },
         "data_description": {
           "poll_interval": "How often to re-check whether each lock is locked or unlocked, in minutes.",
           "slow_poll_interval": "How often to refresh slow-changing detail (battery, name, autolock and passage-mode config, gateway signal), in hours.",
-          "bluetooth_enabled": "Read lock state directly from a lock in range of Home Assistant, instead of asking the TTLock cloud. Turn this off to use the cloud only."
+          "bluetooth_enabled": "Read lock state directly from a lock in range of Home Assistant, instead of asking the TTLock cloud. Turn this off to use the cloud only.",
+          "manual_lock_ids": "Comma-separated lock IDs to add even if TTLock's lock list doesn't return them (a known TTLock API bug for some accounts). Find a lock's ID in the TTLock app or via lock/detail. Locks already discovered normally are skipped automatically."
         }
       }
+    },
+    "error": {
+      "invalid_lock_id": "Enter whole numbers separated by commas, e.g. 12345, 67890"
     }
   },
   "selector": {

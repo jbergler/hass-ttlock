@@ -577,6 +577,20 @@ class TestGetLockAndGateways:
         assert lock.id == BASIC_LOCK_DETAILS["lockId"]
         assert lock.name == BASIC_LOCK_DETAILS["lockAlias"]
 
+    async def test_get_lock_summary(
+        self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker
+    ):
+        """lock/detail carries every field LockSummary needs, so a manually
+        configured lock (CONF_MANUAL_LOCK_IDS) can be summarised without
+        lock/list ever seeing it."""
+        mocker.get(f"{BASE}lock/detail", json=BASIC_LOCK_DETAILS)
+
+        summary = await ttlock_api.get_lock_summary(BASIC_LOCK_DETAILS["lockId"])  # ty: ignore[invalid-argument-type] - dict value type widened by other fields, this key is always an int
+
+        assert summary.id == BASIC_LOCK_DETAILS["lockId"]
+        assert summary.name == BASIC_LOCK_DETAILS["lockAlias"]
+        assert summary.connectable is True
+
     async def test_get_gateways(
         self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker
     ):

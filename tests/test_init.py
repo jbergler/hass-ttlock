@@ -17,6 +17,7 @@ from custom_components.ttlock.api import RequestFailed
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
     CONF_BLUETOOTH_ENABLED,
+    CONF_MANUAL_LOCK_IDS,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
     CONF_WEBHOOK_STATUS,
@@ -291,6 +292,99 @@ async def test_setup_with_a_gatewayless_lock_in_bluetooth_range(
     entity = next(iter(coordinator.entities))
     assert entity.available is True
     assert "have no gateway or WiFi" not in caplog.text
+
+
+async def test_manual_lock_id_is_added_when_not_discovered(
+    hass, mock_api_responses, new_mocked_entry, multi_account_credential, monkeypatch
+):
+    """A lockId lock/list can't see (the TTLock discovery bug) is added from
+    CONF_MANUAL_LOCK_IDS via lock/detail instead."""
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+
+    manual_summary = LockSummary(
+        lockId=99999999,
+        lockAlias="Manual Lock",
+        lockMac="00:00:00:00:00:03",
+        hasGateway=0,
+    )
+
+    async def mock_get_lock_summary(self, lock_id):
+        assert lock_id == 99999999
+        return manual_summary
+
+    monkeypatch.setattr(
+        "custom_components.ttlock.api.TTLockApi.get_lock_summary",
+        mock_get_lock_summary,
+    )
+
+    entry = new_mocked_entry(options={CONF_MANUAL_LOCK_IDS: [99999999]})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    coordinators = {
+        coordinator.lock_id: coordinator
+        for coordinator in hass.data[DOMAIN][entry.entry_id][TT_LOCKS]
+    }
+    assert set(coordinators) == {7252408, 99999999}
+    assert coordinators[99999999].connectable is False
+
+
+async def test_manual_lock_id_already_discovered_is_not_duplicated(
+    hass, mock_api_responses, new_mocked_entry, multi_account_credential, monkeypatch
+):
+    """A manually-configured lockId that lock/list did find isn't re-fetched
+    or added twice - the fallback is additive only."""
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+
+    async def mock_get_lock_summary(self, lock_id):
+        raise AssertionError("should not be called for an already-discovered lock")
+
+    monkeypatch.setattr(
+        "custom_components.ttlock.api.TTLockApi.get_lock_summary",
+        mock_get_lock_summary,
+    )
+
+    entry = new_mocked_entry(options={CONF_MANUAL_LOCK_IDS: [7252408]})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    coordinators = hass.data[DOMAIN][entry.entry_id][TT_LOCKS]
+    assert [coordinator.lock_id for coordinator in coordinators] == [7252408]
+
+
+async def test_manual_lock_id_fetch_failure_does_not_block_setup(
+    hass,
+    mock_api_responses,
+    new_mocked_entry,
+    multi_account_credential,
+    monkeypatch,
+    caplog,
+):
+    """A stale/bad manual lockId is skipped with a warning, not a setup failure -
+    unlike the initial get_locks() call, which still raises ConfigEntryNotReady."""
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+
+    async def mock_get_lock_summary(self, lock_id):
+        raise RequestFailed("lock not found", errcode=10003)
+
+    monkeypatch.setattr(
+        "custom_components.ttlock.api.TTLockApi.get_lock_summary",
+        mock_get_lock_summary,
+    )
+
+    entry = new_mocked_entry(options={CONF_MANUAL_LOCK_IDS: [999]})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    coordinators = hass.data[DOMAIN][entry.entry_id][TT_LOCKS]
+    assert [coordinator.lock_id for coordinator in coordinators] == [7252408]
+    assert "999" in caplog.text
 
 
 async def test_webhook_registered_and_unregistered_once_across_shared_entries(
