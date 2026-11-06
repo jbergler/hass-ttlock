@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiohttp import ClientResponseError
 import pytest
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.ttlock.api import (
     RequestFailed,
@@ -165,7 +165,7 @@ class TestPerLockLogging:
     async def test_debug_on_one_lock_logger_does_not_capture_another_locks_records(
         self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker, caplog
     ):
-        # pytest_homeassistant_custom_component forces the root logger to
+        # pytest_homeassistant forces the root logger to
         # DEBUG for every test, so lock 2's logger needs an explicit level
         # above DEBUG here to simulate its normal, un-enabled default -
         # otherwise every logger would already capture everything and this

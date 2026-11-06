@@ -6,11 +6,11 @@ from unittest.mock import MagicMock, patch
 
 from aiohttp import ClientConnectorError, ClientResponseError, ConnectionTimeoutError
 import pytest
-from pytest_homeassistant_custom_component.common import (
+from pytest_homeassistant.common import (
     MockConfigEntry,
     async_fire_time_changed,
 )
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.ttlock import async_remove_config_entry_device
 from custom_components.ttlock.api import RequestFailed

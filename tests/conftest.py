@@ -20,7 +20,7 @@ from bluetooth_data_tools import monotonic_time_coarse
 from habluetooth import BluetoothScanningMode
 from home_assistant_bluetooth import BluetoothServiceInfoBleak
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.ttlock.api import TTLockApi
 from custom_components.ttlock.ble_protocol import FrameAssembler
@@ -58,8 +58,6 @@ from .const import (
     SENSOR_DETAILS,
     TTLOCK_SERVICE_UUID,
 )
-
-pytest_plugins = "pytest_homeassistant_custom_component"
 
 
 # This fixture enables loading custom integrations in all tests.
