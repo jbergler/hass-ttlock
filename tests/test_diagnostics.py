@@ -4,8 +4,8 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.ttlock.api import TTLockApi
 from custom_components.ttlock.capture import LockTrafficCapture
@@ -241,7 +241,7 @@ async def test_debug_capture_appears_redacted_in_diagnostics(
     opt-in required - and redacted independently of HA's live logs.
     """
     device_logger_name = DEBUG_CAPTURE_DEVICE_LOGGER_NAME
-    # pytest_homeassistant_custom_component forces the root logger to DEBUG
+    # pytest_homeassistant forces the root logger to DEBUG
     # for every test (see the equivalent note in test_api.py), so this lock's
     # logger needs an explicit level above DEBUG to simulate its normal,
     # un-enabled default - proving capture doesn't depend on it.

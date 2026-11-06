@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, PropertyMock
 
 import dateparser
 import pytest
-from pytest_homeassistant_custom_component.common import (
+from pytest_homeassistant.common import (
     MockConfigEntry,
     async_fire_time_changed,
 )
