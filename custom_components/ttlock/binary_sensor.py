@@ -61,10 +61,11 @@ class Sensor(BaseLockEntity, BinarySensorEntity):
     def _update_from_coordinator(self) -> None:
         """Fetch state of device."""
         self._attr_name = f"{self.coordinator.data.name} Sensor"
+        # A door nobody has read yet is unknown, not closed.
         self._attr_is_on = (
-            bool(self.coordinator.data.sensor.opened)
+            self.coordinator.data.sensor.opened
             if self.coordinator.data.sensor
-            else False
+            else None
         )
 
 
