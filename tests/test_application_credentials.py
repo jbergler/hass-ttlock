@@ -1,6 +1,6 @@
 """Test region-aware OAuth implementation wiring."""
 
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.ttlock.application_credentials import (
     async_get_auth_implementation,

@@ -8,7 +8,7 @@ from unittest.mock import ANY, AsyncMock, patch
 from aiohttp.web import Request
 from multidict import MultiDict
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
