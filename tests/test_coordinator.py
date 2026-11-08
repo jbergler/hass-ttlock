@@ -1411,12 +1411,20 @@ class TestLockUpdateCoordinator:
             assert coordinator.data.last_reason == "unlock by IC card"
 
         async def test_auto_lock_works(
-            self, hass, coordinator: LockUpdateCoordinator, mock_api_responses
+            self,
+            hass,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
         ):
             mock_api_responses("default")
             await coordinator.async_refresh()
             coordinator.data.locked = True
             coordinator.data.auto_lock_seconds = 1
+            get_lock_state = AsyncMock(
+                return_value=WireLockState.model_validate(LOCK_STATE_LOCKED)
+            )
+            monkeypatch.setattr(coordinator.api, "get_lock_state", get_lock_state)
             coordinator.data.passage_mode_config = PassageModeConfig.model_validate(
                 PASSAGE_MODE_6_TO_6_7_DAYS
             )
@@ -1433,9 +1441,145 @@ class TestLockUpdateCoordinator:
 
             await asyncio.sleep(2)
 
+            # the lock was asked, and said locked
+            get_lock_state.assert_awaited_once()
             assert coordinator.data.locked is True
             assert coordinator.data.last_user == "test"
             assert coordinator.data.last_reason == "Auto Lock"
+
+        async def test_auto_lock_asks_the_lock_instead_of_assuming(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.locked = True
+            coordinator.data.auto_lock_seconds = 1
+            coordinator.data.passage_mode_config = None
+            # the door is held open, or the bolt jammed: it never re-locked
+            get_lock_state = AsyncMock(
+                return_value=WireLockState.model_validate(LOCK_STATE_UNLOCKED)
+            )
+            monkeypatch.setattr(coordinator.api, "get_lock_state", get_lock_state)
+
+            coordinator._process_webhook_data(
+                WebhookEvent.model_validate(WEBHOOK_UNLOCK_10AM_UTC)
+            )
+            await asyncio.sleep(1.5)
+
+            get_lock_state.assert_awaited_once()
+            assert coordinator.data.locked is False
+            assert coordinator.data.last_reason == "unlock by IC card"
+
+        async def test_auto_lock_failed_read_keeps_last_known_state(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.locked = True
+            coordinator.data.auto_lock_seconds = 1
+            coordinator.data.passage_mode_config = None
+            get_lock_state = AsyncMock(side_effect=RequestFailed("cloud is down"))
+            monkeypatch.setattr(coordinator.api, "get_lock_state", get_lock_state)
+
+            coordinator._process_webhook_data(
+                WebhookEvent.model_validate(WEBHOOK_UNLOCK_10AM_UTC)
+            )
+            await asyncio.sleep(1.5)
+
+            get_lock_state.assert_awaited_once()
+            assert coordinator.data.locked is False
+            # one missed check doesn't make the lock unavailable
+            assert coordinator.last_update_success is True
+
+        async def test_auto_lock_unanswered_read_keeps_last_known_state(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.locked = True
+            coordinator.data.auto_lock_seconds = 1
+            coordinator.data.passage_mode_config = None
+            get_lock_state = AsyncMock(
+                return_value=WireLockState.model_validate(LOCK_STATE_UNKNOWN)
+            )
+            monkeypatch.setattr(coordinator.api, "get_lock_state", get_lock_state)
+
+            coordinator._process_webhook_data(
+                WebhookEvent.model_validate(WEBHOOK_UNLOCK_10AM_UTC)
+            )
+            await asyncio.sleep(1.5)
+
+            get_lock_state.assert_awaited_once()
+            assert coordinator.data.locked is False
+
+        async def test_auto_lock_ignores_a_slow_lock_clock(
+            self,
+            hass,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            coordinator.data.locked = True
+            coordinator.data.auto_lock_seconds = 1
+            coordinator.data.passage_mode_config = None
+            get_lock_state = AsyncMock(
+                return_value=WireLockState.model_validate(LOCK_STATE_LOCKED)
+            )
+            monkeypatch.setattr(coordinator.api, "get_lock_state", get_lock_state)
+
+            # the lock's clock is a minute behind the server's
+            event = WebhookEvent.model_validate(
+                {
+                    **WEBHOOK_UNLOCK_10AM_UTC,
+                    "lockDate": 1682244437000,
+                }
+            )
+            coordinator._process_webhook_data(event)
+            await asyncio.sleep(0.5)
+
+            # the countdown still runs its full length
+            get_lock_state.assert_not_awaited()
+            assert coordinator.data.locked is False
+
+            await asyncio.sleep(1)
+            get_lock_state.assert_awaited_once()
+            assert coordinator.data.locked is True
+
+        async def test_auto_lock_does_not_ask_an_unreachable_lock(self, hass, api):
+            config_entry = MockConfigEntry(domain=DOMAIN)
+            config_entry.add_to_hass(hass)
+            summary = LockSummary(
+                lockId=1,
+                lockAlias="No Gateway",
+                lockMac="00:00:00:00:00:01",
+                hasGateway=0,
+            )
+            coordinator = LockUpdateCoordinator(
+                hass,
+                config_entry,
+                api,
+                summary,
+                LockTrafficCapture(),
+                LockStateStore(hass),
+            )
+            assert coordinator.connectable is False
+            coordinator.data.locked = True
+            coordinator.data.auto_lock_seconds = 1
+            get_lock_state = AsyncMock(
+                return_value=WireLockState.model_validate(LOCK_STATE_LOCKED)
+            )
+            api.get_lock_state = get_lock_state
+
+            coordinator._process_webhook_data(
+                WebhookEvent.model_validate({**WEBHOOK_UNLOCK_10AM_UTC, "lockId": 1})
+            )
+            await asyncio.sleep(1.5)
+
+            get_lock_state.assert_not_awaited()
+            assert coordinator.data.locked is False
+            assert coordinator.last_update_success is True
 
         async def test_open_works(
             self, coordinator: LockUpdateCoordinator, mock_api_responses
@@ -1539,13 +1683,18 @@ class TestLockUpdateCoordinator:
             assert coordinator.last_update_success is True
 
         async def test_second_unlock_restarts_auto_lock_timer(
-            self, coordinator: LockUpdateCoordinator, mock_api_responses
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
         ):
             mock_api_responses("default")
             await coordinator.async_refresh()
             coordinator.data.locked = True
             coordinator.data.auto_lock_seconds = 2
             coordinator.data.passage_mode_config = None
+            monkeypatch.setattr(
+                coordinator.api,
+                "get_lock_state",
+                AsyncMock(return_value=WireLockState.model_validate(LOCK_STATE_LOCKED)),
+            )
 
             event = WebhookEvent.model_validate(WEBHOOK_UNLOCK_10AM_UTC)
 

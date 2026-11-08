@@ -100,6 +100,33 @@ class TestHandleWebhook:
 
         assert len(received) == 2
 
+    async def test_unknown_record_type_does_not_drop_the_rest(
+        self, hass: HomeAssistant, handler: WebhookHandler
+    ):
+        """One record TTLock's EVENTS table has no entry for costs the batch.
+
+        A gateway sends its backlog as a single records array, and RecordType
+        names 20 types EVENTS does not describe - 64 DOOR_NOT_CLOSED_ALARM
+        among them - so Event.validate raises ValueError for each of them.
+        With one try around the whole loop, every record behind the unknown
+        one was discarded, so a door event or an unlock arriving in the same
+        POST was lost and the lock stayed stale until the next poll.
+        """
+        received = []
+        async_dispatcher_connect(hass, SIGNAL_NEW_DATA, received.append)
+
+        door_not_closed = {**WEBHOOK_LOCK_10AM_UTC, "recordType": 64}
+        request = _request(
+            MultiDict(
+                {"records": json.dumps([door_not_closed, WEBHOOK_UNLOCK_10AM_UTC])}
+            )
+        )
+        await handler.handle_webhook(hass, "wh-id", request)
+        await hass.async_block_till_done()
+
+        assert len(received) == 1
+        assert received[0].event.description == "unlock by IC card"
+
     async def test_ignores_malformed_json(
         self, hass: HomeAssistant, handler: WebhookHandler
     ):
