@@ -354,13 +354,8 @@ class WebhookHandler:
                         try:
                             event = WebhookEvent.model_validate(record)
                         except ValueError:
-                            # TTLock keeps adding record types and Event only
-                            # describes the ones it knows, so an unknown one
-                            # has to cost its own record and nothing else: a
-                            # gateway sends its whole backlog as one array,
-                            # and the lock/door events behind the unknown
-                            # record are the state this integration runs on.
-                            logger.warning("Ignoring unparsed record: %s", record)
+                            # We don't know all event types.
+                            logger.warning("Ignoring unknown event type: %s", record)
                             continue
                         async_dispatcher_send(hass, SIGNAL_NEW_DATA, event)
                         success = True
