@@ -803,10 +803,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
             return
 
-        # The full delay, counted from when the unlock reached us. The lock's
-        # own clock (lockDate) can't shorten it: a lock clock running slow by
-        # more than the delay would otherwise check the bolt before it moved.
-        # Waiting from receipt can only check late, and late is still right.
+        # Prefer our clock over the locks. Be late rather than early in checking
         async def _auto_locked(seconds: int):
             await asyncio.sleep(seconds)
             await self._async_verify_auto_lock()
@@ -818,12 +815,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     async def _async_verify_auto_lock(self) -> None:
         """Read the bolt once auto-lock should have run, and publish what it says.
 
-        The countdown running out says the lock *should* have locked, not that
-        it did: the door may be held open or the bolt may have jammed. So ask
-        the lock - over the radio when it's in range, else the cloud - instead
-        of assuming. Like _async_local_refresh, a failed or unanswered read
-        publishes nothing and leaves availability to the poll, and a lock
-        nothing can reach isn't asked at all.
+        The door may be held open or the bolt may have jammed.
         """
         if not self.connectable:
             return
