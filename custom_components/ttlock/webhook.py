@@ -345,10 +345,19 @@ class WebhookHandler:
                     self._capture, logger, lock_id, "Got webhook data: %s", data
                 )
                 for raw_records in data.getall("records", []):
-                    for record in json.loads(raw_records):  # ty: ignore[invalid-argument-type] - always a JSON string, never a file upload
-                        async_dispatcher_send(
-                            hass, SIGNAL_NEW_DATA, WebhookEvent.model_validate(record)
-                        )
+                    try:
+                        records = json.loads(raw_records)  # ty: ignore[invalid-argument-type] - always a JSON string, never a file upload
+                    except ValueError:
+                        logger.exception("Exception parsing webhook data")
+                        continue
+                    for record in records:
+                        try:
+                            event = WebhookEvent.model_validate(record)
+                        except ValueError:
+                            # We don't know all event types.
+                            logger.warning("Ignoring unknown event type: %s", record)
+                            continue
+                        async_dispatcher_send(hass, SIGNAL_NEW_DATA, event)
                         success = True
             else:
                 _LOGGER.debug("handle_webhook, empty payload: %s", await request.text())
