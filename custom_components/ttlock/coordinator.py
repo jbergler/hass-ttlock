@@ -431,6 +431,28 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         """Whether anything - cloud or radio - can reach the lock."""
         return self.cloud_connectable or self.ble_reachable
 
+    @property
+    def gateway_online(self) -> bool:
+        """Whether at least one linked gateway for this lock is online."""
+        if not self.cloud_connectable or not self.has_gateway:
+            return False
+        if (
+            self.config_entry is not None
+            and DOMAIN in self.hass.data
+            and self.config_entry.entry_id in self.hass.data[DOMAIN]
+            and TT_GATEWAYS in self.hass.data[DOMAIN][self.config_entry.entry_id]
+        ):
+            gw_coord = self.hass.data[DOMAIN][self.config_entry.entry_id][TT_GATEWAYS]
+            if not gw_coord.last_update_success or not gw_coord.data:
+                return False
+            if self.data.gateways:
+                return any(
+                    (gw := gw_coord.data.get(link.id)) is not None and gw.is_online
+                    for link in self.data.gateways
+                )
+            return any(gw.is_online for gw in gw_coord.data.values())
+        return False
+
     @callback
     def _async_ble_updated(self, ble: BleData) -> None:
         """Record new presence and let entities re-read it.
@@ -475,7 +497,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         grace lasts - past it the lock is unavailable either way, and dialling
         it every minute just spends its battery.
         """
-        if not self.ble_reachable:
+        if not (self.ble_reachable or self.gateway_online):
             return False
         self._reverify_failures += 1
         if self._reverify_failures > REVERIFY_GRACE:
@@ -766,6 +788,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 self._handle_auto_lock(event.lock_ts)
 
             if state.locked is not None:
+                self._async_note_verified()
                 new_data.last_user = event.user
                 new_data.last_reason = event.event.description
 

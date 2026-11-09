@@ -21,6 +21,7 @@ from custom_components.ttlock.const import (
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
     DOMAIN,
+    TT_GATEWAYS,
 )
 from custom_components.ttlock.coordinator import (
     LOCAL_REFRESH_INTERVAL,
@@ -34,6 +35,7 @@ from custom_components.ttlock.coordinator import (
     door_state_known,
 )
 from custom_components.ttlock.models import (
+    Gateway,
     GatewayLink,
     LockState as WireLockState,
     LockSummary,
@@ -629,6 +631,55 @@ class TestLockUpdateCoordinator:
             await verified.async_refresh()
 
             assert verified.last_update_success is False
+
+        async def test_an_online_gateway_grants_grace_without_ble(
+            self, hass, verified, cloud_state, api
+        ):
+            gw_coord = GatewaysUpdateCoordinator(hass, verified.config_entry, api)
+            gw_coord.last_update_success = True
+            gw_coord.data = {
+                1: Gateway(
+                    gatewayId=1,
+                    gatewayMac="00:00:00:00:00:01",
+                    gatewayName="Front Gateway",
+                    isOnline=True,
+                )
+            }
+            hass.data.setdefault(DOMAIN, {})[verified.config_entry.entry_id] = {
+                TT_GATEWAYS: gw_coord
+            }
+
+            # Fallback when data.gateways is empty uses any online gateway in gw_coord
+            assert verified.gateway_online is True
+
+            # Explicit link in data.gateways checks the linked gateway's online status
+            verified.data.gateways = [
+                GatewayLink(
+                    gatewayId=1,
+                    gatewayName="Front Gateway",
+                    gatewayMac="00:00:00:00:00:01",
+                    rssi=-68,
+                )
+            ]
+            assert verified.gateway_online is True
+
+            cloud_state(fails=True)
+            await verified.async_refresh()
+            assert verified.last_update_success is True
+            assert verified.update_interval == RETRY_INTERVAL
+
+            # Webhook state update resets reverify failures and restores poll interval
+            verified._process_webhook_data(
+                WebhookEvent.model_validate(WEBHOOK_LOCK_10AM_UTC)
+            )
+            assert verified._reverify_failures == 0
+            assert verified.update_interval == verified._poll_interval
+
+            # Unsuccessful gw_coord or non-gateway lock returns gateway_online False
+            gw_coord.last_update_success = False
+            assert verified.gateway_online is False
+            verified.has_gateway = False
+            assert verified.gateway_online is False
 
     class TestLocalRefresh:
         """Between polls, a lock only the radio can reach is asked again.
