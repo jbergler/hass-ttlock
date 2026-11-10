@@ -85,6 +85,29 @@ class TestCrc8Maxim:
     def test_it_stays_within_a_byte(self):
         assert all(0 <= crc8_maxim(bytes([n])) <= 0xFF for n in range(256))
 
+    def test_ttlock_altered_table_entry(self):
+        """TTLock's table has 0x07 at index 33 where standard MAXIM has 0x7D.
+
+        Feeding 33 as the only byte indexes that entry directly.
+        """
+        assert crc8_maxim(bytes([33])) == 0x07
+
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            # Status replies captured from three real locks (SN373/SN396,
+            # firmware 6.4.37-6.4.45) through ESPHome Bluetooth proxies.
+            # Standard CRC-8/MAXIM gives 0x20, 0x36 and 0xFA for these and
+            # rejected every read; the lock's own byte is the trailer's first.
+            "7f5a050302000a0022540010cfa2e1ded8529e9121d507bf908b80ef390d0a",
+            "7f5a050302000a0054540010183ab656488548cee0a61c5086ea7f31920d0a",
+            "7f5a050302000a005454001046723479a50206da6adc3944f374213b5e0d0a",
+        ],
+    )
+    def test_matches_real_lock_replies(self, frame):
+        raw = bytes.fromhex(frame)
+        assert crc8_maxim(raw[:-3]) == raw[-3]
+
 
 class TestParseAesKey:
     """aesKeyStr's encoding is undocumented, so every plausible one parses."""

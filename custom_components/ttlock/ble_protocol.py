@@ -100,17 +100,38 @@ class UnsupportedProtocol(ProtocolError):
     """The lock is speaking a variant of the protocol we do not implement."""
 
 
-def crc8_maxim(data: bytes) -> int:
-    """Return the CRC-8/MAXIM checksum of `data`.
+def _crc8_maxim_table() -> tuple[int, ...]:
+    """Build the CRC-8/MAXIM lookup table, with TTLock's one altered entry.
 
-    Polynomial 0x31, reflected in and out, zero init, zero xor-out. The
-    reflected form is implemented directly (shifting right against 0x8C).
+    TTLock's firmware and apps checksum frames with a CRC-8/MAXIM table in
+    which entry 33 is 0x07 instead of the standard 0x7D. A frame whose CRC
+    never indexes entry 33 checksums the same either way, so the standard
+    algorithm works for most frames and rejects the rest - deterministically,
+    so a lock whose reply hits the entry fails every read.
+    """
+    table = []
+    for index in range(256):
+        crc = index
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0x8C if crc & 1 else crc >> 1
+        table.append(crc)
+    table[33] = 0x07
+    return tuple(table)
+
+
+_CRC8_TABLE = _crc8_maxim_table()
+
+
+def crc8_maxim(data: bytes) -> int:
+    """Return TTLock's CRC-8/MAXIM checksum of `data`.
+
+    Polynomial 0x31, reflected in and out, zero init, zero xor-out, computed
+    from a table that carries TTLock's one altered entry (see
+    `_crc8_maxim_table`).
     """
     crc = 0
     for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            crc = (crc >> 1) ^ 0x8C if crc & 1 else crc >> 1
+        crc = _CRC8_TABLE[crc ^ byte]
     return crc
 
 
