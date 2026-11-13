@@ -851,7 +851,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         else:
             try:
                 state = await self.api.get_lock_state(self.lock_id)
-            except Exception:  # noqa: BLE001 - the poll is the one to act on failures
+            except Exception:
                 _LOGGER.debug(
                     "Could not check lock %s after its auto-lock delay",
                     self.lock_id,
