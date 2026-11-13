@@ -26,3 +26,20 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: ./ttlock.zip application/zip
+
+  release-notes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Add contributor thanks and support footer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release view "$TAG" --json body --jq .body > body.md
+          python3 .github/scripts/release_footer.py < body.md > new-body.md
+          gh release edit "$TAG" --notes-file new-body.md
