@@ -320,6 +320,22 @@ class TestSetup:
         mock_register.assert_awaited_once_with(ANY)
 
 
+class TestRegisterWebhook:
+    async def test_does_not_log_the_webhook_url(
+        self, hass: HomeAssistant, handler: WebhookHandler, caplog
+    ):
+        """The URL is what lets anyone post events, so it stays out of the log."""
+        caplog.set_level(logging.INFO, logger="custom_components.ttlock.webhook")
+        url = "https://example.invalid/api/webhook/secret-webhook-id"
+
+        with patch.object(handler, "get_url", new_callable=AsyncMock, return_value=url):
+            await handler.register_webhook()
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert "Webhook registered" in messages
+        assert not any("secret-webhook-id" in message for message in messages)
+
+
 class TestGetUrl:
     async def test_returns_cached_url_without_generating(
         self, hass: HomeAssistant, entry: MockConfigEntry

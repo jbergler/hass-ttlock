@@ -338,7 +338,7 @@ class WebhookHandler:
 
         async with _GROUPS_LOCK:
             if not group.registered:
-                _LOGGER.info("Webhook registered at %s", webhook_url)
+                _LOGGER.info("Webhook registered")
 
                 # Ensure the webhook is not registered already
                 webhook_unregister(self.hass, group.webhook_id)
