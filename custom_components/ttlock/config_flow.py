@@ -1,16 +1,18 @@
 """Config flow for TTLock."""
 
 import logging
+import secrets
 from typing import Any
 
 import probatio as vol
 
+from homeassistant.components import webhook
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, CONF_WEBHOOK_ID
 from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.selector import (
@@ -28,6 +30,7 @@ from .const import (
     CONF_POLL_INTERVAL,
     CONF_REGION,
     CONF_SLOW_POLL_INTERVAL,
+    CONF_WEBHOOK_URL,
     DEFAULT_BLUETOOTH_ENABLED,
     DEFAULT_POLL_INTERVAL_MINUTES,
     DEFAULT_REGION,
@@ -92,9 +95,44 @@ class TTLockAuthFlowHandler(
         )
 
     async def async_oauth_create_entry(self, data: dict[str, Any]) -> ConfigFlowResult:
-        """Persist the selected region alongside the OAuth token."""
+        """Resolve the webhook id then let the user copy the URL before creating.
+
+        Entries sharing one client_id's developer app also share one webhook
+        registration (see webhook.py), so if a sibling entry already exists
+        under this flow's client_id, adopt its webhook_id up front - setup's
+        _resolve_group_webhook_id would reconcile it anyway, and showing the
+        canonical URL here means the user doesn't paste a soon-to-be-replaced
+        guess into the TTLock console.
+        """
         data[CONF_REGION] = self._region
-        return await super().async_oauth_create_entry(data)
+        auth_impl = self.flow_impl.domain
+        data[CONF_WEBHOOK_ID] = (
+            _sibling_webhook_id(self.hass, auth_impl) or secrets.token_hex()
+        )
+        self._oauth_data = data
+        return await self.async_step_webhook()
+
+    async def async_step_webhook(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the webhook URL so the user can register it with TTLock.
+
+        A second, persistent copy also lives in the options flow and in the
+        webhook_setup repair that fires if traffic never arrives, so the user
+        can come back to this URL after setup if they missed this step.
+        """
+        if user_input is not None:
+            return await super().async_oauth_create_entry(self._oauth_data)
+        return self.async_show_form(
+            step_id="webhook",
+            description_placeholders={
+                "webhook_url": _safe_webhook_url(
+                    self.hass, self._oauth_data[CONF_WEBHOOK_ID]
+                ),
+                "console_url": "https://open.ttlock.com/manager",
+                "docs_url": "https://github.com/jbergler/hass-ttlock?tab=readme-ov-file#creating-an-oauth-app",
+            },
+        )
 
     @staticmethod
     @callback
@@ -123,6 +161,10 @@ class TTLockOptionsFlow(OptionsFlow):
             return self.async_create_entry(data=user_input)
 
         options = self.config_entry.options
+        webhook_id = self.config_entry.data.get(CONF_WEBHOOK_ID)
+        webhook_url = self.config_entry.data.get(CONF_WEBHOOK_URL) or (
+            _safe_webhook_url(self.hass, webhook_id) if webhook_id else ""
+        )
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -171,4 +213,35 @@ class TTLockOptionsFlow(OptionsFlow):
                     ): BooleanSelector(),
                 }
             ),
+            description_placeholders={"webhook_url": webhook_url},
         )
+
+
+def _sibling_webhook_id(hass, auth_implementation: str) -> str | None:
+    """Return the webhook_id another entry under this credential already uses.
+
+    Keyed off the credential's auth_implementation domain, which is the same
+    for every entry authorised against one TTLock developer application - no
+    need to rebuild the OAuth implementation to compare client_ids.
+    """
+    return next(
+        (
+            webhook_id
+            for entry in hass.config_entries.async_entries(DOMAIN)
+            if entry.data.get("auth_implementation") == auth_implementation
+            and (webhook_id := entry.data.get(CONF_WEBHOOK_ID))
+        ),
+        None,
+    )
+
+
+def _safe_webhook_url(hass, webhook_id: str) -> str:
+    """Best-effort webhook URL - empty if HA has no base URL configured yet."""
+    from homeassistant.helpers.network import (  # noqa: PLC0415
+        NoURLAvailableError,
+    )
+
+    try:
+        return webhook.async_generate_url(hass, webhook_id)
+    except NoURLAvailableError:
+        return ""

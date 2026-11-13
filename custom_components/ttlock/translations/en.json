@@ -25,6 +25,10 @@
           "region": "The TTLock cloud your account and developer app are registered with. EU / International covers everywhere except mainland China."
         }
       },
+      "webhook": {
+        "title": "Register your TTLock webhook URL",
+        "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n`{webhook_url}`\n\nOpen the [TTLock console]({console_url}) and paste it in as the callback URL, then submit. See [the setup docs]({docs_url}) for more. You can revisit this URL later from the integration's Configure screen. Until this is registered, locks still stay in sync via the integration's regular poll."
+      },
       "pick_implementation": {
         "title": "Pick Authentication Method"
       }
@@ -34,7 +38,7 @@
     "step": {
       "init": {
         "title": "Polling and Bluetooth",
-        "description": "How often the integration polls the TTLock cloud, and whether it also reads locks over Bluetooth. Locks update in near real time via webhooks, so the intervals can stay high to keep multi-lock accounts under TTLock's free-tier API-call limit. Lower the poll interval if your webhooks are unreliable.",
+        "description": "How often the integration polls the TTLock cloud, and whether it also reads locks over Bluetooth. Locks update in near real time via webhooks, so the intervals can stay high to keep multi-lock accounts under TTLock's free-tier API-call limit. Lower the poll interval if your webhooks are unreliable.\n\nTTLock webhook URL for this account:\n\n`{webhook_url}`",
         "data": {
           "poll_interval": "Poll interval",
           "slow_poll_interval": "Detail refresh interval",
@@ -66,7 +70,7 @@
       "title": "Confirm your TTLock webhook URL"
     },
     "webhook_setup": {
-      "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n{webhook_url}\n\nUse the link below to open the TTLock console, or see [the setup docs]({docs_url}) for more info. Until this is done, locks still stay in sync via the integration's regular poll.",
+      "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n`{webhook_url}`\n\nUse the link below to open the TTLock console, or see [the setup docs]({docs_url}) for more info. You can also view this URL at any time from the integration's Configure screen. Until this is done, locks still stay in sync via the integration's regular poll.",
       "title": "Register your TTLock webhook URL"
     }
   }

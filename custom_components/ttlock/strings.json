@@ -3,6 +3,10 @@
     "step": {
       "pick_implementation": {
         "title": "[%key:common::config_flow::title::oauth2_pick_implementation%]"
+      },
+      "webhook": {
+        "title": "Register your TTLock webhook URL",
+        "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n`{webhook_url}`\n\nOpen the [TTLock console]({console_url}) and paste it in as the callback URL, then submit. See [the setup docs]({docs_url}) for more. You can revisit this URL later from the integration's Configure screen."
       }
     },
     "abort": {
@@ -28,7 +32,7 @@
       "title": "Confirm your TTLock webhook URL"
     },
     "webhook_setup": {
-      "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n{webhook_url}\n\nUse the link below to open the TTLock console, or see [the setup docs]({docs_url}) for more info. Until this is done, locks still stay in sync via TTLock's regular 15-minute poll.",
+      "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n`{webhook_url}`\n\nUse the link below to open the TTLock console, or see [the setup docs]({docs_url}) for more info. You can also view this URL at any time from the integration's Configure screen. Until this is done, locks still stay in sync via TTLock's regular poll.",
       "title": "Register your TTLock webhook URL"
     }
   }
