@@ -20,6 +20,8 @@ from datetime import datetime, timedelta
 import logging
 from typing import TypeGuard
 
+from aiohttp import ClientResponseError
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
@@ -246,6 +248,18 @@ def coordinator_for(
                 if entity.entity_id == entity_id:
                     return coordinator
     return None
+
+
+def _update_failed(err: Exception) -> UpdateFailed:
+    """Wrap a polling error for DataUpdateCoordinator, which logs it at ERROR.
+
+    aiohttp's ClientResponseError message embeds the request URL, and GET
+    requests carry clientId and accessToken in the query string, so only the
+    status is kept (as _not_ready_reason does for setup).
+    """
+    if isinstance(err, ClientResponseError):
+        return UpdateFailed(f"TTLock cloud returned HTTP {err.status}")
+    return UpdateFailed(err)
 
 
 class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
@@ -631,7 +645,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             else:
                 new_data.gateways = []
         except Exception as err:
-            raise UpdateFailed(err) from err
+            raise _update_failed(err) from err
         else:
             return new_data
 
@@ -994,7 +1008,7 @@ class GatewaysUpdateCoordinator(DataUpdateCoordinator[dict[int, Gateway]]):
             gateways = await self.api.get_gateways()
             return {gateway.id: gateway for gateway in gateways}
         except Exception as err:
-            raise UpdateFailed(err) from err
+            raise _update_failed(err) from err
 
     def as_dict(self) -> list[dict]:
         """Serialize for diagnostics."""

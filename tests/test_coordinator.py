@@ -2,15 +2,19 @@
 
 import asyncio
 from datetime import timedelta
+import logging
 from types import MappingProxyType
 from unittest.mock import AsyncMock, Mock, PropertyMock
 
+from aiohttp import ClientResponseError, RequestInfo
 import dateparser
+from multidict import CIMultiDict, CIMultiDictProxy
 import pytest
 from pytest_homeassistant.common import (
     MockConfigEntry,
     async_fire_time_changed,
 )
+from yarl import URL
 
 from custom_components.ttlock.api import RequestFailed, TTLockApi
 from custom_components.ttlock.ble import BleData
@@ -1981,3 +1985,27 @@ class TestGatewaysUpdateCoordinator:
 
         with pytest.raises(UpdateFailed):
             await gateways_coordinator._async_update_data()
+
+    async def test_http_error_log_leaves_out_the_request_url(self, hass, api, caplog):
+        """The request URL carries accessToken, and the coordinator logs at ERROR."""
+        url = URL(
+            "https://euapi.ttlock.com/v3/gateway/list"
+            "?clientId=client-id&accessToken=secret-token"
+        )
+        api.get_gateways = AsyncMock(
+            side_effect=ClientResponseError(
+                RequestInfo(url, "GET", CIMultiDictProxy(CIMultiDict()), url),
+                (),
+                status=500,
+                message="Internal Server Error",
+            )
+        )
+        gateways_coordinator = GatewaysUpdateCoordinator(
+            hass, MockConfigEntry(domain=DOMAIN), api
+        )
+
+        await gateways_coordinator.async_refresh()
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert any("TTLock cloud returned HTTP 500" in message for message in errors)
+        assert not any("secret-token" in message for message in errors)
