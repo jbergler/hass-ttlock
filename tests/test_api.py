@@ -243,6 +243,31 @@ class TestDebugCapture:
             "Received response" in record["message"] for record in captured["records"]
         )
 
+    async def test_passcodes_are_redacted_in_capture(
+        self, mock_oauth_session, mocker: AiohttpClientMocker
+    ):
+        """Door codes sent in a request or listed in a response stay out of diagnostics."""
+        mocker.post(f"{BASE}keyboardPwd/add", json={"errcode": 0, "keyboardPwdId": 7})
+        mocker.get(
+            f"{BASE}lock/listKeyboardPwd",
+            json={"list": [{"keyboardPwdId": 7, "keyboardPwd": "246813"}]},
+        )
+
+        capture = LockTrafficCapture()
+        session = mocker.create_session(None)
+        try:
+            api = TTLockApi(session, mock_oauth_session, capture)
+            await api.post("keyboardPwd/add", lockId=42, keyboardPwd="135790")
+            await api.get("lock/listKeyboardPwd", lockId=42)
+        finally:
+            await session.close()
+
+        captured = [r["message"] for r in capture.diagnostics_for(42)["records"]]
+        assert any("**REDACTED**" in message for message in captured)
+        for message in captured:
+            assert "135790" not in message
+            assert "246813" not in message
+
     async def test_request_without_lock_id_is_not_captured(
         self, mock_oauth_session, mocker: AiohttpClientMocker
     ):
