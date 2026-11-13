@@ -219,6 +219,9 @@ max-complexity = 25
 "custom_components/ttlock/models.py" = [
     "N815",  # fields mirror the TTLock API's camelCase wire format on purpose
 ]
+".github/scripts/*" = [
+    "INP001",  # standalone CI scripts run by path, not an importable package
+]
 
 [tool.ruff.lint.isort]
 force-sort-within-sections = true

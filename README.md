@@ -6,6 +6,7 @@ Home Assistant integration for TTLock based locks.
 <picture><img src="https://img.shields.io/github/downloads/jbergler/hass-ttlock/total?style=for-the-badge" /></picture>
 <picture><img src="https://img.shields.io/github/downloads/jbergler/hass-ttlock/latest/total?style=for-the-badge" /></picture>
 [<img src="https://img.shields.io/codecov/c/github/jbergler/hass-ttlock?style=for-the-badge&token=EJI902TDWE" />](https://app.codecov.io/gh/jbergler/hass-ttlock)
+[<img src="https://img.shields.io/badge/buy_me_a_coffee-say_thanks-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black" />](https://www.buymeacoffee.com/jbergler)
 
 ## Overview
 
@@ -96,7 +97,8 @@ You can find all the TTLock API calls here https://euopen.ttlock.com/document
 
 # Say thanks
 
-If you found this helpful and you'd like to say thanks you can do so via buy me a coffee or a beer.
-I've put a bunch of time into this integration and it always puts a smile on my face when people say thanks!
+This integration is built by me and a growing list of [contributors](https://github.com/jbergler/hass-ttlock/graphs/contributors). Thank you to everyone who has sent a fix, tested a lock, or written up a good bug report.
 
-<a href="https://www.buymeacoffee.com/jbergler" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" height="60" width="217"></a>
+If it's made your setup better and you'd like to say thanks, you can buy me a coffee. There's no obligation, and it always puts a smile on my face.
+
+[![Buy me a coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://www.buymeacoffee.com/jbergler)
