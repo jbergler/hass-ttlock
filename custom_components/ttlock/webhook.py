@@ -19,8 +19,10 @@ import asyncio
 import json
 import logging
 import secrets
+from typing import Any
 
 from aiohttp.web import Request
+from multidict import MultiDictProxy
 
 from homeassistant.components import webhook
 from homeassistant.components.webhook import (
@@ -65,6 +67,30 @@ _GROUPS_LOCK = asyncio.Lock()
 
 def _setup_issue_id(client_id: str) -> str:
     return f"webhook_setup_{client_id}"
+
+
+def _loggable_form(data: MultiDictProxy) -> dict[str, Any]:
+    """Copy webhook form data for logging, with each `records` JSON decoded.
+
+    The form arrives as a MultiDictProxy whose `records` values are JSON
+    strings, so key-based redaction (TO_REDACT) can't see the keyboardPwd
+    inside them. Event processing keeps using the original form.
+    """
+    loggable: dict[str, Any] = {}
+    for key in dict.fromkeys(data.keys()):
+        values = data.getall(key)
+        if key == "records":
+            values = [_json_or_raw(value) for value in values]
+        loggable[key] = values[0] if len(values) == 1 else values
+    return loggable
+
+
+def _json_or_raw(value: Any) -> Any:
+    """Decode a JSON string, or return it unchanged if it isn't one."""
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return value
 
 
 class _WebhookGroup:
@@ -342,7 +368,11 @@ class WebhookHandler:
                 )
                 logger = get_device_logger(lock_id) if lock_id is not None else _LOGGER
                 log_and_capture(
-                    self._capture, logger, lock_id, "Got webhook data: %s", data
+                    self._capture,
+                    logger,
+                    lock_id,
+                    "Got webhook data: %s",
+                    _loggable_form(data),
                 )
                 for raw_records in data.getall("records", []):
                     try:

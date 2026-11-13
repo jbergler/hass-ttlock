@@ -61,6 +61,9 @@ TO_REDACT = {
     "deletePwd",
     "noKeyPwd",
     "lockData",
+    "keyboardPwd",
+    "newKeyboardPwd",
+    "cardNumber",
     "webhook_id",
     "webhook_url",
 }

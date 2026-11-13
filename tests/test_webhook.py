@@ -256,6 +256,26 @@ class TestDebugCapture:
             "Got webhook data" in record["message"] for record in captured["records"]
         )
 
+    async def test_passcode_in_webhook_records_is_redacted(
+        self, hass: HomeAssistant, entry: MockConfigEntry
+    ):
+        """records arrives as a JSON string, so it is decoded before redaction."""
+        capture = LockTrafficCapture()
+        handler = WebhookHandler(hass, entry, capture)
+
+        record = {**WEBHOOK_UNLOCK_10AM_UTC, "keyboardPwd": "135790"}
+        request = _request(
+            MultiDict({"lockId": "7252408", "records": json.dumps([record])})
+        )
+        await handler.handle_webhook(hass, "wh-id", request)
+        await hass.async_block_till_done()
+
+        captured = [r["message"] for r in capture.diagnostics_for(7252408)["records"]]
+        webhook_lines = [m for m in captured if "Got webhook data" in m]
+        assert webhook_lines
+        assert all("**REDACTED**" in message for message in webhook_lines)
+        assert not any("135790" in message for message in captured)
+
     async def test_webhook_data_without_lock_id_is_not_captured(
         self, hass: HomeAssistant, entry: MockConfigEntry
     ):
