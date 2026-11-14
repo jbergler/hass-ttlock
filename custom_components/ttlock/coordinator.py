@@ -266,15 +266,13 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self.lock_id = summary.id
         self.has_gateway = summary.hasGateway
         self.feature_value = summary.featureValue
-        # The full v3/key/list record is kept live on the coordinator so
-        # access_level / remote-unlock / validity / freeze state track the
-        # admin's changes between slow-tier refreshes. _refresh_summary()
-        # (called from the slow tier) swaps it; properties below read it.
+        # Live v3/key/list record. Properties below forward into it; the
+        # slow tier swaps it via _maybe_refresh_summary so admin-side
+        # changes (freeze, remote toggle, validity edits) take effect
+        # within a poll cycle.
         self.summary = summary
-        # Cached from the summary at construction - the one piece of the
-        # discovery record we treat as immutable for the config entry's
-        # lifetime (connectivity decisions reconcile the Bluetooth half
-        # at runtime, not the cloud half).
+        # Cloud reachability is decided once at discovery; the Bluetooth
+        # half of `connectable` is reconciled at runtime.
         self.cloud_connectable = summary.connectable
         self._capture = capture
         self._store = store
@@ -346,34 +344,36 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self._summary_last_fetched: datetime | None = None
 
     async def _maybe_refresh_summary(self, now: datetime) -> None:
-        """Refresh self.summary from a cached v3/key/list call, once per slow tier.
-
-        The call itself is account-wide (v3/key/list has no lockId filter)
-        so we only make it once per slow interval, regardless of how many
-        coordinators are polling. Results sit on hass.data behind a per-api
-        key so entries sharing a developer application still share the fetch.
-        If the account is reachable but our lockId has dropped out of the
-        list (admin revoked our ekey), the summary is left as-is - the
-        reachability check and subsequent REST call will surface it.
-        """
+        """Pull this lock's ekey record from the shared cache if due."""
         if not self._slow_tier_due(self._summary_last_fetched, now):
             return
-        ekeys = await self._shared_ekey_list(now)
-        for candidate in ekeys:
+        for candidate in await self._shared_ekey_list(now):
             if candidate.id == self.lock_id:
                 self.summary = candidate
                 break
         self._summary_last_fetched = now
 
     async def _shared_ekey_list(self, now: datetime) -> list[LockSummary]:
-        """One v3/key/list fetch per api per slow interval, cached in hass.data."""
+        """One v3/key/list fetch per config entry per slow interval.
+
+        Keyed on the entry_id (not id(api), which is recyclable after a
+        reload) and single-flighted through an asyncio.Lock so concurrent
+        coordinators from the same entry wait for the first fetch instead
+        of each triggering their own.
+        """
+        if self.config_entry is None:
+            return await self.api.get_locks()
         bucket = self.hass.data.setdefault(DOMAIN, {}).setdefault("_ekey_cache", {})
-        entry = bucket.get(id(self.api))
-        if entry is not None and entry["fetched_at"] > now - self._slow_interval:
-            return entry["summaries"]
-        summaries = await self.api.get_locks()
-        bucket[id(self.api)] = {"fetched_at": now, "summaries": summaries}
-        return summaries
+        slot = bucket.setdefault(
+            self.config_entry.entry_id,
+            {"fetched_at": None, "summaries": [], "lock": asyncio.Lock()},
+        )
+        async with slot["lock"]:
+            if slot["fetched_at"] and slot["fetched_at"] > now - self._slow_interval:
+                return slot["summaries"]
+            slot["summaries"] = await self.api.get_locks()
+            slot["fetched_at"] = now
+            return slot["summaries"]
 
     @callback
     def async_start_webhook_tracking(self) -> CALLBACK_TYPE:
@@ -618,24 +618,15 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             now = dt_util.now()
             new_data = deepcopy(self.data)
 
-            # Refresh the ekey record first - it's what the rest of the
-            # slow tier branches on (can_admin gates lock/detail, and the
-            # service/lock entity guards read remote_unlock_enabled,
-            # is_frozen, and the validity window from it).
+            # Refresh the ekey record first - downstream branches read
+            # can_admin, remote_unlock_enabled, is_frozen, and the window.
             await self._maybe_refresh_summary(now)
 
-            # Slow tier: full lock detail (battery, name, model, features,
-            # autolock/sound config). Slow-changing and, for lock/unlock,
-            # already delivered in real time by webhooks - so fetch it at most
-            # once per slow interval and otherwise carry the previous values
-            # forward via the deepcopy above.
-            #
-            # Skipped for MEMBER locks: lock/detail returns 20002 "not lock
-            # admin" for a non-owner, non-authorized ekey (see
-            # models.AccessLevel). Member locks carry their name, feature
-            # value and lockVersion through from the v3/key/list record at
-            # discovery, and battery is refreshed every poll by the fast-tier
-            # lock/queryOpenState below - which does work for MEMBER.
+            # Slow tier: lock/detail (battery, name, model, features,
+            # autolock/sound config). Refreshed at most once per slow
+            # interval; webhook push keeps lock/unlock state real-time.
+            # Skipped for MEMBER - lock/detail returns 20002 there and
+            # the summary already supplies name, features and lockVersion.
             if self.access_level.can_admin and self._slow_tier_due(
                 self._details_last_fetched, now
             ):

@@ -63,22 +63,15 @@ class SensorState(Enum):
 class AccessLevel(Enum):
     """How the authenticated account relates to a lock.
 
-    Derived from the ekey record on v3/key/list - the only account-wide view
-    of lock access that includes shared-in locks (v3/lock/list is admin-only,
-    see docs/ttlock-cloud-api/lock/list.md).
+    Derived from the ekey record on v3/key/list (the only enumeration
+    that returns shared-in locks; v3/lock/list is admin-only).
 
-    - OWNER: top administrator of the lock (userType=110301). Owns the lock
-      outright; also appears in v3/lock/list.
-    - AUTHORIZED: holds a common ekey (userType=110302) that the owner has
-      promoted with keyRight=1. Empirically equivalent to OWNER for every
-      admin REST call the integration makes - lock/detail, lock/listKey,
-      passcode/card/fingerprint CRUD all succeed.
-    - MEMBER: holds a common ekey with keyRight=0. Can read state via
-      v3/key/list (which carries lockName, lockAlias, electricQuantity,
-      hasGateway, featureValue, lockVersion) and lock/queryOpenState, and
-      can lock/unlock via gateway iff the ekey's remoteEnable=1. Every
-      admin endpoint (including lock/detail - no aesKeyStr, so no BLE)
-      returns errcode=20002 "not lock admin".
+    - OWNER: top administrator (userType=110301).
+    - AUTHORIZED: common ekey the owner promoted with keyRight=1.
+      Empirically equivalent to OWNER for every admin REST call.
+    - MEMBER: common ekey with keyRight=0. Can read state and (if
+      remoteEnable=1) lock/unlock, but lock/detail and every admin
+      endpoint return errcode=20002 "not lock admin".
     """
 
     OWNER = "owner"
@@ -87,13 +80,7 @@ class AccessLevel(Enum):
 
     @classmethod
     def from_ekey(cls, user_type: str, key_right: int) -> "AccessLevel":
-        """Classify an ekey record from v3/key/list.
-
-        userType/keyRight are TTLock's own wire values: userType is "110301"
-        for the top admin's own ekey, "110302" for any common ekey. keyRight
-        is only meaningful on common ekeys (the top admin's record carries
-        keyRight=0 by convention - verified empirically).
-        """
+        """Classify from the wire values; unknown userType falls back to shared."""
         if user_type == "110301":
             return cls.OWNER
         if key_right == 1:
@@ -102,12 +89,7 @@ class AccessLevel(Enum):
 
     @property
     def can_admin(self) -> bool:
-        """Whether this account can run admin-only REST calls on the lock.
-
-        Admin-only here means every endpoint that returns 20002 for MEMBER:
-        lock/detail, lock/listKey, passcode/card/fingerprint CRUD,
-        passage-mode and autolock config, rename.
-        """
+        """True iff lock/detail and the admin-only REST endpoints will succeed."""
         return self is not AccessLevel.MEMBER
 
 
@@ -158,14 +140,11 @@ class Lock(LockMacModel):
 
 
 class LockSummary(LockMacModel):
-    """Per-lock summary, built from a single v3/key/list record.
+    """Per-lock summary built from one v3/key/list record.
 
-    Replaces the previous lock/list-sourced summary: v3/key/list carries a
-    strict superset (lockName, lockAlias, electricQuantity, featureValue,
-    hasGateway, lockVersion, timezoneRawOffset, plus the ekey-local fields
-    below) and is the only enumeration that returns shared-in locks too,
-    so the one discovery call feeds both owned and shared. See
-    docs/ttlock-cloud-api/ekey/list.md and AccessLevel for the rationale.
+    v3/key/list is a strict superset of the old lock/list fields and the
+    only enumeration that includes shared-in locks, so discovery feeds
+    owned and shared through the same path. See AccessLevel.
     """
 
     # Server-side ekey status strings - mirrored from v3/key/list captures.
@@ -177,34 +156,26 @@ class LockSummary(LockMacModel):
     battery_level: int | None = Field(None, alias="electricQuantity")
     featureValue: str | None = None
     hasGateway: int = 0
-    # Protocol dialect for the BLE wire format, forwarded to
-    # ble_protocol.LockVersion.from_cloud which reads protocolType and
-    # protocolVersion. The server mixes ints with strings (`logoUrl: ""`)
-    # and bools (`showAdminKbpwdFlag`) here, so the value type stays Any.
+    # Protocol dialect for the BLE wire format. ble_protocol.LockVersion
+    # reads protocolType/protocolVersion; the server also carries strings
+    # (`logoUrl`) and bools (`showAdminKbpwdFlag`), so the value type is Any.
     lockVersion: dict[str, Any] | None = None
     timezoneRawOffset: int = 0
 
-    # Ekey-local fields, straight from the v3/key/list record. Together
-    # these drive access_level, validity, and remote-unlock enforcement -
-    # see AccessLevel.from_ekey and the coordinator's capability gating.
+    # Ekey-local fields - drive AccessLevel, validity, and remote-unlock gating.
     userType: str | None = None
     keyRight: int = 0
     keyStatus: str | None = None
-    # remoteEnable is 1=yes, 2=no on the API; absent on OWNER records (the
-    # top admin always has full control via admin paths). Default is "no"
-    # so the integration never assumes an unset flag means "allowed".
+    # 1=yes, 2=no. Absent on OWNER records; default no so an unset flag
+    # never reads as "allowed".
     remoteEnable: int = 2
-    # TTLock-side validity window; 0 means "unbounded" on either end.
+    # TTLock validity window; 0 = unbounded on that side.
     startDate: int = 0
     endDate: int = 0
 
-    # sensitive fields
-    #
-    # lockData is the per-lock credential blob TTLock's own SDK uses to talk
-    # to a lock directly over BLE. Present in v3/key/list on every record
-    # (admin, authorized, member) - the server scopes it to this account's
-    # ekey. Treated as opaque; mutable (lock/updateLockData writes it);
-    # always redacted from diagnostics via const.TO_REDACT.
+    # Opaque per-lock BLE credential blob. Scoped to this account's ekey
+    # by the server; mutable (lock/updateLockData writes it); redacted via
+    # const.TO_REDACT.
     lockData: str | None = None
 
     @property
@@ -224,10 +195,7 @@ class LockSummary(LockMacModel):
 
     @property
     def remote_unlock_enabled(self) -> bool:
-        """Whether the admin has left cloud unlock on for this ekey.
-
-        Only meaningful for MEMBER/AUTHORIZED; OWNER paths use admin REST.
-        """
+        """Admin's remoteEnable flag; only meaningful for shared ekeys."""
         return self.remoteEnable == 1
 
     @property
@@ -238,10 +206,8 @@ class LockSummary(LockMacModel):
     def is_valid_now(self, now_ms: int) -> tuple[bool, str | None]:
         """Whether the ekey is inside its validity window at `now_ms`.
 
-        Returns (valid, reason). `reason` is one of the translation keys
-        the lock entity raises: `shared_lock_not_yet_valid`,
-        `shared_lock_expired`, `shared_lock_frozen`, or None when valid.
-        `startDate=0`/`endDate=0` are TTLock's "unbounded" sentinel.
+        Returns (valid, reason). `reason` is the translation key the lock
+        entity raises, or None when valid. Date=0 means unbounded.
         """
         if self.is_frozen:
             return False, "shared_lock_frozen"

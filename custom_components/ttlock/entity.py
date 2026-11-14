@@ -52,10 +52,7 @@ class BaseLockEntity(CoordinatorEntity[LockUpdateCoordinator], ABC):
         attrs: dict[str, Any] = {}
         if not self.coordinator.connectable:
             attrs["unavailable_reason"] = NOT_CONNECTABLE_REASON
-        # Shared locks (and the OWNER's own ekey record, for symmetry) carry
-        # the access_level and any validity window / remote-unlock flag the
-        # admin configured. Automations can branch on this; diagnostics can
-        # explain why an admin-only service was rejected.
+        # Ekey-derived; exposed for automations and diagnostics.
         attrs["access_level"] = self.coordinator.access_level.value
         if self.coordinator.ekey_key_status is not None:
             attrs["key_status"] = self.coordinator.ekey_key_status

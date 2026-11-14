@@ -312,13 +312,11 @@ class Services:
         )
 
     def _get_coordinators(self, call: ServiceCall) -> dict[str, LockUpdateCoordinator]:
-        """Resolve entity_ids to coordinators for a service call.
+        """Resolve entity_ids to coordinators; drop unknown ones silently.
 
-        Entity_ids with no coordinator (unloaded entry, typo) are dropped
-        silently - the caller sees nothing happen, same as before this
-        change. Access-level filtering is deliberately NOT here: `cleanup`
-        and `list_*` style services may want to tolerate a mixed set, so
-        each handler decides via _get_admin_coordinators.
+        Admin-only handlers call _get_admin_coordinators instead; this
+        plain variant is for handlers that stay neutral on access level
+        (e.g. update_state, which just forces a refresh).
         """
         entity_ids = call.data.get(ATTR_ENTITY_ID)
         if entity_ids:
@@ -332,15 +330,13 @@ class Services:
     def _get_admin_coordinators(
         self, call: ServiceCall
     ) -> dict[str, LockUpdateCoordinator]:
-        """Like _get_coordinators but raises on any MEMBER-access target.
+        """Resolve + raise shared_lock_admin_only on any MEMBER target.
 
         Admin-only services (passcode/card/fingerprint CRUD, passage-mode
-        and autolock writes) must refuse MEMBER locks up front - the
-        TTLock server would return errcode=20002 "not lock admin"
-        otherwise, which bubbles out as a generic failure. Raising here
-        surfaces a translated reason the UI can show. The full set of
-        entities is listed so the user sees every disallowed target at
-        once, not one error per lock.
+        and autolock writes, list_* for admin registries) would otherwise
+        get a generic errcode=20002 "not lock admin" from the TTLock
+        server. The error names every disallowed entity so the user sees
+        them all at once, not one toast per lock.
         """
         resolved = self._get_coordinators(call)
         shared = sorted(

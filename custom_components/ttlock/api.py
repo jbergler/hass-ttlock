@@ -245,18 +245,11 @@ class TTLockApi:
     async def get_locks(self) -> list[LockSummary]:
         """Enumerate every lock this account can touch.
 
-        Sources from v3/key/list rather than v3/lock/list - v3/lock/list is
-        documented (and empirically confirmed) to only return locks this
-        account is the top administrator of, which omits every lock shared
-        in via an ekey. v3/key/list returns both the admin's own ekey
-        records (userType=110301) and any common ekeys shared to the
-        account (userType=110302), carries a strict superset of lock/list's
-        fields, and lets AccessLevel classify each lock uniformly. See
-        docs/ttlock-cloud-api/ekey/list.md and models.AccessLevel for the
-        rationale.
-
-        Duplicate lockIds (should not happen - the server returns one ekey
-        per account per lock) are collapsed; the first record wins.
+        Sources from v3/key/list, which returns both owned (admin) and
+        shared (common-ekey) records - v3/lock/list is owner-only. See
+        models.AccessLevel for the classification. The server returns one
+        ekey per lock per account, but we still dedup by lockId as a
+        belt-and-suspenders.
         """
         summaries: dict[int, LockSummary] = {}
         page = 1

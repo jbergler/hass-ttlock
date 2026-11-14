@@ -68,12 +68,10 @@ class Lock(BaseLockEntity, LockEntity, RestoreEntity):
         await self.coordinator.unlock()
 
     def _ensure_remote_unlock_allowed(self) -> None:
-        """Raise if the authenticated account cannot drive this lock remotely.
+        """Raise if the ekey disallows this account from driving the lock.
 
-        OWNER always may (they drive the admin paths). Shared ekeys honour:
-        the ekey's `remoteEnable=1` flag, its validity window, and its
-        frozen state. Each denial carries its own translation key so the
-        UI explains what the lock owner would see in the TTLock app.
+        OWNER always may. Shared ekeys honour validity window, freeze
+        state, and remoteEnable - each with its own translation key.
         """
         if self.coordinator.access_level is AccessLevel.OWNER:
             return
