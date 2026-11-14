@@ -179,6 +179,28 @@ async def test_no_url(hass, component_setup, mock_api_responses):
         assert mock.assert_called
 
 
+async def test_webhook_failure_does_not_fail_running_entry_setup(
+    hass, component_setup, mock_api_responses, mock_cloud
+):
+    """Webhook infrastructure is best effort after lock discovery succeeds."""
+    mock_api_responses("default")
+    mock_cloud.async_active_subscription.return_value = True
+    mock_cloud.async_get_or_create_cloudhook.side_effect = ValueError(
+        "cloudhook creation failed"
+    )
+
+    with patch("homeassistant.helpers.issue_registry.async_create_issue") as mock_issue:
+        assert await component_setup()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert entry.state is ConfigEntryState.LOADED
+    assert len(hass.data[DOMAIN][entry.entry_id][TT_LOCKS]) == 1
+    assert any(
+        call.args[2] == "webhook_registration_failed_client-id"
+        for call in mock_issue.call_args_list
+    )
+
+
 async def test_group_refcount_unwinds_after_no_url_failure(
     hass, component_setup, mock_api_responses
 ):
