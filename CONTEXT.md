@@ -11,6 +11,18 @@ _Avoid_: reachable, online (online/offline is used for gateways specifically, a 
 **Discovery**:
 The one-time enumeration of every lock in a TTLock account, performed at integration startup. Determines each lock's initial Connectable verdict.
 
+**Ekey**:
+TTLock's wire-level record for one account's access to one lock. Every account-to-lock relationship (owner of their own lock, recipient of a shared key) is represented as a single ekey. Discovery enumerates ekeys via `v3/key/list`, which is why Shared locks appear alongside owned ones.
+_Avoid_: key (ambiguous with physical keys / API keys), credential
+
+**Shared lock**:
+A lock this account can see because someone else's administrator sent it an ekey. Discovery returns it the same way as an owned lock, but its Access level is `authorized` or `member` - not `owner` - so some actions are restricted.
+_Avoid_: guest lock, foreign lock
+
+**Access level**:
+How the authenticated account relates to a lock. Three values: `owner` (top administrator - also in `v3/lock/list`); `authorized` (holds a common ekey with `keyRight=1`, operationally equivalent to `owner` for every REST endpoint the integration uses); `member` (common ekey with `keyRight=0` - may read state and lock/unlock if the admin left remote unlock on, but cannot read `lock/detail` so has no BLE, and cannot run any admin-only service). Mapped in `models.AccessLevel`; drives entity creation, service gating, and the `shared_lock_*` translation keys.
+_Avoid_: permission, role
+
 **Debug capture**:
 Always-on recording of a single lock's raw TTLock traffic (API request/response bodies, inbound webhook events) into a small bounded in-memory buffer, surfaced through diagnostics. Not opt-in and not tied to any logger's level — see `docs/adr/0001-per-lock-debug-capture-via-logger-hierarchy.md`.
 _Avoid_: debug logging (HA's own general, per-integration mechanism — Debug capture is per-lock, always-on, and diagnostics-facing), trace

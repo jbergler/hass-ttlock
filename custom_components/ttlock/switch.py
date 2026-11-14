@@ -18,12 +18,19 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up all the locks for the config entry."""
+    """Set up the lock's admin-only switches.
+
+    Autolock and lock-sound call admin REST (lock/setAutoLockTime,
+    lock/setLockSound) which returns 20002 for MEMBER. Skip creation
+    rather than materialise an always-failing switch; see
+    docs/architecture.md on capability gating.
+    """
 
     async_add_entities(
         [
             entity
             for coordinator in lock_coordinators(hass, entry)
+            if coordinator.access_level.can_admin
             for entity in (
                 AutoLock(coordinator),
                 LockSound(coordinator),

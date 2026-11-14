@@ -36,12 +36,14 @@ def _mock_connectable_and_gatewayless_lock(monkeypatch) -> None:
                 lockAlias="Connectable Lock",
                 lockMac="00:00:00:00:00:01",
                 hasGateway=1,
+                userType="110301",
             ),
             LockSummary(
                 lockId=2,
                 lockAlias="No Gateway Lock",
                 lockMac="00:00:00:00:00:02",
                 hasGateway=0,
+                userType="110301",
             ),
         ]
 
@@ -103,6 +105,7 @@ async def test_diagnostics_includes_raw_connectivity_fields_and_gateway_status(
                 lockMac="00:00:00:00:00:02",
                 hasGateway=0,
                 featureValue="000000",
+                userType="110301",
             ),
         ]
 
@@ -189,6 +192,24 @@ async def _refresh_captured_lock(hass: HomeAssistant) -> tuple[dict, dict]:
     mocker.get(f"{API_BASE}lock/detail", json=BASIC_LOCK_DETAILS)
     mocker.get(f"{API_BASE}lock/queryOpenState", json=LOCK_STATE_UNLOCKED)
     mocker.get(f"{API_BASE}lock/getPassageModeConfig", json=PASSAGE_MODE_6_TO_6_7_DAYS)
+    # The slow tier of the coordinator now refreshes the ekey summary once
+    # per interval - needs a key/list mock, with the lock's own ekey record.
+    mocker.post(
+        f"{API_BASE}key/list",
+        json={
+            "list": [
+                {
+                    "lockId": 7252408,
+                    "lockAlias": "Front Door",
+                    "lockMac": "16:72:4C:CC:01:C4",
+                    "hasGateway": 1,
+                    "featureValue": "0",
+                    "userType": "110301",
+                }
+            ],
+            "pages": 1,
+        },
+    )
 
     oauth_session = MagicMock()
     oauth_session.valid_token = True
@@ -208,6 +229,7 @@ async def _refresh_captured_lock(hass: HomeAssistant) -> tuple[dict, dict]:
             lockAlias="Front Door",
             lockMac="16:72:4C:CC:01:C4",
             hasGateway=1,
+            userType="110301",
         )
         coordinator = LockUpdateCoordinator(
             hass, config_entry, api, summary, capture, LockStateStore(hass)

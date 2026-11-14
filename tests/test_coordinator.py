@@ -498,6 +498,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="No Gateway",
                 lockMac="00:00:00:00:00:01",
                 hasGateway=0,
+                userType="110301",
             )
             coordinator = LockUpdateCoordinator(
                 hass,
@@ -697,6 +698,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="No Gateway",
                 lockMac="00:00:00:00:00:00",
                 hasGateway=0,
+                userType="110301",
             )
             return LockUpdateCoordinator(
                 hass,
@@ -1114,6 +1116,7 @@ class TestLockUpdateCoordinator:
                 lockMac="00:00:00:00:00:01",
                 hasGateway=0,
                 featureValue=f"{2**56:X}",  # Features.wifi
+                userType="110301",
             )
             wifi_coordinator = LockUpdateCoordinator(
                 hass,
@@ -1152,6 +1155,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="Test Lock",
                 lockMac="00:00:00:00:00:00",
                 hasGateway=1,
+                userType="110301",
             )
             return LockUpdateCoordinator(
                 hass,
@@ -1195,6 +1199,50 @@ class TestLockUpdateCoordinator:
             assert get_lock.call_count == 1
             assert get_passage.call_count == 1
             assert get_gateways.call_count == 1
+
+        async def test_concurrent_locks_share_one_ekey_refresh(
+            self, hass, api, mock_api_responses, monkeypatch
+        ):
+            """One account-wide key/list request refreshes every lock in an entry."""
+            mock_api_responses("default")
+            config_entry = MockConfigEntry(domain=DOMAIN)
+            config_entry.add_to_hass(hass)
+            store = LockStateStore(hass)
+
+            def summary(lock_id: int, name: str) -> LockSummary:
+                return LockSummary(
+                    lockId=lock_id,
+                    lockAlias=name,
+                    lockMac=f"00:00:00:00:00:{lock_id:02x}",
+                    hasGateway=1,
+                    userType="110301",
+                )
+
+            coordinators = [
+                LockUpdateCoordinator(
+                    hass,
+                    config_entry,
+                    api,
+                    summary(lock_id, "Before"),
+                    LockTrafficCapture(),
+                    store,
+                )
+                for lock_id in (1, 2)
+            ]
+            get_locks = AsyncMock(
+                return_value=[summary(1, "Front Door"), summary(2, "Shed")]
+            )
+            monkeypatch.setattr(api, "get_locks", get_locks)
+
+            await asyncio.gather(
+                *(coordinator.async_refresh() for coordinator in coordinators)
+            )
+
+            get_locks.assert_awaited_once_with()
+            assert [coordinator.summary.name for coordinator in coordinators] == [
+                "Front Door",
+                "Shed",
+            ]
 
         async def test_slow_tier_refetched_after_interval(
             self, coordinator, mock_api_responses, monkeypatch
@@ -1251,6 +1299,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="Test Lock",
                 lockMac="00:00:00:00:00:00",
                 hasGateway=1,
+                userType="110301",
             )
             return LockUpdateCoordinator(
                 hass, config_entry, api, summary, LockTrafficCapture(), store
@@ -1606,6 +1655,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="No Gateway",
                 lockMac="00:00:00:00:00:01",
                 hasGateway=0,
+                userType="110301",
             )
             coordinator = LockUpdateCoordinator(
                 hass,
@@ -1711,6 +1761,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="No Gateway",
                 lockMac="00:00:00:00:00:01",
                 hasGateway=0,
+                userType="110301",
             )
             coordinator = LockUpdateCoordinator(
                 hass,

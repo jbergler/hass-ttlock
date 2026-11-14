@@ -52,6 +52,7 @@ from .const import (
     TT_LOCKS,
 )
 from .models import (
+    AccessLevel,
     Features,
     Gateway,
     GatewayLink,
@@ -263,9 +264,16 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         """Initialize the update co-ordinator for a single lock."""
         self.api = api
         self.lock_id = summary.id
-        self.cloud_connectable = summary.connectable
         self.has_gateway = summary.hasGateway
         self.feature_value = summary.featureValue
+        # Live v3/key/list record. Properties below forward into it; the
+        # slow tier swaps it via _maybe_refresh_summary so admin-side
+        # changes (freeze, remote toggle, validity edits) take effect
+        # within a poll cycle.
+        self.summary = summary
+        # Cloud reachability is decided once at discovery; the Bluetooth
+        # half of `connectable` is reconciled at runtime.
+        self.cloud_connectable = summary.connectable
         self._capture = capture
         self._store = store
 
@@ -330,6 +338,41 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self.data = LockState(
             name=summary.name, mac=summary.mac, features=summary.features
         )
+        # Ekey record refresh: in-memory shared cache + gate. Shared across
+        # every coordinator for the same account via hass.data, so one
+        # account-wide v3/key/list call per slow interval feeds all locks.
+        self._summary_last_fetched: datetime | None = None
+
+    async def _maybe_refresh_summary(self, now: datetime) -> None:
+        """Pull this lock's ekey record from the shared cache if due."""
+        if not self._slow_tier_due(self._summary_last_fetched, now):
+            return
+        for candidate in await self._shared_ekey_list(now):
+            if candidate.id == self.lock_id:
+                self.summary = candidate
+                break
+        self._summary_last_fetched = now
+
+    async def _shared_ekey_list(self, now: datetime) -> list[LockSummary]:
+        """One v3/key/list fetch per config entry per slow interval.
+
+        Keyed on the entry_id (not id(api), which is recyclable after a
+        reload) and single-flighted through an asyncio.Lock so concurrent
+        coordinators from the same entry wait for the first fetch instead
+        of each triggering their own.
+        """
+        assert self.config_entry is not None
+        bucket = self.hass.data.setdefault(DOMAIN, {}).setdefault("_ekey_cache", {})
+        slot = bucket.setdefault(
+            self.config_entry.entry_id,
+            {"fetched_at": None, "summaries": [], "lock": asyncio.Lock()},
+        )
+        async with slot["lock"]:
+            if slot["fetched_at"] and slot["fetched_at"] > now - self._slow_interval:
+                return slot["summaries"]
+            slot["summaries"] = await self.api.get_locks()
+            slot["fetched_at"] = now
+            return slot["summaries"]
 
     @callback
     def async_start_webhook_tracking(self) -> CALLBACK_TYPE:
@@ -430,6 +473,31 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     def connectable(self) -> bool:
         """Whether anything - cloud or radio - can reach the lock."""
         return self.cloud_connectable or self.ble_reachable
+
+    @property
+    def access_level(self) -> AccessLevel:
+        """Account-to-lock relationship from the current ekey record."""
+        return self.summary.access_level
+
+    @property
+    def ekey_remote_unlock(self) -> bool:
+        """Whether the ekey currently allows remote (gateway) unlock."""
+        return self.summary.remote_unlock_enabled
+
+    @property
+    def ekey_key_status(self) -> str | None:
+        """Raw keyStatus wire value from v3/key/list, for diagnostics."""
+        return self.summary.keyStatus
+
+    @property
+    def ekey_start_date(self) -> int:
+        """Millisecond epoch the ekey becomes valid (0 = unbounded)."""
+        return self.summary.startDate
+
+    @property
+    def ekey_end_date(self) -> int:
+        """Millisecond epoch the ekey expires (0 = unbounded)."""
+        return self.summary.endDate
 
     @property
     def gateway_online(self) -> bool:
@@ -549,12 +617,18 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             now = dt_util.now()
             new_data = deepcopy(self.data)
 
-            # Slow tier: full lock detail (battery, name, model, features,
-            # autolock/sound config). Slow-changing and, for lock/unlock,
-            # already delivered in real time by webhooks - so fetch it at most
-            # once per slow interval and otherwise carry the previous values
-            # forward via the deepcopy above.
-            if self._slow_tier_due(self._details_last_fetched, now):
+            # Refresh the ekey record first - downstream branches read
+            # can_admin, remote_unlock_enabled, is_frozen, and the window.
+            await self._maybe_refresh_summary(now)
+
+            # Slow tier: lock/detail (battery, name, model, features,
+            # autolock/sound config). Refreshed at most once per slow
+            # interval; webhook push keeps lock/unlock state real-time.
+            # Skipped for MEMBER - lock/detail returns 20002 there and
+            # the summary already supplies name, features and lockVersion.
+            if self.access_level.can_admin and self._slow_tier_due(
+                self._details_last_fetched, now
+            ):
                 details = await self.api.get_lock(self.lock_id)
                 new_data.name = details.name
                 new_data.mac = details.mac
@@ -948,6 +1022,16 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             "ble_proven": self.ble_proven,
             "has_gateway": self.has_gateway,
             "feature_value": self.feature_value,
+            # Ekey view of this lock from the authenticated account's
+            # perspective - access_level drives capability gating, the
+            # other fields explain why a service action was refused. The
+            # ekey's `remarks` and `lockData` are deliberately NOT exposed
+            # (set by the sharing admin / contain credentials).
+            "access_level": self.access_level.value,
+            "ekey_key_status": self.ekey_key_status,
+            "ekey_remote_unlock": self.ekey_remote_unlock,
+            "ekey_start_date": self.ekey_start_date,
+            "ekey_end_date": self.ekey_end_date,
             "last_update_success": self.last_update_success,
             "device": self.data,
             "entities": [

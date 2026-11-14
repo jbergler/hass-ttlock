@@ -102,3 +102,9 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# TTLock sampler output (contains account-specific payloads; redacted samples are promoted into tests/fixtures manually)
+tests/fixtures/captures/
+
+.claude/
+graphify-out/

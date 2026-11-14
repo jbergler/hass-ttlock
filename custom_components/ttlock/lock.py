@@ -7,11 +7,15 @@ from typing import Any
 from homeassistant.components.lock import LockEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
+from .const import DOMAIN
 from .coordinator import lock_coordinators
 from .entity import BaseLockEntity
+from .models import AccessLevel
 
 
 async def async_setup_entry(
@@ -54,9 +58,34 @@ class Lock(BaseLockEntity, LockEntity, RestoreEntity):
         self._attr_is_unlocking = pending and self._attr_is_locked
 
     async def async_lock(self, **kwargs: Any) -> None:
-        """Try to lock the lock."""
+        """Try to lock the lock, unless the ekey disallows it."""
+        self._ensure_remote_unlock_allowed()
         await self.coordinator.lock()
 
     async def async_unlock(self, **kwargs: Any) -> None:
-        """Try to unlock the lock."""
+        """Try to unlock the lock, unless the ekey disallows it."""
+        self._ensure_remote_unlock_allowed()
         await self.coordinator.unlock()
+
+    def _ensure_remote_unlock_allowed(self) -> None:
+        """Raise if the ekey disallows this account from driving the lock.
+
+        OWNER always may. Shared ekeys honour validity window, freeze
+        state, and remoteEnable - each with its own translation key.
+        """
+        if self.coordinator.access_level is AccessLevel.OWNER:
+            return
+        summary = self.coordinator.summary
+        now_ms = int(dt_util.utcnow().timestamp() * 1000)
+        valid, reason = summary.is_valid_now(now_ms)
+        if not valid:
+            assert reason is not None
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key=reason,
+            )
+        if not summary.remote_unlock_enabled:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="shared_lock_no_remote_unlock",
+            )
