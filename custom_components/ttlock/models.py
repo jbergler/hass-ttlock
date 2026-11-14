@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum, IntEnum, IntFlag, auto
-from typing import ClassVar, NamedTuple
+from typing import Any, ClassVar, NamedTuple
 
 from pydantic import BaseModel, Field, GetCoreSchemaHandler, field_validator
 from pydantic_core import core_schema
@@ -177,10 +177,11 @@ class LockSummary(LockMacModel):
     battery_level: int | None = Field(None, alias="electricQuantity")
     featureValue: str | None = None
     hasGateway: int = 0
-    # Protocol dialect for the BLE wire format, mirrored from lock/detail.
-    # Present for owned + authorized ekey records; may be None for a MEMBER
-    # record if the server omits it (every capture has it, but tolerate).
-    lockVersion: dict[str, int] | None = None
+    # Protocol dialect for the BLE wire format, forwarded to
+    # ble_protocol.LockVersion.from_cloud which reads protocolType and
+    # protocolVersion. The server mixes ints with strings (`logoUrl: ""`)
+    # and bools (`showAdminKbpwdFlag`) here, so the value type stays Any.
+    lockVersion: dict[str, Any] | None = None
     timezoneRawOffset: int = 0
 
     # Ekey-local fields, straight from the v3/key/list record. Together

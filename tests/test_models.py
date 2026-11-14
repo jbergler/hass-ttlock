@@ -318,6 +318,30 @@ class TestLockSummary:
         """Older accounts and trimmed fixtures omit it - that must not be fatal."""
         assert self._summary().lockData is None
 
+    def test_lock_version_tolerates_mixed_wire_types(self):
+        """v3/key/list's lockVersion carries strings and bools alongside ints.
+
+        `logoUrl` is a string (often empty) and `showAdminKbpwdFlag` a bool;
+        the lock/detail-shaped `dict[str, int]` typing raised ValidationError
+        against the real response until this was widened. Fixture mirrors a
+        captured payload.
+        """
+        summary = self._summary(
+            lockVersion={
+                "groupId": 10,
+                "logoUrl": "",
+                "orgId": 34,
+                "protocolType": 5,
+                "protocolVersion": 3,
+                "scene": 2,
+                "showAdminKbpwdFlag": True,
+            }
+        )
+        assert summary.lockVersion is not None
+        assert summary.lockVersion["protocolType"] == 5
+        assert summary.lockVersion["logoUrl"] == ""
+        assert summary.lockVersion["showAdminKbpwdFlag"] is True
+
 
 class TestAccessLevel:
     def test_top_admin_is_owner(self):
