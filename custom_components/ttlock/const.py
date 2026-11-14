@@ -64,6 +64,8 @@ TO_REDACT = {
     "keyboardPwd",
     "newKeyboardPwd",
     "cardNumber",
+    "admin",
+    "username",
     "webhook_id",
     "webhook_url",
 }
