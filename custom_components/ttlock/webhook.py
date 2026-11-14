@@ -110,11 +110,10 @@ class _WebhookGroup:
         # joining mid-runtime doesn't need to re-check the registry to know
         # the webhook is live.
         self.confirmed = confirmed
-        # Has the "register this URL" repair issue already been raised for
-        # this group this runtime? All members share one issue_id, so raising
-        # it again would just be a same-content no-op, but tracking this
-        # avoids the redundant call.
-        self.issue_raised = False
+        # URL currently shown by this group's setup repair. Siblings that
+        # resolve to the same URL need no registry update, but a later setup
+        # may select a cloudhook in place of an earlier local fallback.
+        self.setup_issue_url: str | None = None
 
 
 class WebhookHandler:
@@ -134,12 +133,36 @@ class WebhookHandler:
         self._capture = capture
 
     async def setup(self) -> None:
-        """Actually register the webhook."""
+        """Register the webhook without making it a prerequisite for locks."""
         if self.hass.state == CoreState.running:
-            await self.register_webhook()
+            await self._register_webhook_safely()
         else:
             self.hass.bus.async_listen_once(
-                EVENT_HOMEASSISTANT_STARTED, self.register_webhook
+                EVENT_HOMEASSISTANT_STARTED, self._register_webhook_safely
+            )
+
+    async def _register_webhook_safely(self, event: Event | None = None) -> None:
+        """Degrade to polling and a repair issue when webhook setup fails."""
+        try:
+            if event is None:
+                await self.register_webhook()
+            else:
+                await self.register_webhook(event)
+        except Exception as err:  # noqa: BLE001 - webhook setup is best-effort
+            _LOGGER.error("Could not set up webhook (%s)", type(err).__name__)
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                f"webhook_registration_failed_{self.client_id}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="webhook_registration_failed",
+            )
+        else:
+            ir.async_delete_issue(
+                self.hass,
+                DOMAIN,
+                f"webhook_registration_failed_{self.client_id}",
             )
 
     async def try_generate_cloudhook(self) -> str | None:
@@ -159,9 +182,7 @@ class WebhookHandler:
         return None
 
     async def get_url(self) -> str:
-        """Get the webhook url depending on the setup."""
-        if CONF_WEBHOOK_URL in self.entry.data:
-            return self.entry.data[CONF_WEBHOOK_URL]
+        """Acquire the best webhook URL for the current cloud state."""
         if cloudhook := await self.try_generate_cloudhook():
             return cloudhook
         return webhook.async_generate_url(self.hass, self.entry.data[CONF_WEBHOOK_ID])
@@ -332,9 +353,12 @@ class WebhookHandler:
         else:
             ir.async_delete_issue(self.hass, DOMAIN, "no_webhook_url")
 
-        if CONF_WEBHOOK_STATUS not in self.entry.data and not group.issue_raised:
+        if (
+            CONF_WEBHOOK_STATUS not in self.entry.data
+            and group.setup_issue_url != webhook_url
+        ):
             self.async_create_setup_issue(webhook_url)
-            group.issue_raised = True
+            group.setup_issue_url = webhook_url
 
         async with _GROUPS_LOCK:
             if not group.registered:

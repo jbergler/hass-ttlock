@@ -330,6 +330,36 @@ class TestSetup:
 
         mock_register.assert_awaited_once_with(ANY)
 
+    async def test_started_event_failure_creates_repair_issue(
+        self, hass: HomeAssistant, handler: WebhookHandler
+    ):
+        """The deferred startup path degrades to polling like the inline path."""
+        hass.set_state(CoreState.not_running)
+
+        with (
+            patch.object(
+                handler,
+                "register_webhook",
+                new_callable=AsyncMock,
+                side_effect=ValueError("registration failed"),
+            ),
+            patch(
+                "homeassistant.helpers.issue_registry.async_create_issue"
+            ) as mock_issue,
+        ):
+            await handler.setup()
+            hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+            await hass.async_block_till_done()
+
+        mock_issue.assert_called_once_with(
+            hass,
+            DOMAIN,
+            "webhook_registration_failed_client-id",
+            is_fixable=False,
+            severity=ANY,
+            translation_key="webhook_registration_failed",
+        )
+
 
 class TestRegisterWebhook:
     async def test_does_not_log_the_webhook_url(
@@ -346,23 +376,59 @@ class TestRegisterWebhook:
         assert "Webhook registered" in messages
         assert not any("secret-webhook-id" in message for message in messages)
 
+    async def test_refreshes_setup_issue_when_reacquired_url_changes(
+        self,
+        hass: HomeAssistant,
+        handler: WebhookHandler,
+        mock_cloud,
+    ):
+        """The repair must show the cloudhook selected on a later reload."""
+        with (
+            patch(
+                "custom_components.ttlock.webhook.webhook.async_generate_url",
+                return_value="https://local.example/fallback",
+            ),
+            patch(
+                "homeassistant.helpers.issue_registry.async_create_issue"
+            ) as mock_issue,
+        ):
+            await handler.register_webhook()
+
+            mock_cloud.async_active_subscription.return_value = True
+            mock_cloud.async_get_or_create_cloudhook.return_value = (
+                "https://hooks.nabucasa.com/current"
+            )
+            await handler.register_webhook()
+
+        assert mock_issue.call_count == 2
+        assert (
+            mock_issue.call_args.kwargs["translation_placeholders"]["webhook_url"]
+            == "https://hooks.nabucasa.com/current"
+        )
+
 
 class TestGetUrl:
-    async def test_returns_cached_url_without_generating(
-        self, hass: HomeAssistant, entry: MockConfigEntry
+    async def test_replaces_stored_fallback_when_cloudhook_becomes_available(
+        self,
+        hass: HomeAssistant,
+        entry: MockConfigEntry,
+        mock_cloud,
     ):
+        """A transient cloud failure must not make its local fallback permanent."""
         hass.config_entries.async_update_entry(
-            entry, data={**entry.data, CONF_WEBHOOK_URL: "https://cached.example/hook"}
+            entry, data={**entry.data, CONF_WEBHOOK_URL: "https://local.example/hook"}
         )
-        handler = WebhookHandler(hass, entry)
+        mock_cloud.async_active_subscription.return_value = True
+        mock_cloud.async_get_or_create_cloudhook.return_value = (
+            "https://hooks.nabucasa.com/current"
+        )
 
-        with patch.object(
-            handler, "try_generate_cloudhook", new_callable=AsyncMock
-        ) as mock_cloudhook:
-            url = await handler.get_url()
+        url = await WebhookHandler(hass, entry).get_url()
 
-        assert url == "https://cached.example/hook"
-        mock_cloudhook.assert_not_called()
+        assert url == "https://hooks.nabucasa.com/current"
+        mock_cloud.async_get_or_create_cloudhook.assert_awaited_once_with(
+            hass, entry.data[CONF_WEBHOOK_ID]
+        )
 
 
 class TestTryGenerateCloudhook:
