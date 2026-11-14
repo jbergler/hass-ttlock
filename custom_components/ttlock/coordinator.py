@@ -361,8 +361,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         coordinators from the same entry wait for the first fetch instead
         of each triggering their own.
         """
-        if self.config_entry is None:
-            return await self.api.get_locks()
+        assert self.config_entry is not None
         bucket = self.hass.data.setdefault(DOMAIN, {}).setdefault("_ekey_cache", {})
         slot = bucket.setdefault(
             self.config_entry.entry_id,

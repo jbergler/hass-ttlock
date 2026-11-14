@@ -1,7 +1,7 @@
 """Test the TTLockApi REST client."""
 
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from aiohttp import ClientResponseError
 import pytest
@@ -328,6 +328,52 @@ class TestGetLocks:
         assert locks[1].connectable is False
         assert locks[0].access_level.value == "owner"
         assert locks[1].access_level.value == "member"
+
+    async def test_paginates_and_keeps_first_record_per_lock(self, api: TTLockApi):
+        """Large accounts discover later pages without duplicating a lock."""
+        api.post = AsyncMock(
+            side_effect=[
+                {
+                    "list": [
+                        {
+                            "lockId": 1,
+                            "lockAlias": "Front Door",
+                            "lockMac": "00:00:00:00:00:01",
+                            "userType": "110301",
+                        }
+                    ],
+                    "pages": 2,
+                },
+                {
+                    "list": [
+                        {
+                            "lockId": 1,
+                            "lockAlias": "Duplicate",
+                            "lockMac": "00:00:00:00:00:01",
+                            "userType": "110301",
+                        },
+                        {
+                            "lockId": 2,
+                            "lockAlias": "Shed",
+                            "lockMac": "00:00:00:00:00:02",
+                            "userType": "110302",
+                        },
+                    ],
+                    "pages": 2,
+                },
+            ]
+        )
+
+        locks = await api.get_locks()
+
+        assert [(lock.id, lock.name) for lock in locks] == [
+            (1, "Front Door"),
+            (2, "Shed"),
+        ]
+        assert api.post.await_args_list == [
+            call("key/list", pageNo=1, pageSize=1000),
+            call("key/list", pageNo=2, pageSize=1000),
+        ]
 
 
 class TestGetSensor:

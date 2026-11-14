@@ -119,6 +119,23 @@ def component_setup(hass: HomeAssistant, config_entry: MockConfigEntry):
 
 
 @pytest.fixture
+def ekey_component_setup(component_setup, mock_api_responses, monkeypatch):
+    """Set up the integration with one explicit v3/key/list record."""
+
+    async def _setup(record: dict[str, Any]) -> LockUpdateCoordinator:
+        mock_api_responses("default")
+        summary = LockSummary.model_validate(record)
+
+        async def mock_get_locks(*args, **kwargs):
+            return [summary]
+
+        monkeypatch.setattr(TTLockApi, "get_locks", mock_get_locks)
+        return await component_setup()
+
+    return _setup
+
+
+@pytest.fixture
 def multi_account_credential():
     """Factory: register the one developer application ("client-id") that
     new_mocked_entry's config entries all authenticate against, so tests can

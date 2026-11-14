@@ -1,7 +1,7 @@
 """Test the TTLock services."""
 
 from datetime import timedelta
-from unittest.mock import call, patch
+from unittest.mock import AsyncMock, call, patch
 
 import probatio as vol
 import pytest
@@ -38,10 +38,12 @@ from custom_components.ttlock.models import (
 )
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import Context, HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.script import Script
 from homeassistant.util import dt as dt_util
+
+from .const import BASIC_EKEY_RECORD_MEMBER
 
 
 @pytest.fixture
@@ -96,6 +98,33 @@ class Test_configure_autolock:
             )
             await hass.async_block_till_done()
             assert mock.call_args_list == [call(coordinator.lock_id, seconds_expected)]
+
+
+async def test_member_lock_rejects_admin_service_before_api_call(
+    hass: HomeAssistant, ekey_component_setup, monkeypatch
+):
+    """Admin-only services explain the permission issue without calling TTLock."""
+    coordinator = await ekey_component_setup(BASIC_EKEY_RECORD_MEMBER)
+    request = AsyncMock(return_value=[])
+    monkeypatch.setattr(coordinator.api, "list_passcodes", request)
+    entity_id = next(
+        entity.entity_id
+        for entity in coordinator.entities
+        if entity.entity_id.startswith("lock.")
+    )
+
+    with pytest.raises(ServiceValidationError) as exc_info:
+        await hass.services.async_call(
+            DOMAIN,
+            SVC_LIST_PASSCODES,
+            {ATTR_ENTITY_ID: entity_id},
+            blocking=True,
+            return_response=True,
+        )
+
+    assert exc_info.value.translation_key == "shared_lock_admin_only"
+    assert exc_info.value.translation_placeholders == {"entities": entity_id}
+    request.assert_not_awaited()
 
 
 class Test_list_passcodes:
