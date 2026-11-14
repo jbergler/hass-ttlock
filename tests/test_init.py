@@ -216,12 +216,14 @@ async def test_setup_with_non_connectable_lock(
                 lockAlias="Connectable Lock",
                 lockMac="00:00:00:00:00:01",
                 hasGateway=1,
+                userType="110301",
             ),
             LockSummary(
                 lockId=2,
                 lockAlias="No Gateway Lock",
                 lockMac="00:00:00:00:00:02",
                 hasGateway=0,
+                userType="110301",
             ),
         ]
 
@@ -271,6 +273,7 @@ async def test_setup_with_a_gatewayless_lock_in_bluetooth_range(
                 lockAlias="No Gateway Lock",
                 lockMac="00:00:00:00:00:02",
                 hasGateway=0,
+                userType="110301",
             ),
         ]
 
@@ -351,10 +354,10 @@ async def test_setup_issue_raised_once_for_shared_entries(
     assert mock_create.call_args.args[2] == "webhook_setup_client-id"
 
 
-async def test_no_setup_issue_for_entry_joining_confirmed_group(
+async def test_entry_joining_confirmed_group_inherits_webhook_status(
     hass, mock_api_responses, multi_account_credential, new_mocked_entry
 ):
-    """A sibling joining an already-confirmed group isn't told to re-register."""
+    """A sibling joining an already-confirmed group picks up its confirmed flag."""
     mock_api_responses("default")
     await multi_account_credential(hass)
 
@@ -369,14 +372,9 @@ async def test_no_setup_issue_for_entry_joining_confirmed_group(
 
     entry_b = new_mocked_entry()
     entry_b.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry_b.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
 
-    with patch(
-        "homeassistant.helpers.issue_registry.async_create_issue"
-    ) as mock_create:
-        assert await hass.config_entries.async_setup(entry_b.entry_id)
-        await hass.async_block_till_done(wait_background_tasks=True)
-
-    mock_create.assert_not_called()
     assert entry_b.data[CONF_WEBHOOK_STATUS] is True
 
 

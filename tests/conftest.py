@@ -119,6 +119,23 @@ def component_setup(hass: HomeAssistant, config_entry: MockConfigEntry):
 
 
 @pytest.fixture
+def ekey_component_setup(component_setup, mock_api_responses, monkeypatch):
+    """Set up the integration with one explicit v3/key/list record."""
+
+    async def _setup(record: dict[str, Any]) -> LockUpdateCoordinator:
+        mock_api_responses("default")
+        summary = LockSummary.model_validate(record)
+
+        async def mock_get_locks(*args, **kwargs):
+            return [summary]
+
+        monkeypatch.setattr(TTLockApi, "get_locks", mock_get_locks)
+        return await component_setup()
+
+    return _setup
+
+
+@pytest.fixture
 def multi_account_credential():
     """Factory: register the one developer application ("client-id") that
     new_mocked_entry's config entries all authenticate against, so tests can
@@ -175,7 +192,11 @@ async def coordinator(hass, api):
     config_entry = MockConfigEntry(domain=DOMAIN)
     config_entry.add_to_hass(hass)
     summary = LockSummary(
-        lockId=7252408, lockAlias="Test Lock", lockMac="00:00:00:00:00:00", hasGateway=1
+        lockId=7252408,
+        lockAlias="Test Lock",
+        lockMac="00:00:00:00:00:00",
+        hasGateway=1,
+        userType="110301",
     )
     return LockUpdateCoordinator(
         hass, config_entry, api, summary, LockTrafficCapture(), LockStateStore(hass)
@@ -268,6 +289,7 @@ def mock_api_responses(monkeypatch, mock_data_factory):
                     hasGateway=1,
                     # opaque binary blob, value doesn't matter to us, just presence
                     lockData="TW9ja0xvY2tEYXRhQmxvYkZvclRlc3Rz",
+                    userType="110301",
                 )
             ]
 

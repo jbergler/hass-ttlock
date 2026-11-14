@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum, IntEnum, IntFlag, auto
-from typing import ClassVar, NamedTuple
+from typing import Any, ClassVar, NamedTuple
 
 from pydantic import BaseModel, Field, GetCoreSchemaHandler, field_validator
 from pydantic_core import core_schema
@@ -60,6 +60,39 @@ class SensorState(Enum):
     unknown = None
 
 
+class AccessLevel(Enum):
+    """How the authenticated account relates to a lock.
+
+    Derived from the ekey record on v3/key/list (the only enumeration
+    that returns shared-in locks; v3/lock/list is admin-only).
+
+    - OWNER: top administrator (userType=110301).
+    - AUTHORIZED: common ekey the owner promoted with keyRight=1.
+      Empirically equivalent to OWNER for every admin REST call.
+    - MEMBER: common ekey with keyRight=0. Can read state and (if
+      remoteEnable=1) lock/unlock, but lock/detail and every admin
+      endpoint return errcode=20002 "not lock admin".
+    """
+
+    OWNER = "owner"
+    AUTHORIZED = "authorized"
+    MEMBER = "member"
+
+    @classmethod
+    def from_ekey(cls, user_type: str, key_right: int) -> "AccessLevel":
+        """Classify from the wire values; unknown userType falls back to shared."""
+        if user_type == "110301":
+            return cls.OWNER
+        if key_right == 1:
+            return cls.AUTHORIZED
+        return cls.MEMBER
+
+    @property
+    def can_admin(self) -> bool:
+        """True iff lock/detail and the admin-only REST endpoints will succeed."""
+        return self is not AccessLevel.MEMBER
+
+
 class LockMacModel(BaseModel):
     """Base for API models carrying a lock MAC.
 
@@ -107,22 +140,42 @@ class Lock(LockMacModel):
 
 
 class LockSummary(LockMacModel):
-    """Cheap per-lock summary from lock/list, enough to build a device/entities without a detail fetch."""
+    """Per-lock summary built from one v3/key/list record.
+
+    v3/key/list is a strict superset of the old lock/list fields and the
+    only enumeration that includes shared-in locks, so discovery feeds
+    owned and shared through the same path. See AccessLevel.
+    """
+
+    # Server-side ekey status strings - mirrored from v3/key/list captures.
+    KEY_STATUS_NORMAL: ClassVar[str] = "110401"
+    KEY_STATUS_FROZEN: ClassVar[str] = "110405"
 
     id: int = Field(..., alias="lockId")
     name: str = Field("Lock", alias="lockAlias")
+    battery_level: int | None = Field(None, alias="electricQuantity")
     featureValue: str | None = None
     hasGateway: int = 0
+    # Protocol dialect for the BLE wire format. ble_protocol.LockVersion
+    # reads protocolType/protocolVersion; the server also carries strings
+    # (`logoUrl`) and bools (`showAdminKbpwdFlag`), so the value type is Any.
+    lockVersion: dict[str, Any] | None = None
+    timezoneRawOffset: int = 0
 
-    # sensitive fields
-    #
-    # lockData is the per-lock credential blob TTLock's own SDK uses to talk
-    # to a lock directly over BLE - it is only ever returned by lock/list
-    # (see docs/ttlock-cloud-api/lock/list.md) and ekey/get, never by
-    # lock/detail.
-    # Treated as opaque - its contents are TTLock's business, not ours, and
-    # it is mutable (lock/updateLockData is the write-back endpoint). Always
-    # redacted from diagnostics via const.TO_REDACT.
+    # Ekey-local fields - drive AccessLevel, validity, and remote-unlock gating.
+    userType: str | None = None
+    keyRight: int = 0
+    keyStatus: str | None = None
+    # 1=yes, 2=no. Absent on OWNER records; default no so an unset flag
+    # never reads as "allowed".
+    remoteEnable: int = 2
+    # TTLock validity window; 0 = unbounded on that side.
+    startDate: int = 0
+    endDate: int = 0
+
+    # Opaque per-lock BLE credential blob. Scoped to this account's ekey
+    # by the server; mutable (lock/updateLockData writes it); redacted via
+    # const.TO_REDACT.
     lockData: str | None = None
 
     @property
@@ -134,6 +187,35 @@ class LockSummary(LockMacModel):
     def connectable(self) -> bool:
         """True if the lock is reachable via a gateway or its own WiFi."""
         return self.hasGateway != 0 or Features.wifi in self.features
+
+    @property
+    def access_level(self) -> AccessLevel:
+        """Classify this lock from its ekey record."""
+        return AccessLevel.from_ekey(self.userType or "", self.keyRight)
+
+    @property
+    def remote_unlock_enabled(self) -> bool:
+        """Admin's remoteEnable flag; only meaningful for shared ekeys."""
+        return self.remoteEnable == 1
+
+    @property
+    def is_frozen(self) -> bool:
+        """Whether the admin has frozen this ekey via v3/key/freeze."""
+        return self.keyStatus == self.KEY_STATUS_FROZEN
+
+    def is_valid_now(self, now_ms: int) -> tuple[bool, str | None]:
+        """Whether the ekey is inside its validity window at `now_ms`.
+
+        Returns (valid, reason). `reason` is the translation key the lock
+        entity raises, or None when valid. Date=0 means unbounded.
+        """
+        if self.is_frozen:
+            return False, "shared_lock_frozen"
+        if self.startDate and now_ms < self.startDate:
+            return False, "shared_lock_not_yet_valid"
+        if self.endDate and now_ms >= self.endDate:
+            return False, "shared_lock_expired"
+        return True, None
 
 
 class Sensor(BaseModel):

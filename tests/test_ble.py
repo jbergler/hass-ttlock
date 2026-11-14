@@ -89,7 +89,11 @@ def _gatewayless(
 ) -> LockUpdateCoordinator:
     """A coordinator for a lock the cloud has no route to."""
     summary = LockSummary(
-        lockId=1, lockAlias="No Gateway", lockMac=LOCK_MAC, hasGateway=0
+        lockId=1,
+        lockAlias="No Gateway",
+        lockMac=LOCK_MAC,
+        hasGateway=0,
+        userType="110301",
     )
     return _coordinator(hass, api, summary, options)
 
@@ -790,6 +794,7 @@ class TestBluetoothDisabled:
             lockAlias="Test Lock",
             lockMac="00:00:00:00:00:00",
             hasGateway=1,
+            userType="110301",
         )
         return _coordinator(hass, api, summary, BLUETOOTH_OFF)
 

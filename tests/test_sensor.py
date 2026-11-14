@@ -124,6 +124,7 @@ async def test_gateway_signal_entity_not_created_for_wifi_only_lock(
                 lockMac="00:00:00:00:00:00",
                 hasGateway=0,
                 featureValue=f"{2**56:X}",  # Features.wifi
+                userType="110301",
             )
         ]
 

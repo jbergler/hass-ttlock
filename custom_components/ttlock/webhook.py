@@ -19,8 +19,10 @@ import asyncio
 import json
 import logging
 import secrets
+from typing import Any
 
 from aiohttp.web import Request
+from multidict import MultiDictProxy
 
 from homeassistant.components import webhook
 from homeassistant.components.webhook import (
@@ -67,6 +69,30 @@ def _setup_issue_id(client_id: str) -> str:
     return f"webhook_setup_{client_id}"
 
 
+def _loggable_form(data: MultiDictProxy) -> dict[str, Any]:
+    """Copy webhook form data for logging, with each `records` JSON decoded.
+
+    The form arrives as a MultiDictProxy whose `records` values are JSON
+    strings, so key-based redaction (TO_REDACT) can't see the keyboardPwd
+    inside them. Event processing keeps using the original form.
+    """
+    loggable: dict[str, Any] = {}
+    for key in dict.fromkeys(data.keys()):
+        values = data.getall(key)
+        if key == "records":
+            values = [_json_or_raw(value) for value in values]
+        loggable[key] = values[0] if len(values) == 1 else values
+    return loggable
+
+
+def _json_or_raw(value: Any) -> Any:
+    """Decode a JSON string, or return it unchanged if it isn't one."""
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return value
+
+
 class _WebhookGroup:
     """The shared webhook_id for one client_id, and how many entries use it."""
 
@@ -80,9 +106,9 @@ class _WebhookGroup:
         # the real HA-side registration.
         self.registered = False
         # Has any member ever actually received webhook traffic? Tracked
-        # here (not just in each entry's own CONF_WEBHOOK_STATUS) so a new
-        # sibling joining an already-working group later in the same
-        # runtime doesn't get told to go register a URL that's already live.
+        # here (not just in each entry's own CONF_WEBHOOK_STATUS) so a sibling
+        # joining mid-runtime doesn't need to re-check the registry to know
+        # the webhook is live.
         self.confirmed = confirmed
         # Has the "register this URL" repair issue already been raised for
         # this group this runtime? All members share one issue_id, so raising
@@ -204,8 +230,8 @@ class WebhookHandler:
 
         # Ambiguous means we can't actually trust the guess, even if it
         # happens to equal one of several conflicting previously-confirmed
-        # ids - treating it as confirmed here would suppress the setup
-        # notification carrying the URL below.
+        # ids - treating it as confirmed would let a stale URL slip through
+        # as the group's canonical webhook.
         confirmed = not ambiguous and canonical in confirmed_ids
 
         for member in members:
@@ -244,8 +270,8 @@ class WebhookHandler:
 
         Runs for every member, not just whoever resolved the group - a
         sibling joining an already-confirmed group later in the same
-        runtime still needs its own CONF_WEBHOOK_STATUS set, or it'll raise a
-        "register this URL" repair issue for a webhook that's already live.
+        runtime still needs its own CONF_WEBHOOK_STATUS set so later
+        _resolve_group_webhook_id calls see it as confirmed.
         """
         data = dict(self.entry.data)
         changed = False
@@ -312,7 +338,7 @@ class WebhookHandler:
 
         async with _GROUPS_LOCK:
             if not group.registered:
-                _LOGGER.info("Webhook registered at %s", webhook_url)
+                _LOGGER.info("Webhook registered")
 
                 # Ensure the webhook is not registered already
                 webhook_unregister(self.hass, group.webhook_id)
@@ -342,7 +368,11 @@ class WebhookHandler:
                 )
                 logger = get_device_logger(lock_id) if lock_id is not None else _LOGGER
                 log_and_capture(
-                    self._capture, logger, lock_id, "Got webhook data: %s", data
+                    self._capture,
+                    logger,
+                    lock_id,
+                    "Got webhook data: %s",
+                    _loggable_form(data),
                 )
                 for raw_records in data.getall("records", []):
                     try:
@@ -388,10 +418,10 @@ class WebhookHandler:
     def async_create_setup_issue(self, uri: str) -> None:
         """Raise a repair issue asking the user to register this webhook URL.
 
-        A repair issue rather than a persistent notification so it doesn't
-        disappear from Settings > Repairs on its own - it's only cleared by
-        async_resolve_setup_issue, once real traffic confirms it's actually
-        registered with TTLock.
+        The URL is also shown in the config and options flows, but this
+        repair acts as a second, persistent nudge for setups that complete
+        without the user noticing the config-flow step - it stays in
+        Settings > Repairs until real traffic confirms the webhook is live.
         """
         ir.async_create_issue(
             self.hass,
@@ -408,11 +438,11 @@ class WebhookHandler:
         )
 
     def async_resolve_setup_issue(self) -> None:
-        """Resolve the repair issue shared by the whole group.
+        """Clear the setup repair and mark the group confirmed on first traffic.
 
-        Also marks every entry sharing this webhook as confirmed, and the
-        in-memory group too, so a sibling joining later this same runtime
-        doesn't get a repair issue raised for an already-live webhook.
+        Marks every entry sharing this webhook, and the in-memory group, so a
+        sibling joining later this same runtime doesn't re-raise the repair
+        for an already-live webhook.
         """
         webhook_id = self.entry.data.get(CONF_WEBHOOK_ID)
         for member in self.hass.config_entries.async_entries(DOMAIN):

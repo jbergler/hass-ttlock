@@ -256,6 +256,37 @@ class TestDebugCapture:
             "Got webhook data" in record["message"] for record in captured["records"]
         )
 
+    async def test_sensitive_webhook_fields_are_redacted(
+        self, hass: HomeAssistant, entry: MockConfigEntry
+    ):
+        """Form identity fields and decoded record secrets are redacted."""
+        capture = LockTrafficCapture()
+        handler = WebhookHandler(hass, entry, capture)
+
+        record = {
+            **WEBHOOK_UNLOCK_10AM_UTC,
+            "keyboardPwd": "135790",
+            "username": "Front Door User",
+        }
+        request = _request(
+            MultiDict(
+                {
+                    "lockId": "7252408",
+                    "records": json.dumps([record]),
+                    "admin": "owner@example.com",
+                }
+            )
+        )
+        await handler.handle_webhook(hass, "wh-id", request)
+        await hass.async_block_till_done()
+
+        captured = [r["message"] for r in capture.diagnostics_for(7252408)["records"]]
+        webhook_lines = [m for m in captured if "Got webhook data" in m]
+        assert webhook_lines
+        assert all(message.count("**REDACTED**") == 3 for message in webhook_lines)
+        for secret in ("135790", "Front Door User", "owner@example.com"):
+            assert not any(secret in message for message in captured)
+
     async def test_webhook_data_without_lock_id_is_not_captured(
         self, hass: HomeAssistant, entry: MockConfigEntry
     ):
@@ -298,6 +329,22 @@ class TestSetup:
             await hass.async_block_till_done()
 
         mock_register.assert_awaited_once_with(ANY)
+
+
+class TestRegisterWebhook:
+    async def test_does_not_log_the_webhook_url(
+        self, hass: HomeAssistant, handler: WebhookHandler, caplog
+    ):
+        """The URL is what lets anyone post events, so it stays out of the log."""
+        caplog.set_level(logging.INFO, logger="custom_components.ttlock.webhook")
+        url = "https://example.invalid/api/webhook/secret-webhook-id"
+
+        with patch.object(handler, "get_url", new_callable=AsyncMock, return_value=url):
+            await handler.register_webhook()
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert "Webhook registered" in messages
+        assert not any("secret-webhook-id" in message for message in messages)
 
 
 class TestGetUrl:

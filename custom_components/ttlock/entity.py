@@ -9,6 +9,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .coordinator import NOT_CONNECTABLE_REASON, LockUpdateCoordinator
+from .models import AccessLevel
 
 
 class BaseLockEntity(CoordinatorEntity[LockUpdateCoordinator], ABC):
@@ -47,7 +48,20 @@ class BaseLockEntity(CoordinatorEntity[LockUpdateCoordinator], ABC):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Explain why the entity is unavailable, if it is non-connectable."""
-        if self.coordinator.connectable:
-            return None
-        return {"unavailable_reason": NOT_CONNECTABLE_REASON}
+        """Explain availability + surface ekey metadata when present."""
+        attrs: dict[str, Any] = {}
+        if not self.coordinator.connectable:
+            attrs["unavailable_reason"] = NOT_CONNECTABLE_REASON
+        # Ekey-derived; exposed for automations and diagnostics.
+        attrs["access_level"] = self.coordinator.access_level.value
+        if self.coordinator.ekey_key_status is not None:
+            attrs["key_status"] = self.coordinator.ekey_key_status
+        if self.coordinator.ekey_start_date:
+            attrs["valid_from"] = self.coordinator.ekey_start_date
+        if self.coordinator.ekey_end_date:
+            attrs["valid_until"] = self.coordinator.ekey_end_date
+        if self.coordinator.access_level is not AccessLevel.OWNER:
+            # Only meaningful on shared ekeys - OWNER always has full control
+            # via admin REST paths.
+            attrs["remote_unlock_enabled"] = self.coordinator.ekey_remote_unlock
+        return attrs

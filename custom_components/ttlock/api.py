@@ -45,6 +45,7 @@ from homeassistant.helpers import config_entry_oauth2_flow
 from .capture import LockTrafficCapture, log_and_capture
 from .const import DEFAULT_REGION, REGIONS, get_device_logger
 from .models import (
+    AccessLevel,
     AddPasscodeConfig,
     Card,
     Fingerprint,
@@ -242,9 +243,37 @@ class TTLockApi:
         return await self._parse_resp(resp, log_id, logger, lock_id)
 
     async def get_locks(self) -> list[LockSummary]:
-        """Enumerate all locks in the account (connectable and not)."""
-        res = await self.get("lock/list", pageNo=1, pageSize=1000)
-        return [LockSummary.model_validate(lock) for lock in res["list"]]
+        """Enumerate every lock this account can touch.
+
+        Sources from v3/key/list, which returns both owned (admin) and
+        shared (common-ekey) records - v3/lock/list is owner-only. See
+        models.AccessLevel for the classification. The server returns one
+        ekey per lock per account, but we still dedup by lockId as a
+        belt-and-suspenders.
+        """
+        summaries: dict[int, LockSummary] = {}
+        page = 1
+        while True:
+            res = await self.post("key/list", pageNo=page, pageSize=1000)
+            for record in res.get("list", []) or []:
+                summary = LockSummary.model_validate(record)
+                summaries.setdefault(summary.id, summary)
+            if page >= res.get("pages", 1):
+                break
+            page += 1
+
+        if _LOGGER.isEnabledFor(logging.INFO):
+            by_level = dict.fromkeys(AccessLevel, 0)
+            for summary in summaries.values():
+                by_level[summary.access_level] += 1
+            _LOGGER.info(
+                "Discovered %d lock(s): owner=%d authorized=%d member=%d",
+                len(summaries),
+                by_level[AccessLevel.OWNER],
+                by_level[AccessLevel.AUTHORIZED],
+                by_level[AccessLevel.MEMBER],
+            )
+        return list(summaries.values())
 
     async def get_gateways(self) -> list[Gateway]:
         """Enumerate all gateways in the account."""

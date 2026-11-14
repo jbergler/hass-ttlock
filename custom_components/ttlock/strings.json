@@ -3,6 +3,10 @@
     "step": {
       "pick_implementation": {
         "title": "[%key:common::config_flow::title::oauth2_pick_implementation%]"
+      },
+      "webhook": {
+        "title": "Register your TTLock webhook URL",
+        "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n`{webhook_url}`\n\nOpen the [TTLock console]({console_url}) and paste it in as the callback URL, then submit. See [the setup docs]({docs_url}) for more. You can revisit this URL later from the integration's Configure screen."
       }
     },
     "abort": {
@@ -28,8 +32,25 @@
       "title": "Confirm your TTLock webhook URL"
     },
     "webhook_setup": {
-      "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n{webhook_url}\n\nUse the link below to open the TTLock console, or see [the setup docs]({docs_url}) for more info. Until this is done, locks still stay in sync via TTLock's regular 15-minute poll.",
+      "description": "TTLock won't push updates until this webhook URL is registered with your developer application:\n\n`{webhook_url}`\n\nUse the link below to open the TTLock console, or see [the setup docs]({docs_url}) for more info. You can also view this URL at any time from the integration's Configure screen. Until this is done, locks still stay in sync via TTLock's regular poll.",
       "title": "Register your TTLock webhook URL"
+    }
+  },
+  "exceptions": {
+    "shared_lock_no_remote_unlock": {
+      "message": "This lock is shared with you and the owner has not enabled remote unlock for your ekey. Ask the owner to turn on 'Remote unlock' for your ekey, or operate the lock with the TTLock app at the door."
+    },
+    "shared_lock_admin_only": {
+      "message": "This action is only available to the lock's owner. The following locks are shared with you and cannot be managed from here: {entities}."
+    },
+    "shared_lock_frozen": {
+      "message": "The owner has frozen your ekey for this lock. Ask the owner to unfreeze it in the TTLock app before you can use remote unlock again."
+    },
+    "shared_lock_expired": {
+      "message": "Your ekey for this lock has expired. Ask the owner to extend or re-send the ekey if you still need access."
+    },
+    "shared_lock_not_yet_valid": {
+      "message": "Your ekey for this lock is not valid yet. It becomes active at its configured start time - the owner can see the exact time in the TTLock app."
     }
   }
 }

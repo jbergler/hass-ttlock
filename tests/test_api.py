@@ -1,7 +1,7 @@
 """Test the TTLockApi REST client."""
 
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from aiohttp import ClientResponseError
 import pytest
@@ -209,7 +209,7 @@ class TestPerLockLogging:
     async def test_request_without_lock_id_logs_via_shared_logger(
         self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker, caplog
     ):
-        mocker.get(f"{BASE}lock/list", json={"list": []})
+        mocker.post(f"{BASE}key/list", json={"list": [], "pages": 1})
         caplog.set_level(logging.DEBUG, logger="custom_components.ttlock.api")
 
         await ttlock_api.get_locks()
@@ -243,11 +243,36 @@ class TestDebugCapture:
             "Received response" in record["message"] for record in captured["records"]
         )
 
+    async def test_passcodes_are_redacted_in_capture(
+        self, mock_oauth_session, mocker: AiohttpClientMocker
+    ):
+        """Door codes sent in a request or listed in a response stay out of diagnostics."""
+        mocker.post(f"{BASE}keyboardPwd/add", json={"errcode": 0, "keyboardPwdId": 7})
+        mocker.get(
+            f"{BASE}lock/listKeyboardPwd",
+            json={"list": [{"keyboardPwdId": 7, "keyboardPwd": "246813"}]},
+        )
+
+        capture = LockTrafficCapture()
+        session = mocker.create_session(None)
+        try:
+            api = TTLockApi(session, mock_oauth_session, capture)
+            await api.post("keyboardPwd/add", lockId=42, keyboardPwd="135790")
+            await api.get("lock/listKeyboardPwd", lockId=42)
+        finally:
+            await session.close()
+
+        captured = [r["message"] for r in capture.diagnostics_for(42)["records"]]
+        assert any("**REDACTED**" in message for message in captured)
+        for message in captured:
+            assert "135790" not in message
+            assert "246813" not in message
+
     async def test_request_without_lock_id_is_not_captured(
         self, mock_oauth_session, mocker: AiohttpClientMocker
     ):
         """Account-wide (non-lock-scoped) calls have nothing to key a buffer on."""
-        mocker.get(f"{BASE}lock/list", json={"list": []})
+        mocker.post(f"{BASE}key/list", json={"list": [], "pages": 1})
 
         capture = LockTrafficCapture()
         session = mocker.create_session(None)
@@ -264,11 +289,11 @@ class TestGetLocks:
     async def test_returns_all_locks_as_summaries(
         self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker
     ):
-        # get_locks() no longer filters by connectability - that's now
-        # LockSummary.connectable, exercised directly in test_models.py.
-        # Non-connectable locks still get entities (shown unavailable).
-        mocker.get(
-            f"{BASE}lock/list",
+        # Discovery now sources from v3/key/list, which uniformly carries
+        # owned and shared locks. hasGateway drives .connectable; the ekey
+        # fields drive .access_level (OWNER vs AUTHORIZED vs MEMBER).
+        mocker.post(
+            f"{BASE}key/list",
             json={
                 "list": [
                     {
@@ -277,6 +302,9 @@ class TestGetLocks:
                         "lockMac": "00:00:00:00:00:01",
                         "hasGateway": 1,
                         "featureValue": "0",
+                        "userType": "110301",
+                        "keyRight": 0,
+                        "remoteEnable": 2,
                     },
                     {
                         "lockId": 2,
@@ -284,8 +312,12 @@ class TestGetLocks:
                         "lockMac": "00:00:00:00:00:02",
                         "hasGateway": 0,
                         "featureValue": "0",
+                        "userType": "110302",
+                        "keyRight": 0,
+                        "remoteEnable": 1,
                     },
-                ]
+                ],
+                "pages": 1,
             },
         )
 
@@ -294,6 +326,54 @@ class TestGetLocks:
         assert [lock.id for lock in locks] == [1, 2]
         assert locks[0].connectable is True
         assert locks[1].connectable is False
+        assert locks[0].access_level.value == "owner"
+        assert locks[1].access_level.value == "member"
+
+    async def test_paginates_and_keeps_first_record_per_lock(self, api: TTLockApi):
+        """Large accounts discover later pages without duplicating a lock."""
+        api.post = AsyncMock(
+            side_effect=[
+                {
+                    "list": [
+                        {
+                            "lockId": 1,
+                            "lockAlias": "Front Door",
+                            "lockMac": "00:00:00:00:00:01",
+                            "userType": "110301",
+                        }
+                    ],
+                    "pages": 2,
+                },
+                {
+                    "list": [
+                        {
+                            "lockId": 1,
+                            "lockAlias": "Duplicate",
+                            "lockMac": "00:00:00:00:00:01",
+                            "userType": "110301",
+                        },
+                        {
+                            "lockId": 2,
+                            "lockAlias": "Shed",
+                            "lockMac": "00:00:00:00:00:02",
+                            "userType": "110302",
+                        },
+                    ],
+                    "pages": 2,
+                },
+            ]
+        )
+
+        locks = await api.get_locks()
+
+        assert [(lock.id, lock.name) for lock in locks] == [
+            (1, "Front Door"),
+            (2, "Shed"),
+        ]
+        assert api.post.await_args_list == [
+            call("key/list", pageNo=1, pageSize=1000),
+            call("key/list", pageNo=2, pageSize=1000),
+        ]
 
 
 class TestGetSensor:
