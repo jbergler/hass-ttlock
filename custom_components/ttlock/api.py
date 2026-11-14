@@ -45,6 +45,7 @@ from homeassistant.helpers import config_entry_oauth2_flow
 from .capture import LockTrafficCapture, log_and_capture
 from .const import DEFAULT_REGION, REGIONS, get_device_logger
 from .models import (
+    AccessLevel,
     AddPasscodeConfig,
     Card,
     Fingerprint,
@@ -242,9 +243,44 @@ class TTLockApi:
         return await self._parse_resp(resp, log_id, logger, lock_id)
 
     async def get_locks(self) -> list[LockSummary]:
-        """Enumerate all locks in the account (connectable and not)."""
-        res = await self.get("lock/list", pageNo=1, pageSize=1000)
-        return [LockSummary.model_validate(lock) for lock in res["list"]]
+        """Enumerate every lock this account can touch.
+
+        Sources from v3/key/list rather than v3/lock/list - v3/lock/list is
+        documented (and empirically confirmed) to only return locks this
+        account is the top administrator of, which omits every lock shared
+        in via an ekey. v3/key/list returns both the admin's own ekey
+        records (userType=110301) and any common ekeys shared to the
+        account (userType=110302), carries a strict superset of lock/list's
+        fields, and lets AccessLevel classify each lock uniformly. See
+        docs/ttlock-cloud-api/ekey/list.md and models.AccessLevel for the
+        rationale.
+
+        Duplicate lockIds (should not happen - the server returns one ekey
+        per account per lock) are collapsed; the first record wins.
+        """
+        summaries: dict[int, LockSummary] = {}
+        page = 1
+        while True:
+            res = await self.post("key/list", pageNo=page, pageSize=1000)
+            for record in res.get("list", []) or []:
+                summary = LockSummary.model_validate(record)
+                summaries.setdefault(summary.id, summary)
+            if page >= res.get("pages", 1):
+                break
+            page += 1
+
+        if _LOGGER.isEnabledFor(logging.INFO):
+            by_level = dict.fromkeys(AccessLevel, 0)
+            for summary in summaries.values():
+                by_level[summary.access_level] += 1
+            _LOGGER.info(
+                "Discovered %d lock(s): owner=%d authorized=%d member=%d",
+                len(summaries),
+                by_level[AccessLevel.OWNER],
+                by_level[AccessLevel.AUTHORIZED],
+                by_level[AccessLevel.MEMBER],
+            )
+        return list(summaries.values())
 
     async def get_gateways(self) -> list[Gateway]:
         """Enumerate all gateways in the account."""

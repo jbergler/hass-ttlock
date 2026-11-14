@@ -222,6 +222,10 @@ max-complexity = 25
 ".github/scripts/*" = [
     "INP001",  # standalone CI scripts run by path, not an importable package
 ]
+"script/*.py" = [
+    "INP001",  # standalone CLI scripts run by path, not an importable package
+    "T201",    # CLI tools intentionally use print for user-facing output
+]
 
 [tool.ruff.lint.isort]
 force-sort-within-sections = true

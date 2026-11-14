@@ -216,12 +216,14 @@ async def test_setup_with_non_connectable_lock(
                 lockAlias="Connectable Lock",
                 lockMac="00:00:00:00:00:01",
                 hasGateway=1,
+                userType="110301",
             ),
             LockSummary(
                 lockId=2,
                 lockAlias="No Gateway Lock",
                 lockMac="00:00:00:00:00:02",
                 hasGateway=0,
+                userType="110301",
             ),
         ]
 
@@ -271,6 +273,7 @@ async def test_setup_with_a_gatewayless_lock_in_bluetooth_range(
                 lockAlias="No Gateway Lock",
                 lockMac="00:00:00:00:00:02",
                 hasGateway=0,
+                userType="110301",
             ),
         ]
 

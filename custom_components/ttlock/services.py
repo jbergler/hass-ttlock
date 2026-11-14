@@ -12,7 +12,7 @@ from homeassistant.core import (
     ServiceResponse,
     SupportsResponse,
 )
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 import homeassistant.helpers.config_validation as cv
 from homeassistant.util.dt import as_utc
 
@@ -312,18 +312,13 @@ class Services:
         )
 
     def _get_coordinators(self, call: ServiceCall) -> dict[str, LockUpdateCoordinator]:
-        """Get coordinators for the requested entities.
+        """Resolve entity_ids to coordinators for a service call.
 
-        Returns a dictionary mapping entity_ids to their coordinators.
-        Filters out any entity_ids that don't have associated coordinators.
-
-        Args:
-            call: The service call containing entity_ids
-
-        Returns:
-            A dictionary where keys are entity_ids and values are their corresponding
-            LockUpdateCoordinators. Only includes entries where a coordinator exists.
-
+        Entity_ids with no coordinator (unloaded entry, typo) are dropped
+        silently - the caller sees nothing happen, same as before this
+        change. Access-level filtering is deliberately NOT here: `cleanup`
+        and `list_*` style services may want to tolerate a mixed set, so
+        each handler decides via _get_admin_coordinators.
         """
         entity_ids = call.data.get(ATTR_ENTITY_ID)
         if entity_ids:
@@ -334,11 +329,38 @@ class Services:
             }
         return {}
 
+    def _get_admin_coordinators(
+        self, call: ServiceCall
+    ) -> dict[str, LockUpdateCoordinator]:
+        """Like _get_coordinators but raises on any MEMBER-access target.
+
+        Admin-only services (passcode/card/fingerprint CRUD, passage-mode
+        and autolock writes) must refuse MEMBER locks up front - the
+        TTLock server would return errcode=20002 "not lock admin"
+        otherwise, which bubbles out as a generic failure. Raising here
+        surfaces a translated reason the UI can show. The full set of
+        entities is listed so the user sees every disallowed target at
+        once, not one error per lock.
+        """
+        resolved = self._get_coordinators(call)
+        shared = sorted(
+            entity_id
+            for entity_id, coord in resolved.items()
+            if not coord.access_level.can_admin
+        )
+        if shared:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="shared_lock_admin_only",
+                translation_placeholders={"entities": ", ".join(shared)},
+            )
+        return resolved
+
     async def handle_list_passcodes(self, call: ServiceCall) -> ServiceResponse:
         """List all passcodes for the selected locks."""
         passcodes = {}
 
-        for entity_id, coordinator in self._get_coordinators(call).items():
+        for entity_id, coordinator in self._get_admin_coordinators(call).items():
             codes = await coordinator.api.list_passcodes(coordinator.lock_id)
             passcodes[entity_id] = [
                 {
@@ -374,7 +396,7 @@ class Services:
             weekDays=days,
         )
 
-        for coordinator in self._get_coordinators(call).values():
+        for coordinator in self._get_admin_coordinators(call).values():
             if await coordinator.api.set_passage_mode(coordinator.lock_id, config):
                 coordinator.data.passage_mode_config = config
                 coordinator.async_update_listeners()
@@ -403,7 +425,7 @@ class Services:
             endDate=end_time,
         )
 
-        for coordinator in self._get_coordinators(call).values():
+        for coordinator in self._get_admin_coordinators(call).values():
             await coordinator.api.add_passcode(coordinator.lock_id, config)
 
     async def handle_modify_passcode(self, call: ServiceCall):
@@ -432,7 +454,7 @@ class Services:
 
         passcode_id = call.data["passcode_id"]
 
-        for coordinator in self._get_coordinators(call).values():
+        for coordinator in self._get_admin_coordinators(call).values():
             await coordinator.api.modify_passcode(
                 coordinator.lock_id, passcode_id, config
             )
@@ -442,14 +464,14 @@ class Services:
 
         passcode_id = call.data["passcode_id"]
 
-        for coordinator in self._get_coordinators(call).values():
+        for coordinator in self._get_admin_coordinators(call).values():
             await coordinator.api.delete_passcode(coordinator.lock_id, passcode_id)
 
     async def handle_cleanup_passcodes(self, call: ServiceCall) -> ServiceResponse:
         """Clean up expired passcodes for the given entities."""
         removed: dict[str, list[str | None]] = {}
 
-        for entity_id, coordinator in self._get_coordinators(call).items():
+        for entity_id, coordinator in self._get_admin_coordinators(call).items():
             removed_for_lock: list[str | None] = []
             codes = await coordinator.api.list_passcodes(coordinator.lock_id)
             for code in codes:
@@ -471,7 +493,7 @@ class Services:
         else:
             seconds = 0
 
-        for coordinator in self._get_coordinators(call).values():
+        for coordinator in self._get_admin_coordinators(call).values():
             if await coordinator.api.set_auto_lock(coordinator.lock_id, seconds):
                 coordinator.data.auto_lock_seconds = seconds
                 coordinator.async_update_listeners()
@@ -491,7 +513,7 @@ class Services:
         params["page_no"] = call.data.get("page_no", 1)
         params["page_size"] = min(call.data.get("page_size", 50), 200)
 
-        for entity_id, coordinator in self._get_coordinators(call).items():
+        for entity_id, coordinator in self._get_admin_coordinators(call).items():
             lock_records = await coordinator.api.get_lock_records(
                 coordinator.lock_id, **params
             )
@@ -528,7 +550,7 @@ class Services:
         """List all IC cards for the selected locks."""
         cards = {}
 
-        for entity_id, coordinator in self._get_coordinators(call).items():
+        for entity_id, coordinator in self._get_admin_coordinators(call).items():
             enrolled = await coordinator.api.list_cards(coordinator.lock_id)
             cards[entity_id] = [
                 {
@@ -553,7 +575,7 @@ class Services:
         card_id = call.data["card_id"]
         name = call.data["name"]
 
-        for coordinator in self._get_coordinators(call).values():
+        for coordinator in self._get_admin_coordinators(call).values():
             await coordinator.api.rename_card(coordinator.lock_id, card_id, name)
 
     async def handle_add_card(self, call: ServiceCall) -> ServiceResponse:
@@ -565,7 +587,7 @@ class Services:
             end_ms = int(as_utc(end_time).timestamp() * 1000)
 
         results: dict[str, dict[str, int | str | None]] = {}
-        for entity_id, coordinator in self._get_coordinators(call).items():
+        for entity_id, coordinator in self._get_admin_coordinators(call).items():
             try:
                 card_id = await coordinator.api.add_card(
                     coordinator.lock_id,
@@ -591,14 +613,14 @@ class Services:
         """Delete an IC card from the given entities."""
         card_id = call.data["card_id"]
 
-        for coordinator in self._get_coordinators(call).values():
+        for coordinator in self._get_admin_coordinators(call).values():
             await coordinator.api.delete_card(coordinator.lock_id, card_id)
 
     async def handle_list_fingerprints(self, call: ServiceCall) -> ServiceResponse:
         """List all fingerprints for the selected locks."""
         fingerprints = {}
 
-        for entity_id, coordinator in self._get_coordinators(call).items():
+        for entity_id, coordinator in self._get_admin_coordinators(call).items():
             enrolled = await coordinator.api.list_fingerprints(coordinator.lock_id)
             fingerprints[entity_id] = [
                 {
@@ -627,7 +649,7 @@ class Services:
         fingerprint_id = call.data["fingerprint_id"]
         name = call.data["name"]
 
-        for coordinator in self._get_coordinators(call).values():
+        for coordinator in self._get_admin_coordinators(call).values():
             await coordinator.api.rename_fingerprint(
                 coordinator.lock_id, fingerprint_id, name
             )
@@ -636,7 +658,7 @@ class Services:
         """Delete a fingerprint from the given entities."""
         fingerprint_id = call.data["fingerprint_id"]
 
-        for coordinator in self._get_coordinators(call).values():
+        for coordinator in self._get_admin_coordinators(call).values():
             await coordinator.api.delete_fingerprint(
                 coordinator.lock_id, fingerprint_id
             )

@@ -58,6 +58,87 @@ BASIC_LOCK_DETAILS = {
     "sensitivity": -1,
 }
 
+# A single v3/key/list record (lightly redacted) for the shared-ekey tests.
+# Admin-owned variant: userType=110301, keyRight=0. Mirrors the shape that
+# captures in tests/fixtures/captures/admin/ show on hardware.
+BASIC_EKEY_RECORD_OWNER: dict = {
+    "date": 1669690212000,
+    "deletePwd": "",
+    "electricQuantity": 90,
+    "endDate": 0,
+    "featureValue": "F44354CD5F3",
+    "hasGateway": 1,
+    "keyId": 74733152,
+    "keyName": "owner@example.invalid",
+    "keyRight": 0,
+    "keyStatus": "110401",
+    "keyboardPwdVersion": 4,
+    "lockAlias": "Front Door",
+    "lockData": "OWNER_LOCK_DATA",
+    "lockId": 7252408,
+    "lockMac": "16:72:4C:CC:01:C4",
+    "lockName": "S31_c401cc",
+    "lockVersion": {
+        "groupId": 10,
+        "orgId": 34,
+        "protocolType": 5,
+        "protocolVersion": 3,
+        "scene": 2,
+    },
+    "noKeyPwd": "<REMOVED>",
+    "passageMode": 1,
+    "remarks": "",
+    "remoteEnable": 2,
+    "specialValue": 894227955,
+    "startDate": 0,
+    "timezoneRawOffset": 46800000,
+    "userType": "110301",
+    "wirelessKeypadFeatureValue": "0",
+}
+
+# Authorized-member variant: userType=110302, keyRight=1. Everything an
+# owner can do, as far as the integration cares.
+BASIC_EKEY_RECORD_AUTHORIZED: dict = {
+    **BASIC_EKEY_RECORD_OWNER,
+    "keyId": 348832850,
+    "keyName": "Authorized Share",
+    "keyRight": 1,
+    "remoteEnable": 1,
+    "userType": "110302",
+}
+
+# Plain-member variant: userType=110302, keyRight=0. Matches the fields
+# captures/member/ actually carries - no deletePwd or noKeyPwd.
+BASIC_EKEY_RECORD_MEMBER: dict = {
+    k: v
+    for k, v in BASIC_EKEY_RECORD_OWNER.items()
+    if k not in {"deletePwd", "noKeyPwd"}
+}
+BASIC_EKEY_RECORD_MEMBER.update(
+    {
+        "keyId": 348832760,
+        "keyName": "Shared With Member",
+        "keyRight": 0,
+        "remoteEnable": 1,
+        "userType": "110302",
+    }
+)
+
+# Variant of MEMBER with remote unlock disabled, to exercise the
+# shared_lock_no_remote_unlock guard on the lock entity.
+BASIC_EKEY_RECORD_MEMBER_NO_REMOTE: dict = {
+    **BASIC_EKEY_RECORD_MEMBER,
+    "keyId": 348832761,
+    "remoteEnable": 2,
+}
+
+# Variant of MEMBER with the ekey frozen - exercises shared_lock_frozen.
+BASIC_EKEY_RECORD_MEMBER_FROZEN: dict = {
+    **BASIC_EKEY_RECORD_MEMBER,
+    "keyId": 348832762,
+    "keyStatus": "110405",
+}
+
 # The lockVersion object lock/detail returns, identifying the protocol dialect
 # every BLE frame must echo back. Matches BASIC_LOCK_DETAILS above.
 MOCK_LOCK_VERSION = BASIC_LOCK_DETAILS["lockVersion"]

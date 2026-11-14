@@ -18,12 +18,21 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up all the locks for the config entry."""
+    """Set up all the locks for the config entry.
+
+    The autolock and lock-sound switches both drive admin-only REST writes
+    (lock/setAutoLockTime, lock/setLockSound) that the server rejects with
+    20002 for MEMBER access. Skip their creation entirely rather than
+    materialising a switch that always fails - the restriction is a
+    permission, not a transient state, so capability gating is the right
+    HA idiom (see diligence notes on first-party lock integrations).
+    """
 
     async_add_entities(
         [
             entity
             for coordinator in lock_coordinators(hass, entry)
+            if coordinator.access_level.can_admin
             for entity in (
                 AutoLock(coordinator),
                 LockSound(coordinator),

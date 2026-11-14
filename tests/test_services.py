@@ -1121,12 +1121,14 @@ class Test_add_card:
                     lockAlias="Front Door",
                     lockMac="00:00:00:00:00:01",
                     hasGateway=1,
+                    userType="110301",
                 ),
                 LockSummary(
                     lockId=2,
                     lockAlias="Back Door",
                     lockMac="00:00:00:00:00:02",
                     hasGateway=1,
+                    userType="110301",
                 ),
             ]
 

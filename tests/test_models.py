@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import pytest
 
 from custom_components.ttlock.models import (
+    AccessLevel,
     Card,
     CardType,
     EpochMs,
@@ -316,3 +317,102 @@ class TestLockSummary:
     def test_lock_data_is_none_when_absent(self):
         """Older accounts and trimmed fixtures omit it - that must not be fatal."""
         assert self._summary().lockData is None
+
+
+class TestAccessLevel:
+    def test_top_admin_is_owner(self):
+        """userType=110301 on the authenticated account's own ekey."""
+        assert AccessLevel.from_ekey("110301", 0) is AccessLevel.OWNER
+        assert AccessLevel.from_ekey("110301", 1) is AccessLevel.OWNER
+
+    def test_authorized_shared_key(self):
+        """Common ekey (userType=110302) promoted with keyRight=1."""
+        assert AccessLevel.from_ekey("110302", 1) is AccessLevel.AUTHORIZED
+
+    def test_plain_shared_key_is_member(self):
+        """keyRight=0 on a common ekey is the default share."""
+        assert AccessLevel.from_ekey("110302", 0) is AccessLevel.MEMBER
+
+    def test_unknown_user_type_falls_back_to_shared(self):
+        """A new TTLock userType value must not misclassify as OWNER."""
+        assert AccessLevel.from_ekey("999999", 0) is AccessLevel.MEMBER
+        assert AccessLevel.from_ekey("999999", 1) is AccessLevel.AUTHORIZED
+
+    def test_can_admin(self):
+        """OWNER and AUTHORIZED can admin; MEMBER cannot."""
+        assert AccessLevel.OWNER.can_admin is True
+        assert AccessLevel.AUTHORIZED.can_admin is True
+        assert AccessLevel.MEMBER.can_admin is False
+
+
+class TestLockSummaryAccess:
+    """access_level/remote_unlock_enabled derived from ekey record."""
+
+    def _summary(self, **overrides):
+        data = {
+            "lockId": 1,
+            "lockAlias": "Front Door",
+            "lockMac": "00:00:00:00:00:00",
+            "hasGateway": 1,
+            "featureValue": "0",
+        }
+        data.update(overrides)
+        return LockSummary.model_validate(data)
+
+    def test_owner_from_user_type(self):
+        assert (
+            self._summary(userType="110301", keyRight=0).access_level
+            is AccessLevel.OWNER
+        )
+
+    def test_member_default(self):
+        """No userType (older summaries) classifies as MEMBER - never OWNER."""
+        assert self._summary().access_level is AccessLevel.MEMBER
+
+    def test_authorized_from_key_right(self):
+        assert (
+            self._summary(userType="110302", keyRight=1).access_level
+            is AccessLevel.AUTHORIZED
+        )
+
+    def test_remote_unlock_enabled_matches_wire_value(self):
+        """remoteEnable is 1=yes, 2=no on the API; default is 2."""
+        assert self._summary(remoteEnable=1).remote_unlock_enabled is True
+        assert self._summary(remoteEnable=2).remote_unlock_enabled is False
+        assert self._summary().remote_unlock_enabled is False
+
+    def test_is_valid_now_unbounded_is_always_valid(self):
+        """startDate=0 and endDate=0 mean 'unbounded on that side'."""
+        assert self._summary(startDate=0, endDate=0).is_valid_now(
+            1_700_000_000_000
+        ) == (
+            True,
+            None,
+        )
+
+    def test_is_valid_now_before_start(self):
+        valid, reason = self._summary(startDate=2_000_000_000_000).is_valid_now(
+            1_000_000_000_000
+        )
+        assert valid is False
+        assert reason == "shared_lock_not_yet_valid"
+
+    def test_is_valid_now_after_end(self):
+        valid, reason = self._summary(endDate=1_000_000_000_000).is_valid_now(
+            2_000_000_000_000
+        )
+        assert valid is False
+        assert reason == "shared_lock_expired"
+
+    def test_is_valid_now_frozen_shadows_window(self):
+        """Frozen beats everything: don't claim the window excluded the user."""
+        valid, reason = self._summary(
+            keyStatus="110405", startDate=0, endDate=0
+        ).is_valid_now(1_700_000_000_000)
+        assert valid is False
+        assert reason == "shared_lock_frozen"
+
+    def test_is_frozen_matches_wire_status(self):
+        assert self._summary(keyStatus="110405").is_frozen is True
+        assert self._summary(keyStatus="110401").is_frozen is False
+        assert self._summary().is_frozen is False

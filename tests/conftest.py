@@ -175,7 +175,11 @@ async def coordinator(hass, api):
     config_entry = MockConfigEntry(domain=DOMAIN)
     config_entry.add_to_hass(hass)
     summary = LockSummary(
-        lockId=7252408, lockAlias="Test Lock", lockMac="00:00:00:00:00:00", hasGateway=1
+        lockId=7252408,
+        lockAlias="Test Lock",
+        lockMac="00:00:00:00:00:00",
+        hasGateway=1,
+        userType="110301",
     )
     return LockUpdateCoordinator(
         hass, config_entry, api, summary, LockTrafficCapture(), LockStateStore(hass)
@@ -268,6 +272,7 @@ def mock_api_responses(monkeypatch, mock_data_factory):
                     hasGateway=1,
                     # opaque binary blob, value doesn't matter to us, just presence
                     lockData="TW9ja0xvY2tEYXRhQmxvYkZvclRlc3Rz",
+                    userType="110301",
                 )
             ]
 

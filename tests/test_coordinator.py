@@ -498,6 +498,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="No Gateway",
                 lockMac="00:00:00:00:00:01",
                 hasGateway=0,
+                userType="110301",
             )
             coordinator = LockUpdateCoordinator(
                 hass,
@@ -697,6 +698,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="No Gateway",
                 lockMac="00:00:00:00:00:00",
                 hasGateway=0,
+                userType="110301",
             )
             return LockUpdateCoordinator(
                 hass,
@@ -1114,6 +1116,7 @@ class TestLockUpdateCoordinator:
                 lockMac="00:00:00:00:00:01",
                 hasGateway=0,
                 featureValue=f"{2**56:X}",  # Features.wifi
+                userType="110301",
             )
             wifi_coordinator = LockUpdateCoordinator(
                 hass,
@@ -1152,6 +1155,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="Test Lock",
                 lockMac="00:00:00:00:00:00",
                 hasGateway=1,
+                userType="110301",
             )
             return LockUpdateCoordinator(
                 hass,
@@ -1251,6 +1255,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="Test Lock",
                 lockMac="00:00:00:00:00:00",
                 hasGateway=1,
+                userType="110301",
             )
             return LockUpdateCoordinator(
                 hass, config_entry, api, summary, LockTrafficCapture(), store
@@ -1606,6 +1611,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="No Gateway",
                 lockMac="00:00:00:00:00:01",
                 hasGateway=0,
+                userType="110301",
             )
             coordinator = LockUpdateCoordinator(
                 hass,
@@ -1711,6 +1717,7 @@ class TestLockUpdateCoordinator:
                 lockAlias="No Gateway",
                 lockMac="00:00:00:00:00:01",
                 hasGateway=0,
+                userType="110301",
             )
             coordinator = LockUpdateCoordinator(
                 hass,

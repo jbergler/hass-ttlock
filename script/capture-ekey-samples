@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# One-shot TTLock cloud sampler for the shared-ekey design work.
+#
+# Reads credentials from environment (or a sibling .env file), authenticates
+# against the TTLock cloud, pulls:
+#   - /oauth2/token             (login)
+#   - /v3/key/list              (all pages; the merged-discovery source)
+#   - /v3/lock/list             (admin-only locks; for comparison)
+#   - /v3/lock/detail           (per lock, incl. aesKeyStr availability)
+#   - /v3/lock/listKey          (per lock, admin view of shared ekeys)
+#
+# Writes redacted JSON into tests/fixtures/captures/<label>/ - secrets
+# (aesKeyStr, lockData, noKeyPwd, access_token, refresh_token) and PII
+# (full lockMac, remarks, uid) are scrubbed before write.
+#
+# Environment:
+#   TTLOCK_CLIENT_ID       (required)
+#   TTLOCK_CLIENT_SECRET   (required)
+#   TTLOCK_USERNAME        (required; TTLock app account)
+#   TTLOCK_PASSWORD        (required; plaintext - script md5's it)
+#   TTLOCK_PASSWORD_MD5    (optional; use instead of TTLOCK_PASSWORD)
+#   TTLOCK_LABEL           (optional; subdir name, default "account")
+#
+# A .env at repo root is sourced if present (it's gitignored).
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
+uv run python script/capture_ekey_samples.py "$@"
