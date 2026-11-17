@@ -113,7 +113,8 @@ class LockDetail(BaseModel):
     """The non-secret lock/detail fields kept across restarts (see store.py)."""
 
     featureValue: str | None = None
-    timezoneRawOffset: int = 0
+    # Milliseconds east of UTC; None when not reported (0 is UTC, not unknown).
+    timezoneRawOffset: int | None = None
     model: str | None = Field(None, alias="modelNum")
     hardwareRevision: str | None = None
     firmwareRevision: str | None = None
@@ -172,7 +173,7 @@ class LockSummary(LockMacModel):
     # reads protocolType/protocolVersion; the server also carries strings
     # (`logoUrl`) and bools (`showAdminKbpwdFlag`), so the value type is Any.
     lockVersion: dict[str, Any] | None = None
-    timezoneRawOffset: int = 0
+    timezoneRawOffset: int | None = None
 
     # Ekey-local fields - drive AccessLevel, validity, and remote-unlock gating.
     userType: str | None = None
@@ -665,6 +666,7 @@ class Features(IntFlag):
     unlock_via_gateway = 2**10
     door_sensor = 2**13
     passage_mode = 2**22
+    tamper_alert = 2**28
     wifi = 2**56
 
     @classmethod

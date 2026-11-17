@@ -10,13 +10,14 @@ The credentials come from the cloud API this integration already authenticates a
 The writes:
 
 - **lock/unlock**: `CHECK_USER_TIME` -> token -> `UNLOCK`/`LOCK` carrying `(token + unlockKey)`. This worked on a real lock through an ESPHome Bluetooth proxy at about -92 dBm, on an earlier revision. Later revisions are covered by tests only.
+- **admin ops** (settings, passcodes, cards, fingerprints): `CHECK_ADMIN` -> token -> `CHECK_RANDOM` echoing `(token + unlockKey)` -> the op. The handshake is verified on hardware over WiFi-local (ADR 0004), which uses the same credentials. Over Bluetooth, only unit tests cover it. Some ops are not yet confirmed on hardware on either transport. `services.yaml` marks each one.
 
-`ble_protocol.py` is the wire format - framing, CRC-8/MAXIM, AES-CBC - as pure functions with no I/O, written from the protocol as documented by the public reference implementations, not ported from them (the main one is GPL). `ble.py` owns the GATT session. The coordinator prefers the local read and falls back to `lock/queryOpenState`. There is no abstract transport class, because the transports have genuinely different capabilities and a shared interface would have to lie about one of them.
+`ble_protocol.py` is the wire format - framing, CRC-8/MAXIM, AES-CBC - as pure functions with no I/O, written from the protocol as documented by the public reference implementations, not ported from them (the main one is GPL). `ble.py` owns the GATT session. The coordinator prefers the local read and falls back to `lock/queryOpenState`. There is no abstract transport class for reads or lock/unlock, because the transports have genuinely different capabilities and a shared interface would have to lie about one of them. Admin ops are the exception. `lock_commands.AdminSession` is a one-method protocol that sends an opcode and returns the decrypted reply. Bluetooth and WiFi-local implement it, because they share the wire format and the admin handshake. The cloud is not behind it. Its admin endpoints are REST calls keyed by cloud ids, not lock opcodes. So the cloud stays the caller's fallback where an equivalent exists.
 
 ## What the radio can and can't do
 
 - **Reads work.** Verified on a KT170 with the gateway unplugged: the poll reports lock, battery and door over BLE.
-- **Writes are opt-in.** Lock/unlock over BLE is behind its own option, **Control locks over Bluetooth**, which is off by default. The list of writes above says how it was tested.
+- **Writes are opt-in.** Lock/unlock over BLE is behind its own option, **Control locks over Bluetooth**, which is off by default. BLE admin ops need it too. The list of writes above says how each one was tested.
 - **The lock pushes nothing.** With an authenticated session held open through four manual operations, nothing arrived on the notify characteristic, and the advertisement's manufacturer data is byte-for-byte identical locked and unlocked. Polling is the whole update path for a lock without a gateway.
 
 ## Consequences

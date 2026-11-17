@@ -1,5 +1,6 @@
 """Test ttlock diagnostics."""
 
+import json
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -12,10 +13,13 @@ from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
     DOMAIN,
     TO_REDACT,
+    TT_CAPTURE,
     TT_GATEWAYS,
     TT_LOCKS,
 )
 from custom_components.ttlock.coordinator import (
+    CredentialInfo,
+    CredentialNames,
     LockUpdateCoordinator,
 )
 from custom_components.ttlock.diagnostics import (
@@ -26,7 +30,7 @@ from custom_components.ttlock.models import Gateway, LockSummary
 from custom_components.ttlock.store import LockStateStore
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import BASIC_LOCK_DETAILS, LOCK_STATE_UNLOCKED, PASSAGE_MODE_6_TO_6_7_DAYS
 
@@ -360,3 +364,93 @@ def test_to_redact_covers_lock_data():
 
     assert redacted["list"][0]["lockData"] == "**REDACTED**"
     assert redacted["list"][0]["lockAlias"] == "Front Door"
+
+
+def test_to_redact_covers_credential_secrets():
+    """Passcode/card/fingerprint identifiers and names must never survive redaction.
+
+    The coordinator lists these on the slow tier, so their response bodies
+    reach the per-lock capture buffer - keyboardPwd (the digits),
+    cardNumber and fingerprintNumber must all be caught by TO_REDACT.
+    """
+    payload = {
+        "list": [
+            {
+                "keyboardPwd": "1234",
+                "keyboardPwdName": "Cleaner",
+                "cardNumber": "999888",
+                "fingerprintNumber": "44668054142981",
+            }
+        ]
+    }
+
+    redacted = async_redact_data(payload, TO_REDACT)
+
+    assert redacted["list"][0]["keyboardPwd"] == "**REDACTED**"
+    assert redacted["list"][0]["cardNumber"] == "**REDACTED**"
+    assert redacted["list"][0]["fingerprintNumber"] == "**REDACTED**"
+    assert redacted["list"][0]["keyboardPwdName"] == "**REDACTED**"
+
+
+async def test_names_people_and_addresses_never_reach_diagnostics(
+    hass: HomeAssistant, component_setup, mock_api_responses
+):
+    """Credential names, people and the lock's address are redacted everywhere."""
+    mock_api_responses("default")
+    coordinator = await component_setup()
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    registry = er.async_get(hass)
+    credentials_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{coordinator.unique_id}-lockcredentials"
+    )
+    assert credentials_id is not None
+    registry.async_update_entity(credentials_id, disabled_by=None)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
+
+    coordinator.credential_names = CredentialNames(
+        passcodes={1: CredentialInfo(name="SEED-PASSCODE-NAME", type="PERMANENT")},
+        cards={2: CredentialInfo(name="SEED-CARD-NAME", type="PERMANENT")},
+        fingerprints={
+            3: CredentialInfo(name="SEED-FINGERPRINT-NAME", type="PERMANENT")
+        },
+    )
+    coordinator.data.last_user = "SEED-OPERATOR"
+    hass.data[DOMAIN][entry.entry_id][TT_CAPTURE].capture(
+        coordinator.lock_id,
+        "DEBUG",
+        "list: %s",
+        {
+            "list": [
+                {
+                    "keyboardPwdName": "SEED-CLOUD-PASSCODE",
+                    "cardName": "SEED-CLOUD-CARD",
+                    "fingerprintName": "SEED-CLOUD-FINGERPRINT",
+                    "senderUsername": "SEED-SENDER",
+                    "username": "SEED-USERNAME",
+                    "email": "SEED-EMAIL",
+                    "lockMac": "SEED-LOCK-MAC",
+                }
+            ]
+        },
+    )
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+    assert hass.states.get(credentials_id) is not None
+    mac = coordinator.data.mac
+    device = dr.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, mac), entry.entry_id
+    )
+    assert device is not None
+
+    dumps = [
+        json.dumps(await async_get_config_entry_diagnostics(hass, entry), default=str),
+        json.dumps(
+            await async_get_device_diagnostics(hass, entry, device), default=str
+        ),
+    ]
+
+    for dump in dumps:
+        assert "SEED-" not in dump
+        assert mac not in dump

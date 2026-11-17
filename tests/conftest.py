@@ -338,8 +338,20 @@ def mock_api_responses(monkeypatch, mock_data_factory):
         async def mock_get_gateways_for_lock(*args, **kwargs):
             return []
 
+        async def mock_list_empty(*args, **kwargs):
+            return []
+
         monkeypatch.setattr(
             "custom_components.ttlock.api.TTLockApi.get_locks", mock_get_locks
+        )
+        monkeypatch.setattr(
+            "custom_components.ttlock.api.TTLockApi.list_passcodes", mock_list_empty
+        )
+        monkeypatch.setattr(
+            "custom_components.ttlock.api.TTLockApi.list_cards", mock_list_empty
+        )
+        monkeypatch.setattr(
+            "custom_components.ttlock.api.TTLockApi.list_fingerprints", mock_list_empty
         )
         monkeypatch.setattr(
             "custom_components.ttlock.api.TTLockApi.get_lock", mock_get_lock

@@ -283,8 +283,13 @@ class TestDebugCapture:
         captured = [r["message"] for r in capture.diagnostics_for(7252408)["records"]]
         webhook_lines = [m for m in captured if "Got webhook data" in m]
         assert webhook_lines
-        assert all(message.count("**REDACTED**") == 3 for message in webhook_lines)
-        for secret in ("135790", "Front Door User", "owner@example.com"):
+        assert all(message.count("**REDACTED**") == 4 for message in webhook_lines)
+        for secret in (
+            "135790",
+            "Front Door User",
+            "owner@example.com",
+            WEBHOOK_UNLOCK_10AM_UTC["lockMac"],
+        ):
             assert not any(secret in message for message in captured)
 
     async def test_webhook_data_without_lock_id_is_not_captured(

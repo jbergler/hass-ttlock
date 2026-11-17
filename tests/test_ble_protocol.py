@@ -15,6 +15,7 @@ genuinely wrong protocol.
 """
 
 import base64
+from datetime import UTC, datetime, timedelta, timezone
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 import pytest
@@ -23,34 +24,93 @@ from custom_components.ttlock.ble_protocol import (
     HEADER_LENGTH,
     MAGIC,
     MAX_DATA_LENGTH,
+    SWITCH_PASSAGE_MODE_AUTO_UNLOCK,
+    SWITCH_PRIVACY_LOCK,
+    SWITCH_TAMPER_ALERT,
     TERMINATOR,
+    AutoLockConfig,
+    CardPage,
+    CardRecord,
     ChecksumError,
     Command,
+    CommandRejected,
     CredentialError,
     DecryptError,
     DeviceFeatures,
+    FingerprintAddState,
+    FingerprintPage,
+    FingerprintRecord,
     Frame,
     FrameAssembler,
     FrameError,
     LockStatus,
     LockVersion,
+    OperateLogRecord,
+    PasscodeRecord,
     ProtocolError,
     Response,
+    SwitchConfig,
     UnsupportedProtocol,
     _credential_bytes,
+    audio_read_data,
+    audio_set_data,
+    auto_lock_read_data,
+    auto_lock_set_data,
+    card_add_by_number_data,
+    card_clear_data,
+    card_cyclic_add_data,
+    card_cyclic_clear_data,
+    card_delete_data,
+    card_id_bytes,
+    card_modify_data,
+    card_search_data,
     check_admin_data,
+    check_random_data,
     check_user_time_data,
     control_data,
     crc8_maxim,
+    decimal_date_bytes,
     decimal_time_bytes,
     decode_password,
     decrypt,
     encrypt,
     feature_value_bytes,
+    fr_clear_data,
+    fr_cyclic_add_data,
+    fr_cyclic_clear_data,
+    fr_delete_data,
+    fr_enroll_data,
+    fr_id_bytes,
+    fr_modify_data,
+    fr_search_data,
+    get_operate_log_data,
+    get_passcodes_data,
     is_interim_ack,
     lock_error_name,
+    lock_timezone,
     parse_aes_key,
+    parse_auto_lock,
+    parse_cards,
+    parse_decimal_date,
+    parse_fingerprints,
+    parse_fr_add,
+    parse_lock_sound,
+    parse_operate_log,
+    parse_passcodes,
+    parse_switch_state,
+    passage_add_data,
+    passage_clear_data,
+    passcode_add_cyclic_data,
+    passcode_add_permanent_data,
+    passcode_add_timed_data,
+    passcode_clear_data,
+    passcode_delete_data,
+    passcode_modify_data,
     response_error_code,
+    switch_get_data,
+    switch_set_data,
+    switch_write_fields,
+    time_calibrate_data,
     token_from_response,
 )
 
@@ -632,6 +692,7 @@ class TestControlOpcodes:
         # Interface facts: the numbers the lock's firmware dispatches on.
         assert Command.CHECK_USER_TIME == 0x55
         assert Command.CHECK_ADMIN == 0x41
+        assert Command.CHECK_RANDOM == 0x30
         assert Command.UNLOCK == 0x47
         assert Command.LOCK == 0x58
 
@@ -696,6 +757,16 @@ class TestHandshakePayloads:
         assert data[4:7] == bytes([0, 0, 7])
         assert data[7:11] == bytes([0x11, 0x22, 0x33, 0x44])
 
+    def test_check_random_folds_in_unlock_key(self) -> None:
+        assert check_random_data(token=1000, unlock_key="2345") == (3345).to_bytes(
+            4, "big"
+        )
+
+    def test_check_random_wraps_mod_2_32(self) -> None:
+        assert check_random_data(token=0xFFFFFFFF, unlock_key=2) == (1).to_bytes(
+            4, "big"
+        )
+
 
 class TestControlPayload:
     """The 8-byte UNLOCK/LOCK body: folded secret then epoch seconds."""
@@ -728,6 +799,508 @@ class TestTokenFromResponse:
             token_from_response(bytes([0x55, 0x01, 0xDE, 0xAD]))
 
 
+class TestDecimalDate:
+    """The 5/6-byte decimal (not BCD) date shared by clock, log and windows."""
+
+    def test_six_byte_encode(self):
+        # 2026-03-14 15:09:26 -> 1a 03 0e 0f 09 1a.
+        moment = datetime(2026, 3, 14, 15, 9, 26)
+        assert decimal_date_bytes(moment, with_seconds=True) == bytes.fromhex(
+            "1a030e0f091a"
+        )
+
+    def test_five_byte_encode_drops_seconds(self):
+        moment = datetime(2026, 3, 14, 15, 9, 26)
+        assert decimal_date_bytes(moment) == bytes.fromhex("1a030e0f09")
+
+    def test_round_trip(self):
+        moment = datetime(2026, 3, 14, 15, 9, 26)
+        assert parse_decimal_date(decimal_date_bytes(moment, with_seconds=True)) == (
+            moment
+        )
+
+    def test_parse_short_is_none(self):
+        assert parse_decimal_date(b"\x1a\x0b") is None
+
+    def test_parse_out_of_range_is_none(self):
+        # month 0x0d = 13 is invalid.
+        assert parse_decimal_date(bytes([0x1A, 0x0D, 0x10, 0x14, 0x37])) is None
+
+
+class TestPasscodeBuilders:
+    """Exact 0x03 / 0x07 request bytes."""
+
+    def test_add_permanent_default_window_has_no_end_block(self):
+        # [02][01][len=4]['1234'][start:5]; permanent start 1201010000.
+        data = passcode_add_permanent_data("1234")
+        assert data == bytes.fromhex("020104") + b"1234" + decimal_time_bytes(
+            "1201010000"
+        )
+        assert len(data) == 3 + 4 + 5  # no end block
+
+    def test_add_permanent_six_digits(self):
+        # [02][01][len 6][code ASCII][0c 01 01 00 00 = 2012-01-01 00:00]
+        data = passcode_add_permanent_data("123456")
+        assert data == bytes.fromhex("020106") + b"123456" + bytes.fromhex("0c01010000")
+
+    def test_add_permanent_with_explicit_start(self):
+        data = passcode_add_permanent_data("123456", start=datetime(2026, 3, 14, 15, 9))
+        assert data == bytes.fromhex("020106") + b"123456" + bytes.fromhex("1a030e0f09")
+
+    def test_add_timed_appends_both_windows(self):
+        start = datetime(2026, 1, 2, 3, 4)
+        end = datetime(2026, 12, 31, 23, 59)
+        data = passcode_add_timed_data("9999", start, end)
+        assert data == bytes.fromhex("020304") + b"9999" + decimal_date_bytes(
+            start
+        ) + decimal_date_bytes(end)
+
+    def test_delete_one_carries_type_and_code_no_dates(self):
+        assert passcode_delete_data("4321") == bytes.fromhex("030104") + b"4321"
+
+    def test_delete_one_with_period_type(self):
+        assert passcode_delete_data("4321", 0x03) == bytes.fromhex("030304") + b"4321"
+
+    def test_clear_all_is_one_byte(self):
+        assert passcode_clear_data() == b"\x01"
+
+    def test_get_passcodes_request_is_two_be_bytes(self):
+        assert get_passcodes_data(0) == b"\x00\x00"
+        assert get_passcodes_data(0x0102) == b"\x01\x02"
+
+    @pytest.mark.parametrize("code", ["12", "1234567890", "12a4", "", "12 4"])
+    def test_a_bad_code_never_frames(self, code):
+        with pytest.raises(ValueError):
+            passcode_add_permanent_data(code)
+
+
+class TestPasscodeCountCyclicModifyRecovery:
+    """Exact 0x03 bytes for COUNT/CIRCLE/MODIFY/RECOVERY.
+
+    Dates are written as literal hex, not via decimal_date_bytes, so the test
+    pins the exact wire bytes independently of the encoder:
+      start = 2026-01-02 03:04 -> 1a 01 02 03 04
+      end   = 2026-12-31 23:59 -> 1a 0c 1f 17 3b
+    """
+
+    start = datetime(2026, 1, 2, 3, 4)
+    end = datetime(2026, 12, 31, 23, 59)
+    START_HEX = "1a01020304"
+    END_HEX = "1a0c1f173b"
+
+    def test_count_add_shares_period_layout_type_byte_2(self):
+        # op=2 ADD, type=2 COUNT: [02][02][len][code][start:5][end:5], no count byte.
+        data = passcode_add_timed_data("1234", self.start, self.end, pwd_type=0x02)
+        assert data == bytes.fromhex("020204") + b"1234" + bytes.fromhex(
+            self.START_HEX + self.END_HEX
+        )
+
+    def test_period_add_still_defaults_to_type_byte_3(self):
+        data = passcode_add_timed_data("1234", self.start, self.end)
+        assert data[:2] == bytes.fromhex("0203")
+
+    def test_windowed_add_rejects_non_period_non_count_type(self):
+        with pytest.raises(ValueError):
+            passcode_add_timed_data("1234", self.start, self.end, pwd_type=0x01)
+
+    def test_modify_value_and_window(self):
+        # op=5: [05][type][oldLen][old][newLen][new][start:5][end:5]
+        data = passcode_modify_data(
+            "1234", "5678", start=self.start, end=self.end, pwd_type=0x01
+        )
+        assert data == (
+            bytes.fromhex("050104")
+            + b"1234"
+            + bytes.fromhex("04")
+            + b"5678"
+            + bytes.fromhex(self.START_HEX + self.END_HEX)
+        )
+
+    def test_modify_value_only_writes_no_date_blocks(self):
+        # No window -> the two 5-byte date blocks are omitted.
+        data = passcode_modify_data("1234", "5678")
+        assert data == bytes.fromhex("050104") + b"1234" + bytes.fromhex("04") + b"5678"
+
+    def test_modify_window_only_sends_empty_new_code(self):
+        # newLen = 0, no new code bytes, then both date blocks.
+        data = passcode_modify_data(
+            "1234", "", start=self.start, end=self.end, pwd_type=0x03
+        )
+        assert data == (
+            bytes.fromhex("050304")
+            + b"1234"
+            + bytes.fromhex("00")
+            + bytes.fromhex(self.START_HEX + self.END_HEX)
+        )
+
+    def test_modify_rejects_one_sided_window(self):
+        with pytest.raises(ValueError):
+            passcode_modify_data("1234", "5678", start=self.start)
+
+    def test_modify_rejects_no_change(self):
+        with pytest.raises(ValueError):
+            passcode_modify_data("1234")
+
+    def test_cyclic_add_is_a_circle_recovery(self):
+        # op=6 RECOVERY, type 4 CIRCLE: the code twice, [start:5][cycleType:2 BE].
+        data = passcode_add_cyclic_data("1234", start=self.start, cycle_type=0x0030)
+        assert data == (
+            bytes.fromhex("060404")
+            + b"1234"
+            + bytes.fromhex("04")
+            + b"1234"
+            + bytes.fromhex(self.START_HEX)
+            + bytes.fromhex("0030")
+        )
+
+    def test_cyclic_add_rejects_out_of_range_cycle_type(self):
+        with pytest.raises(ValueError):
+            passcode_add_cyclic_data("1234", start=self.start, cycle_type=0x10000)
+
+    def test_cyclic_add_carries_start_time_hh_mm(self):
+        # Only HH:MM of the start carries the daily window; 14:30 -> 0e 1e.
+        data = passcode_add_cyclic_data(
+            "1234", start=datetime(2026, 1, 2, 14, 30), cycle_type=0
+        )
+        assert data == (
+            bytes.fromhex("060404")
+            + b"1234"
+            + bytes.fromhex("04")
+            + b"1234"
+            + bytes.fromhex("1a01020e1e")
+            + bytes.fromhex("0000")
+        )
+
+
+class TestParsePasscodes:
+    """0x07 page decode: `[total:2][next:2]` then records."""
+
+    def test_reads_a_permanent_record(self):
+        # [len 0c][type 01][newLen 00][oldLen 04]['1234'][start 2026-03-14 15:09]
+        payload = bytes.fromhex("0701000f00020c010004313233341a030e0f09")
+        page = parse_passcodes(payload)
+        assert page.next_sequence == 2
+        assert page.records == [
+            PasscodeRecord(
+                pwd_type=1,
+                passcode="1234",
+                new_passcode=None,
+                start=datetime(2026, 3, 14, 15, 9),
+                end=None,
+                cycle_type=None,
+            )
+        ]
+
+    def test_a_new_passcode_field_is_read(self):
+        # newLen 04 '9999' before oldLen 04 '1234'.
+        payload = bytes.fromhex("07010013ffff1001043939393904313233341a030e0f09")
+        (record,) = parse_passcodes(payload).records
+        assert (record.new_passcode, record.passcode) == ("9999", "1234")
+
+    def test_a_truncated_record_ends_the_page(self):
+        payload = bytes.fromhex("07010011000211030004353637381a0102")
+        assert parse_passcodes(payload).records == []
+
+    def test_an_unknown_type_ends_the_page(self):
+        payload = bytes.fromhex("0701000f00020c090004313233341a030e0f09")
+        assert parse_passcodes(payload).records == []
+
+    def test_a_short_reply_is_the_end(self):
+        page = parse_passcodes(bytes.fromhex("0701"))
+        assert page.end
+        assert page.records == []
+
+    @pytest.mark.parametrize(
+        "record",
+        [
+            "0c",  # a length byte and nothing else
+            "0c03",  # the type, then no new-passcode field
+            "0c030531",  # a new passcode longer than the page
+            "0c03000431",  # an empty new passcode, then a short old one
+        ],
+    )
+    def test_a_record_cut_short_ends_the_page(self, record):
+        page = parse_passcodes(bytes.fromhex("07010001ffff" + record))
+        assert page.records == []
+        assert page.end
+
+
+class TestAutoLock:
+    def test_read_request_is_search_byte(self):
+        assert auto_lock_read_data() == b"\x01"
+
+    def test_set_request_is_modify_plus_be_seconds(self):
+        assert auto_lock_set_data(45) == bytes.fromhex("02002d")
+        assert auto_lock_set_data(300) == bytes.fromhex("02012c")
+
+    def test_disable_is_seconds_zero(self):
+        assert auto_lock_set_data(0) == bytes.fromhex("020000")
+
+    def test_set_rejects_out_of_range(self):
+        with pytest.raises(ValueError):
+            auto_lock_set_data(0x10000)
+
+    def test_parse_reads_seconds(self):
+        # [echo 36][status 01][batt 50][op 01][sec 2d=45][min 0001][max 0384=900]
+        payload = bytes.fromhex("36015001002d00010384")
+        config = parse_auto_lock(payload)
+        assert config == AutoLockConfig(seconds=45)
+
+    def test_parse_disabled_reports_zero_seconds(self):
+        payload = bytes.fromhex("360150010000")
+        config = parse_auto_lock(payload)
+        assert config.seconds == 0
+
+    def test_set_fifteen_seconds(self):
+        assert auto_lock_set_data(15) == bytes.fromhex("02000f")
+
+    def test_parse_ignores_a_trailing_byte(self):
+        # [batt 50][op 01][sec 003c=60][min 0001][max 0384=900][extra 01]
+        payload = bytes.fromhex("36015001003c0001038401")
+        config = parse_auto_lock(payload)
+        assert config == AutoLockConfig(seconds=60)
+
+
+class TestLockSound:
+    def test_set_on_off_bytes(self):
+        assert audio_set_data(on=True) == bytes.fromhex("0201")
+        assert audio_set_data(on=False) == bytes.fromhex("0200")
+
+    def test_read_request_is_search_byte(self):
+        assert audio_read_data() == b"\x01"
+
+    def test_parse_reads_the_sound_byte(self):
+        # [echo 62][status 01][batt 50][op 01][sound]
+        assert parse_lock_sound(bytes.fromhex("6201500101")) is True
+        assert parse_lock_sound(bytes.fromhex("6201500100")) is False
+
+    def test_parse_short_reply_is_unknown(self):
+        assert parse_lock_sound(bytes.fromhex("62015001")) is None
+
+
+class TestClock:
+    def test_calibrate_payload_is_six_decimal_bytes(self):
+        moment = datetime(2026, 3, 14, 15, 9, 26)
+        assert time_calibrate_data(moment) == bytes.fromhex("1a030e0f091a")
+
+
+class TestOperateLog:
+    def test_request_is_two_be_bytes(self):
+        assert get_operate_log_data(0) == b"\x00\x00"
+        assert get_operate_log_data(0xFFFF) == b"\xff\xff"
+
+    def test_parses_an_unlock_record(self):
+        # [total 0013][page 0123] then [len 10][type 1c][2026-05-06 07:08:09]
+        # [batt 50][uid 0000002a][record_id 12345678]
+        payload = bytes.fromhex("250100130123101c1a0506070809500000002a12345678")
+        records, total_len, page_seq = parse_operate_log(payload)
+        assert total_len == 0x13
+        assert page_seq == 0x0123
+        assert records == [
+            OperateLogRecord(
+                record_type=28,
+                timestamp=datetime(2026, 5, 6, 7, 8, 9),
+                battery=0x50,
+                record_id=0x12345678,
+            )
+        ]
+
+    def test_total_len_zero_means_done(self):
+        records, total_len, _ = parse_operate_log(bytes.fromhex("25010000"))
+        assert records == []
+        assert total_len == 0
+
+    def test_a_reply_too_short_for_a_header_is_empty(self):
+        assert parse_operate_log(bytes.fromhex("250100")) == ([], 0, 0)
+
+    def test_a_record_shorter_than_its_fixed_part_ends_the_page(self):
+        # rec 1 is whole (len 08); rec 2 claims len 05, under the 8-byte minimum.
+        payload = bytes.fromhex("2501001000010807" + "1a030e0f091c50" + "05071a030e0f")
+        records, total_len, _ = parse_operate_log(payload)
+        assert total_len == 0x10
+        assert [r.timestamp for r in records] == [datetime(2026, 3, 14, 15, 9, 28)]
+
+    def test_other_record_types_have_no_record_id(self):
+        # [len 0a][type 07][date][batt 50][tail aa bb]: not an unlock type.
+        payload = bytes.fromhex("2501000d00010a071a030e0f091b50aabb")
+        (record,) = parse_operate_log(payload)[0]
+        assert record.record_type == 7
+        assert record.record_id is None
+
+    def test_a_long_tail_does_not_desynchronise_the_next_record(self):
+        # rec 1 len 0c (type 07, 4-byte tail), rec 2 len 08 (type 07, no tail).
+        payload = bytes.fromhex(
+            "2501001900010c071a030e0f091b50aabbccdd08071a030e0f091c50"
+        )
+        records = parse_operate_log(payload)[0]
+        assert [r.timestamp for r in records] == [
+            datetime(2026, 3, 14, 15, 9, 27),
+            datetime(2026, 3, 14, 15, 9, 28),
+        ]
+
+
+class TestCardIdBytes:
+    """4-byte when <=10 digits, else 8."""
+
+    def test_four_byte_for_ten_or_fewer_digits(self):
+        assert card_id_bytes("1234567890") == bytes.fromhex("499602d2")
+
+    def test_eight_byte_for_eleven_or_more_digits(self):
+        # more than 10 digits -> 8 bytes big-endian.
+        assert card_id_bytes("12345678901") == bytes.fromhex("00000002dfdc1c35")
+
+    def test_four_byte_path_truncates_like_a_signed_int_cast(self):
+        # Only the low 32 bits are kept: 5000000000 & 0xFFFFFFFF.
+        assert card_id_bytes("5000000000") == bytes.fromhex("2a05f200")
+
+    def test_rejects_non_digits(self):
+        with pytest.raises(ValueError):
+            card_id_bytes("12ab")
+
+
+class TestCardWriteBuilders:
+    """Exact 0x05 request payloads."""
+
+    def test_search_from_zero(self):
+        assert card_search_data() == bytes.fromhex("010000")  # [01][index:2 BE]
+
+    def test_search_with_index(self):
+        assert card_search_data(5) == bytes.fromhex("010005")
+
+    def test_add_by_number_with_window(self):
+        start = datetime(2026, 1, 2, 3, 4)
+        end = datetime(2026, 12, 31, 23, 0)
+        data = card_add_by_number_data("1234567890", start=start, end=end)
+        assert data == (
+            bytes.fromhex("02")  # ADD
+            + bytes.fromhex("499602d2")  # card, 4 BE
+            + decimal_date_bytes(start)
+            + decimal_date_bytes(end)
+        )
+        assert len(data) == 15  # 1 + 4 + 5 + 5
+
+    def test_add_by_number_permanent_uses_sentinel_window(self):
+        data = card_add_by_number_data("1234567890")
+        # No window -> the far-past start and far-future end.
+        assert data == (
+            bytes.fromhex("02")
+            + bytes.fromhex("499602d2")
+            + bytes([0, 1, 31, 14, 0])  # 0001311400
+            + bytes([99, 11, 30, 14, 0])  # 9911301400
+        )
+
+    def test_add_by_number_eight_byte_is_nineteen_bytes(self):
+        data = card_add_by_number_data("12345678901")
+        assert data[0] == 0x02
+        assert data[1:9] == bytes.fromhex("00000002dfdc1c35")
+        assert len(data) == 19  # 1 + 8 + 5 + 5
+
+    def test_delete_four_byte(self):
+        assert card_delete_data("1234567890") == bytes.fromhex("03499602d2")
+
+    def test_delete_eight_byte_is_built(self):
+        # op + 8-byte card.
+        data = card_delete_data("12345678901")
+        assert data == bytes.fromhex("03") + bytes.fromhex("00000002dfdc1c35")
+        assert len(data) == 9
+
+    def test_clear_is_a_single_byte(self):
+        assert card_clear_data() == bytes.fromhex("04")
+
+    def test_modify_uses_raw_dates(self):
+        start = datetime(2026, 1, 2, 3, 4)
+        end = datetime(2026, 12, 31, 23, 0)
+        data = card_modify_data("1234567890", start, end)
+        assert data == (
+            bytes.fromhex("05")
+            + bytes.fromhex("499602d2")
+            + decimal_date_bytes(start)
+            + decimal_date_bytes(end)
+        )
+
+
+class TestCardCyclicBuilders:
+    """Exact 0x70 card payloads."""
+
+    def test_add_four_byte_layout_and_pad(self):
+        # 08:30 -> 17:30, Wednesday (weekDay 3).
+        data = card_cyclic_add_data("1234567890", 3, 8 * 60 + 30, 17 * 60 + 30)
+        assert data == (
+            bytes.fromhex("020204")  # ADD, userType IC, userLen 4
+            + bytes.fromhex("499602d2")  # user, 4 BE
+            + bytes.fromhex("010300")  # cyclicType WEEK, weekDay 3, reserved 0
+            + bytes([8, 30, 17, 30])  # sH sM eH eM
+            + bytes.fromhex("00000000")  # four trailing zero bytes
+        )
+        assert len(data) == 4 + 14
+
+    def test_add_eight_byte_uses_value_threshold(self):
+        # 0x70 keys width off the NUMERIC value (> 0xFFFFFFFF), not the string length.
+        data = card_cyclic_add_data("5000000000", 1, 0, 60)
+        assert data[0:3] == bytes.fromhex("020208")  # userLen 8
+        assert data[3:11] == (5000000000).to_bytes(8, "big")
+        assert len(data) == 8 + 14
+
+    def test_add_rejects_bad_weekday(self):
+        with pytest.raises(ValueError):
+            card_cyclic_add_data("1234567890", 8, 0, 60)
+
+    def test_add_rejects_out_of_range_time(self):
+        with pytest.raises(ValueError):
+            card_cyclic_add_data("1234567890", 1, 0, 24 * 60)
+
+    def test_clear_layout(self):
+        data = card_cyclic_clear_data("1234567890")
+        assert data == bytes.fromhex("040204") + bytes.fromhex("499602d2")
+
+
+class TestCardSearchParser:
+    """0x05 SEARCH decode - [next-seq:2][card:N][start:5][end:5]."""
+
+    @staticmethod
+    def _search_reply(body: bytes) -> bytes:
+        # [echo 05][status 01][battery][sub-op 01] + body
+        return bytes.fromhex("0501") + bytes([0x50, 0x01]) + body
+
+    def test_single_four_byte_card(self):
+        start = datetime(2026, 1, 2, 3, 4)
+        end = datetime(2026, 12, 31, 23, 0)
+        body = (
+            bytes.fromhex("0001")  # next-seq
+            + bytes.fromhex("499602d2")
+            + decimal_date_bytes(start)
+            + decimal_date_bytes(end)
+        )
+        page = parse_cards(self._search_reply(body))
+        assert isinstance(page, CardPage)
+        assert page.next_sequence == 1
+        assert page.records == [CardRecord("1234567890", start, end)]
+
+    def test_single_eight_byte_card_uses_length_heuristic(self):
+        # Body after [battery][sub-op] is exactly 20 bytes -> 8-byte card width.
+        start = datetime(2026, 1, 1, 0, 0)
+        end = datetime(2027, 1, 1, 0, 0)
+        body = (
+            bytes.fromhex("0002")
+            + bytes.fromhex("00000002dfdc1c35")
+            + decimal_date_bytes(start)
+            + decimal_date_bytes(end)
+        )
+        assert len(body) == 20
+        page = parse_cards(self._search_reply(body))
+        assert page is not None
+        assert page.records[0].card_number == "12345678901"
+
+    def test_end_of_list(self):
+        page = parse_cards(self._search_reply(bytes.fromhex("ffff")))
+        assert page is not None
+        assert page.next_sequence == 0xFFFF
+        assert page.records == []
+
+    def test_short_reply_is_none(self):
+        assert parse_cards(bytes.fromhex("0501")) is None
+
+
 class TestLockErrorCodes:
     """The error byte after a failed reply's envelope."""
 
@@ -749,6 +1322,323 @@ class TestLockErrorCodes:
         assert lock_error_name(96) == "lock does not support this change"
 
 
+class TestFrIdBytes:
+    """A fingerprint number is always 6 bytes big-endian."""
+
+    def test_six_byte_big_endian(self):
+        assert fr_id_bytes("1234567890") == bytes.fromhex("0000499602d2")
+
+    def test_full_width_value(self):
+        # 2**48-1, the widest a 6-byte BE field holds.
+        assert fr_id_bytes("281474976710655") == bytes.fromhex("ffffffffffff")
+
+    def test_rejects_zero(self):
+        # An ADD with number 0 would be the bare [02] enrol-start.
+        with pytest.raises(ValueError):
+            fr_id_bytes("0")
+
+    def test_rejects_too_wide(self):
+        with pytest.raises(ValueError):
+            fr_id_bytes("281474976710656")  # 2**48
+
+    def test_rejects_non_digits(self):
+        with pytest.raises(ValueError):
+            fr_id_bytes("12ab")
+
+
+class TestFrWriteBuilders:
+    """Exact 0x06 request payloads."""
+
+    def test_search_from_zero(self):
+        # SEARCH sub-op is 6 (not the card SEARCH's 1): [06][index:2 BE].
+        assert fr_search_data() == bytes.fromhex("060000")
+
+    def test_search_with_index(self):
+        assert fr_search_data(5) == bytes.fromhex("060005")
+
+    def test_enroll_start_is_a_single_byte(self):
+        assert fr_enroll_data() == bytes.fromhex("02")
+
+    def test_delete_is_seven_bytes(self):
+        data = fr_delete_data("1234567890")
+        assert data == bytes.fromhex("03") + bytes.fromhex("0000499602d2")
+        assert len(data) == 7
+
+    def test_clear_is_a_single_byte(self):
+        assert fr_clear_data() == bytes.fromhex("04")
+
+    def test_modify_uses_raw_dates(self):
+        start = datetime(2026, 1, 2, 3, 4)
+        end = datetime(2026, 12, 31, 23, 0)
+        data = fr_modify_data("1234567890", start, end)
+        assert data == (
+            bytes.fromhex("05")
+            + bytes.fromhex("0000499602d2")
+            + decimal_date_bytes(start)
+            + decimal_date_bytes(end)
+        )
+        assert len(data) == 17
+
+
+class TestFrCyclicBuilders:
+    """Exact 0x70 fingerprint payloads."""
+
+    def test_add_fixed_20_byte_layout(self):
+        # 08:30 -> 17:30, Wednesday (weekDay 3). userType FR=1, userLen fixed 6.
+        data = fr_cyclic_add_data("1234567890", 3, 8 * 60 + 30, 17 * 60 + 30)
+        assert data == (
+            bytes.fromhex("020106")  # ADD, userType FR, userLen 6
+            + bytes.fromhex("0000499602d2")  # user, 6 BE
+            + bytes.fromhex("010300")  # cyclicType WEEK, weekDay 3, reserved 0
+            + bytes([8, 30, 17, 30])  # sH sM eH eM
+            + bytes.fromhex("00000000")  # four trailing zero bytes
+        )
+        assert len(data) == 20
+
+    def test_add_rejects_bad_weekday(self):
+        with pytest.raises(ValueError):
+            fr_cyclic_add_data("1234567890", 8, 0, 60)
+
+    def test_add_rejects_out_of_range_time(self):
+        with pytest.raises(ValueError):
+            fr_cyclic_add_data("1234567890", 1, 0, 24 * 60)
+
+    def test_add_rejects_zero_number(self):
+        with pytest.raises(ValueError):
+            fr_cyclic_add_data("0", 1, 0, 60)
+
+    def test_clear_is_nine_bytes(self):
+        data = fr_cyclic_clear_data("1234567890")
+        assert data == bytes.fromhex("040106") + bytes.fromhex("0000499602d2")
+        assert len(data) == 9
+
+
+class TestFingerprintSearchParser:
+    """0x06 SEARCH decode - [next-seq:2] then 16-byte records."""
+
+    @staticmethod
+    def _search_reply(body: bytes) -> bytes:
+        # [echo 06][status 01][battery][sub-op 06] + body
+        return bytes.fromhex("0601") + bytes([0x50, 0x06]) + body
+
+    def test_single_record(self):
+        start = datetime(2026, 1, 2, 3, 4)
+        end = datetime(2026, 12, 31, 23, 0)
+        body = (
+            bytes.fromhex("0001")  # next-seq
+            + bytes.fromhex("0000499602d2")  # fr, 6 BE
+            + decimal_date_bytes(start)
+            + decimal_date_bytes(end)
+        )
+        page = parse_fingerprints(self._search_reply(body))
+        assert isinstance(page, FingerprintPage)
+        assert page.next_sequence == 1
+        assert page.records == [FingerprintRecord("1234567890", start, end)]
+
+    def test_end_of_list(self):
+        page = parse_fingerprints(self._search_reply(bytes.fromhex("ffff")))
+        assert page is not None
+        assert page.next_sequence == 0xFFFF
+        assert page.records == []
+
+    def test_short_reply_is_none(self):
+        assert parse_fingerprints(bytes.fromhex("0601")) is None
+
+
+class TestFingerprintAddParser:
+    """parse_fr_add - add-state byte, scan progress, and the completion number."""
+
+    @staticmethod
+    def _add_reply(tail: bytes) -> bytes:
+        # [echo 06][status 01][battery 50][sub-op 02] + tail
+        return bytes.fromhex("0601") + bytes([0x50, 0x02]) + tail
+
+    def test_enter_add_mode(self):
+        state = parse_fr_add(self._add_reply(bytes([0x02])))
+        assert state.state == 0x02
+        assert state.completed is False
+        assert state.fingerprint_number is None
+
+    def test_collection_progress(self):
+        # state 3, current=1, total=2.
+        state = parse_fr_add(self._add_reply(bytes([0x03, 0x01, 0x02])))
+        assert state.state == 0x03
+        assert state.completed is False
+        assert state.fingerprint_number is None
+
+    def test_completion_carries_the_number(self):
+        state = parse_fr_add(
+            self._add_reply(bytes([0x01]) + bytes.fromhex("0000499602d2"))
+        )
+        assert state.completed is True
+        assert state.fingerprint_number == "1234567890"
+
+    def test_feature_write_is_not_completed(self):
+        state = parse_fr_add(self._add_reply(bytes([0x04])))
+        assert state.state == 0x04
+        assert state.completed is False
+
+    def test_short_reply_degrades(self):
+        state = parse_fr_add(bytes.fromhex("0601"))
+        assert isinstance(state, FingerprintAddState)
+        assert state.completed is False
+        assert state.fingerprint_number is None
+
+    def test_fingerprint_error_code_name(self):
+        assert lock_error_name(26) == "fingerprint does not exist"
+
+
+class TestPassageBuilders:
+    """Exact 0x66 request payloads."""
+
+    def test_add_timed_record(self):
+        # Wednesday (weekDay 3), 08:30 -> 17:30. type WEEK, opValue 1.
+        data = passage_add_data(3, 8 * 60 + 30, 17 * 60 + 30)
+        assert data == bytes([0x02, 0x01, 0x03, 0x01, 8, 30, 17, 30])
+        assert len(data) == 8
+
+    def test_add_weekday_is_not_remapped(self):
+        # ADD passes the weekday through unchanged.
+        data = passage_add_data(1, 60, 120)  # Monday
+        assert data[2] == 1
+
+    def test_add_all_day_is_four_zero_bytes(self):
+        data = passage_add_data(5, 999, 1000, all_day=True)
+        assert data == bytes([0x02, 0x01, 0x05, 0x01, 0, 0, 0, 0])
+
+    def test_add_allows_1440_end(self):
+        # A window may run to midnight: 1440 -> 24:00.
+        data = passage_add_data(2, 23 * 60, 1440)
+        assert data[4:] == bytes([23, 0, 24, 0])
+
+    def test_add_rejects_bad_weekday(self):
+        with pytest.raises(ValueError):
+            passage_add_data(8, 0, 60)
+
+    def test_add_rejects_out_of_range_time(self):
+        with pytest.raises(ValueError):
+            passage_add_data(1, 0, 1441)
+
+    def test_clear_is_single_byte(self):
+        assert passage_clear_data() == bytes.fromhex("04")
+
+
+class TestSwitchBuilders:
+    """Exact 0x68 request payloads."""
+
+    def test_get_is_single_byte(self):
+        assert switch_get_data() == bytes.fromhex("01")
+
+    def test_set_layout(self):
+        # [02][switchItem:4 BE][switchValue:4 BE].
+        data = switch_set_data(0x07, 0x21)
+        assert data == bytes.fromhex("02") + bytes.fromhex("00000007") + bytes.fromhex(
+            "00000021"
+        )
+        assert len(data) == 9
+
+    def test_set_masks_to_32_bits(self):
+        data = switch_set_data(0x1_0000_0001, 0x1_0000_0002)
+        assert data == bytes.fromhex("02") + bytes.fromhex("00000001") + bytes.fromhex(
+            "00000002"
+        )
+
+
+class TestSwitchParser:
+    """0x68 GET decode - item then value after [battery][sub-op]."""
+
+    @staticmethod
+    def _get_reply(item: int, value: int) -> bytes:
+        # [echo 68][status 01][battery 50][sub-op 01][item:4 BE][value:4 BE]
+        return (
+            bytes.fromhex("6801")
+            + bytes([0x50, 0x01])
+            + item.to_bytes(4, "big")
+            + value.to_bytes(4, "big")
+        )
+
+    def test_decodes_raw_fields(self):
+        config = parse_switch_state(self._get_reply(0x07, 0x21))
+        assert isinstance(config, SwitchConfig)
+        assert config.switch_item == 0x07
+        assert config.switch_value == 0x21
+
+    def test_tamper_bit(self):
+        # 0x21 = bit0 (tamper) + bit5 (passage auto-unlock) set.
+        config = parse_switch_state(self._get_reply(0x07, 0x21))
+        assert config is not None
+        assert config.settings["tamper_alert"] is True
+        assert config.settings["passage_mode_auto_unlock"] is True
+        assert config.settings["privacy_lock"] is False
+
+    def test_tamper_off(self):
+        config = parse_switch_state(self._get_reply(0x07, 0x20))
+        assert config is not None
+        assert config.settings["tamper_alert"] is False
+        assert config.settings["passage_mode_auto_unlock"] is True
+
+    def test_decode_is_raw_bit_presence(self):
+        off_bit = parse_switch_state(self._get_reply(0x07, 0x00))
+        assert off_bit is not None
+        assert off_bit.settings["wifi_lock_power_saving"] is False
+        set_bit = parse_switch_state(self._get_reply(0x07, 0x80))  # bit 7
+        assert set_bit is not None
+        assert set_bit.settings["wifi_lock_power_saving"] is True
+
+    def test_set_ack_is_not_a_bitfield(self):
+        # A SET ack has sub-op 2 and no bitfield - must never decode as one.
+        ack = bytes.fromhex("6801") + bytes([0x50, 0x02])
+        assert parse_switch_state(ack) is None
+
+    def test_short_reply_is_none(self):
+        assert parse_switch_state(bytes.fromhex("6801") + bytes([0x50, 0x01])) is None
+
+
+class TestSwitchWriteFields:
+    """The read-modify-write toggle math."""
+
+    def test_turn_tamper_on_sets_bit0(self):
+        # Current value has unrelated bits set (bit5 passage auto-unlock).
+        item, value = switch_write_fields(0x00, 0x20, SWITCH_TAMPER_ALERT, on=True)
+        # value keeps 0x20 and gains bit0.
+        assert value == 0x21
+        # item = (0 | 1) & (1 | 7) = 1.
+        assert item == 0x01
+
+    def test_turn_tamper_off_clears_only_bit0(self):
+        item, value = switch_write_fields(0x00, 0x21, SWITCH_TAMPER_ALERT, on=False)
+        assert value == 0x20  # bit0 cleared, bit5 preserved
+        assert item == 0x01
+
+    def test_getswitchitem_masks_item_to_op_or_7(self):
+        # Current item carries a high bit OUTSIDE (op | 7); it must be dropped,
+        # proving the & (op | 7) step, not just the | op step.
+        high = SWITCH_PRIVACY_LOCK  # 4, inside bits 0-2
+        item, value = switch_write_fields(
+            0x10000, 0x00, SWITCH_PASSAGE_MODE_AUTO_UNLOCK, on=True
+        )
+        # op = 32 (0x20); (0x10000 | 0x20) & (0x20 | 7) = 0x20 & 0x27 = 0x20.
+        assert item == 0x20
+        assert value == 0x20
+        assert high  # keep the import meaningful
+
+    def test_value_toggle_preserves_other_bits(self):
+        # Setting passage auto-unlock on a value that already has tamper on.
+        item, value = switch_write_fields(
+            0x01, 0x01, SWITCH_PASSAGE_MODE_AUTO_UNLOCK, on=True
+        )
+        assert value == 0x21  # 0x01 (tamper) | 0x20
+        # item = (0x01 | 0x20) & (0x20 | 7) = 0x21 & 0x27 = 0x21.
+        assert item == 0x21
+
+    def test_results_masked_to_32_bits(self):
+        item, value = switch_write_fields(
+            0xFFFFFFFF, 0xFFFFFFFF, SWITCH_TAMPER_ALERT, on=True
+        )
+        assert item <= 0xFFFFFFFF
+        assert value <= 0xFFFFFFFF
+
+
 class TestScrambleByteIsChecked:
     def test_legacy_xor_locks_are_refused_loudly(self):
         """Decoding these as AES would yield convincing garbage."""
@@ -767,6 +1657,100 @@ class TestScrambleByteIsChecked:
             assert Frame.decode(raw).scramble_key == marker
 
 
+class TestFailedReadsRaise:
+    """`<op> 00 <err>` is a refusal, never data."""
+
+    def test_auto_lock(self):
+        with pytest.raises(CommandRejected) as excinfo:
+            parse_auto_lock(bytes.fromhex("36000201002d00010384"))
+        assert "not administrator - no permission" in str(excinfo.value)
+
+    def test_lock_sound(self):
+        with pytest.raises(CommandRejected):
+            parse_lock_sound(bytes.fromhex("6200025001"))
+
+    def test_switch_state(self):
+        with pytest.raises(CommandRejected):
+            parse_switch_state(bytes.fromhex("680002010000000700000021"))
+
+    def test_passcodes(self):
+        with pytest.raises(CommandRejected):
+            parse_passcodes(bytes.fromhex("070002"))
+
+    def test_operate_log(self):
+        with pytest.raises(CommandRejected):
+            parse_operate_log(bytes.fromhex("250002"))
+
+
+class TestPasscodePage:
+    def test_two_records_on_one_page(self):
+        payload = bytes.fromhex(
+            "0701002100020c010004313233341a0102030411030004353637381a010203041a0c1f173b"
+        )
+        page = parse_passcodes(payload)
+        assert page.next_sequence == 2
+        assert not page.end
+        assert page.records == [
+            PasscodeRecord(
+                pwd_type=1,
+                passcode="1234",
+                new_passcode=None,
+                start=datetime(2026, 1, 2, 3, 4),
+                end=None,
+                cycle_type=None,
+            ),
+            PasscodeRecord(
+                pwd_type=3,
+                passcode="5678",
+                new_passcode=None,
+                start=datetime(2026, 1, 2, 3, 4),
+                end=datetime(2026, 12, 31, 23, 59),
+                cycle_type=None,
+            ),
+        ]
+
+    def test_count_has_an_end_and_circle_a_cycle_type(self):
+        payload = bytes.fromhex(
+            "0701"
+            "0023"
+            "ffff"
+            "1102000432343638"
+            "1a01020304"
+            "1a0c1f173b"
+            "0e04000431333537"
+            "1a01020e1e"
+            "0030"
+        )
+        page = parse_passcodes(payload)
+        assert page.end
+        count, circle = page.records
+        assert count.end == datetime(2026, 12, 31, 23, 59)
+        assert circle.cycle_type == 0x30
+        assert circle.end is None
+
+    def test_total_length_zero_is_the_end(self):
+        page = parse_passcodes(bytes.fromhex("070100000005"))
+        assert page.end
+        assert page.records == []
+
+
+class TestOperateLogPage:
+    def test_two_records_on_one_page(self):
+        # rec 1: len 16, type 28, 2026-11-10 09:08:07, batt 0x50, uid, record_id
+        # rec 2: len 8, type 7, 2026-11-10 09:08:08, batt 0x50, no tail
+        payload = bytes.fromhex(
+            "2501001c0005101c1a0b0a090807500000002a1234567808071a0b0a09080850"
+        )
+        records, total_len, page_seq = parse_operate_log(payload)
+        assert (total_len, page_seq) == (0x1C, 5)
+        assert [r.record_type for r in records] == [0x1C, 0x07]
+        assert [r.record_id for r in records] == [0x12345678, None]
+        assert [r.timestamp for r in records] == [
+            datetime(2026, 11, 10, 9, 8, 7),
+            datetime(2026, 11, 10, 9, 8, 8),
+        ]
+
+
 class TestCredentialErrors:
     """Bad credentials raise a typed error a caller can fall back on."""
 
@@ -777,6 +1761,7 @@ class TestCredentialErrors:
             lambda: check_admin_data(1 << 40, 1, 2),
             lambda: check_admin_data(1, 1 << 40, 2),
             lambda: check_admin_data(1, 1, 1 << 30),
+            lambda: check_random_data(5, "abc"),
             lambda: control_data(5, "abc", 0),
             lambda: check_user_time_data(1 << 40, 0),
             lambda: _credential_bytes("not-a-number", 4, "uid"),
@@ -790,6 +1775,36 @@ class TestCredentialErrors:
         assert isinstance(excinfo.value, ValueError)
 
 
+class TestLockTimezoneRendering:
+    LOCK_TZ = timezone(timedelta(hours=13))
+
+    def test_aware_moment_is_rendered_in_the_lock_timezone(self):
+        moment = datetime(2026, 3, 14, 2, 9, 26, tzinfo=UTC)
+        assert decimal_date_bytes(
+            moment, with_seconds=True, tz=self.LOCK_TZ
+        ) == bytes.fromhex("1a030e0f091a")
+
+    def test_naive_moment_is_taken_as_lock_local(self):
+        moment = datetime(2026, 3, 14, 15, 9)
+        assert decimal_date_bytes(moment, tz=self.LOCK_TZ) == bytes.fromhex(
+            "1a030e0f09"
+        )
+
+    def test_lock_timezone_from_the_cloud_offset(self):
+        # timezoneRawOffset is milliseconds east of UTC.
+        assert lock_timezone(46800000) == self.LOCK_TZ
+        assert lock_timezone(None) is None
+
+    def test_card_window_uses_the_lock_timezone(self):
+        data = card_add_by_number_data(
+            "1234567890",
+            start=datetime(2026, 1, 1, 14, 4, tzinfo=UTC),
+            end=datetime(2026, 12, 31, 10, 59, tzinfo=UTC),
+            tz=self.LOCK_TZ,
+        )
+        assert data == bytes.fromhex("02499602d21a010203041a0c1f173b")
+
+
 class TestInterimAck:
     def test_command_received_is_named(self):
         assert lock_error_name(36) == "command received"
@@ -801,3 +1816,8 @@ class TestInterimAck:
         assert not is_interim_ack(bytes.fromhex("620024"), 0x36)  # other opcode
         assert not is_interim_ack(bytes.fromhex("620002"), 0x62)  # a real refusal
         assert not is_interim_ack(bytes.fromhex("620124"), 0x62)  # success
+
+
+class TestCyclicUserWidth:
+    def test_card_zero_takes_the_eight_byte_id(self):
+        assert card_cyclic_clear_data("0") == bytes.fromhex("0402080000000000000000")

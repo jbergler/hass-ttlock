@@ -22,7 +22,9 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 import pytest
 
+from custom_components.ttlock import lock_commands
 from custom_components.ttlock.ble_protocol import (
+    Command,
     Frame,
     FrameAssembler,
     ProtocolError,
@@ -30,10 +32,13 @@ from custom_components.ttlock.ble_protocol import (
     control_data,
 )
 from custom_components.ttlock.wifi_proxy import (
+    FR_ENROLL_FRAME_TIMEOUT,
+    FR_ENROLL_TOTAL_TIMEOUT,
     MAX_SKIPPED_FRAMES,
     MODE_PASSTHROUGH,
     MODE_TAKEOVER,
     OP_CHECK_ADMIN,
+    OP_CHECK_RANDOM,
     OP_CONFIG,
     OP_CONNECT,
     OP_LOCK,
@@ -365,6 +370,8 @@ def honest_answer(peer: RawPeer, command: int, plaintext: bytes) -> list[bytes]:
         return [peer.enc(bytes([OP_QUERY_STATUS, 0x01, batt, 0x01, 0x02]))]
     if command == OP_CHECK_ADMIN:
         return [peer.enc(bytes([OP_CHECK_ADMIN, 0x01]) + peer.token.to_bytes(4, "big"))]
+    if command == OP_CHECK_RANDOM:
+        return [peer.enc(bytes([OP_CHECK_RANDOM, 0x01, batt]))]
     if command in (OP_UNLOCK, OP_LOCK):
         return [peer.enc(op_record(command, batt))]
     return []
@@ -630,6 +637,7 @@ async def test_takeover_unlock_then_lock():
 
     assert await proxy.async_lock(LOCK_ID) is True
     assert fake.locked is True
+    assert OP_CHECK_RANDOM not in fake.commands  # control path skips 0x30
 
     await _end(fake, task)
     assert _has_session(proxy) is False
@@ -1063,17 +1071,20 @@ async def test_status_push_after_unlock_does_not_answer_the_next_read():
 async def test_a_reply_no_longer_outstanding_closes_the_session():
     """A duplicate token reply after the op's own reply is a fault, not noise."""
 
-    def unlock(peer: RawPeer) -> list[bytes]:
-        reply = peer.enc(op_record(OP_UNLOCK, 0x3A))
+    def audio(peer: RawPeer) -> list[bytes]:
+        reply = peer.enc(bytes([Command.AUDIO_MANAGE, 0x01, 0x3A, 0x01, 0x01]))
         token = peer.enc(bytes([OP_CHECK_ADMIN, 0x01]) + TOKEN.to_bytes(4, "big"))
         return [reply, token]
 
     proxy = WifiProxy()
     _register(proxy, cloud=False)
-    peer = RawPeer(answer=_answer_with({OP_UNLOCK: unlock}))
+    peer = RawPeer(answer=_answer_with({Command.AUDIO_MANAGE: audio}))
     task = await _run_takeover(proxy, peer)
 
-    assert await proxy.async_unlock(LOCK_ID) is True
+    async def op(session):
+        return await session.command(Command.AUDIO_MANAGE, b"\x01")
+
+    assert (await proxy.async_admin_op(LOCK_ID, op))[0] is True
     await asyncio.wait_for(task, timeout=1.0)
     assert peer.closed is True
     assert PEER_IP in proxy._throttle._peers  # counted as a failed proof
@@ -1834,6 +1845,56 @@ async def test_refused_unlock_is_false():
 # --- the session an op started on is the one its error handler touches -------
 
 
+async def test_failed_op_on_a_replaced_session_leaves_the_new_one_alone():
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    first = _AdminFakeLock()
+    first_task = await _run_takeover(proxy, first)
+    gate = asyncio.Event()
+
+    async def op(session):
+        await gate.wait()
+        return await session.command(0x36, b"\x01")
+
+    pending = asyncio.create_task(proxy.async_admin_op(LOCK_ID, op))
+    await asyncio.sleep(0)
+
+    second = _AdminFakeLock()
+    second_task = _connect(proxy, second)
+    await _wait(lambda: first.closed and proxy.is_takeover_ready(LOCK_ID))
+    replacement = _session(proxy)
+
+    gate.set()
+    with pytest.raises(ConnectionError):
+        await asyncio.wait_for(pending, 1.0)
+    assert replacement._closed is False
+    assert proxy.is_takeover_ready(LOCK_ID) is True
+
+    await asyncio.wait_for(first_task, 1.0)
+    await _end(second, second_task)
+
+
+async def test_failed_op_after_the_session_ended_raises_the_socket_error():
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = _AdminFakeLock()
+    task = await _run_takeover(proxy, fake)
+    gate = asyncio.Event()
+
+    async def op(session):
+        await gate.wait()
+        return await session.command(0x36, b"\x01")
+
+    pending = asyncio.create_task(proxy.async_admin_op(LOCK_ID, op))
+    await asyncio.sleep(0)
+    await _end(fake, task)  # the lock drops; the registry clears
+    assert _has_session(proxy) is False
+
+    gate.set()
+    with pytest.raises(ConnectionError):
+        await asyncio.wait_for(pending, 1.0)
+
+
 async def test_unlock_after_the_session_ended_is_false(monkeypatch):
     proxy = WifiProxy()
     _register(proxy, cloud=False)
@@ -2052,6 +2113,397 @@ async def test_passthrough_notifies_with_mode_already_set(monkeypatch):
     assert seen_modes == [MODE_PASSTHROUGH]
 
     await _end_passthrough(fake, cloud_reader, task)
+
+
+# --- admin ops ---------------------------------------------------------------
+
+
+class _AdminFakeLock(FakeLock):
+    """A FakeLock that answers CHECK_RANDOM (0x30) and an auto-lock feature op.
+
+    Config ops run CHECK_ADMIN -> token -> CHECK_RANDOM -> op; the lock answers
+    0x30 with `30 01 <batt>`. Every command is recorded so a regression that
+    drops CHECK_RANDOM is caught by an order assertion, not a timeout.
+    """
+
+    def _respond(self, raw: bytes) -> None:
+        frame = self._decode(raw)
+        if frame is None:
+            return
+        cmd = frame.command
+        if cmd == OP_CHECK_RANDOM:
+            self.commands.append(cmd)
+            self.payloads[cmd] = frame.data
+            self._reply(bytes([OP_CHECK_RANDOM, 0x01, self.battery]))
+        elif cmd == 0x36:  # AUTO_LOCK_MANAGE
+            self.commands.append(cmd)
+            self.payloads[cmd] = frame.data
+            if not hasattr(self, "autolock_payloads"):
+                self.autolock_payloads = []
+            self.autolock_payloads.append(frame.data)
+            if frame.data[:1] == b"\x02":  # MODIFY ack
+                self._reply(bytes([0x36, 0x01, self.battery, 0x02]))
+            else:  # SEARCH: battery, op, sec=45, min=1, max=900
+                self._reply(
+                    bytes([0x36, 0x01, self.battery, 0x01])
+                    + (45).to_bytes(2, "big")
+                    + (1).to_bytes(2, "big")
+                    + (900).to_bytes(2, "big")
+                )
+        else:
+            super()._respond(raw)
+
+
+async def test_async_admin_op_runs_the_full_handshake_then_the_op():
+    """A config op runs CHECK_ADMIN -> CHECK_RANDOM -> op, in that order."""
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = _AdminFakeLock()
+    task = await _run_takeover(proxy, fake)
+
+    attempted, config = await proxy.async_admin_op(LOCK_ID, lock_commands.get_auto_lock)
+
+    assert attempted is True
+    assert config.seconds == 45
+    assert fake.commands[-3:] == [OP_CHECK_ADMIN, OP_CHECK_RANDOM, 0x36]
+    # (token + unlockKey) & 0xFFFFFFFF, big-endian.
+    assert fake.payloads[OP_CHECK_RANDOM] == (TOKEN + UNLOCK_KEY).to_bytes(4, "big")
+
+    await _end(fake, task)
+
+
+async def test_async_admin_op_refused_check_random_raises():
+    class RefusingLock(FakeLock):
+        def _respond(self, raw):
+            frame = self._decode(raw)
+            if frame is not None and frame.command == OP_CHECK_RANDOM:
+                self.commands.append(frame.command)
+                self._reply(bytes([OP_CHECK_RANDOM, 0x00]))
+                return
+            super()._respond(raw)
+
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = RefusingLock()
+    task = await _run_takeover(proxy, fake)
+
+    async def op(session):
+        return await session.command(Command.AUDIO_MANAGE, b"\x01")
+
+    with pytest.raises(ProtocolError):
+        await proxy.async_admin_op(LOCK_ID, op)
+    assert Command.AUDIO_MANAGE not in fake.commands
+    await _end(fake, task)
+
+
+async def test_async_admin_op_set_sends_the_modify_bytes():
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = _AdminFakeLock()
+    task = await _run_takeover(proxy, fake)
+
+    async def op(session):
+        return await lock_commands.set_auto_lock(session, 45)
+
+    attempted, config = await proxy.async_admin_op(LOCK_ID, op)
+    assert attempted is True
+    assert fake.autolock_payloads[0][:1] == b"\x02"
+    assert fake.commands.count(0x36) == 2
+    assert config.seconds == 45
+
+    await _end(fake, task)
+
+
+async def test_async_admin_op_reports_sent_once_the_handshake_is_done():
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = _AdminFakeLock()
+    task = await _run_takeover(proxy, fake)
+    seen: list[list[int]] = []
+
+    attempted, config = await proxy.async_admin_op(
+        LOCK_ID, lock_commands.get_auto_lock, lambda: seen.append(list(fake.commands))
+    )
+
+    assert attempted is True
+    assert config.seconds == 45
+    assert len(seen) == 1
+    assert seen[0][-2:] == [OP_CHECK_ADMIN, OP_CHECK_RANDOM]  # before the op
+    assert fake.commands[-1] == 0x36
+
+    await _end(fake, task)
+
+
+async def test_async_admin_op_timeout_keeps_the_session_commandable():
+    """An admin op that times out propagates but must NOT close the session."""
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = _AdminFakeLock()
+    task = await _run_takeover(proxy, fake)
+    session = _session(proxy)
+
+    async def op_times_out(_session):
+        raise TimeoutError("no reply to 0x36 within 10s")
+
+    with pytest.raises(TimeoutError):
+        await proxy.async_admin_op(LOCK_ID, op_times_out)
+
+    assert session._closed is False
+    assert proxy.is_takeover_ready(LOCK_ID) is True
+    attempted, config = await proxy.async_admin_op(LOCK_ID, lock_commands.get_auto_lock)
+    assert attempted is True
+    assert config.seconds == 45
+    assert proxy._by_id[LOCK_ID].session is session
+
+    await _end(fake, task)
+
+
+async def test_async_admin_op_socket_error_closes_the_session():
+    """A genuine socket error during an admin op tears the session down."""
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = _AdminFakeLock()
+    task = await _run_takeover(proxy, fake)
+    session = _session(proxy)
+
+    async def op_resets(_session):
+        raise ConnectionResetError("peer reset")
+
+    with pytest.raises(ConnectionResetError):
+        await proxy.async_admin_op(LOCK_ID, op_resets)
+
+    assert session._closed is True
+
+    await _end(fake, task)
+
+
+async def test_async_admin_op_without_a_session_is_not_attempted():
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+
+    assert await proxy.async_admin_op(LOCK_ID, lock_commands.get_auto_lock) == (
+        False,
+        None,
+    )
+
+
+# --- fingerprint scan enrolment (multi-frame over a live takeover session) ----
+#
+# The lock answers the [02] enrol-start with "entered add mode", then streams
+# scan-progress frames and finally the number, all echoing FR_MANAGE (0x06).
+# These run with the keepalive firing, so a progress frame must never be
+# swallowed by a concurrent keepalive poll.
+
+FR_MANAGE = 0x06
+FR_NUMBER = 1234567890
+
+
+class EnrollFakeLock(FakeLock):
+    """A FakeLock that streams a fingerprint enrolment (progress then number)."""
+
+    def __init__(self, *args, outcome: str = "complete", **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._outcome = outcome
+        self._tasks: list[asyncio.Task] = []
+
+    def _respond(self, raw: bytes) -> None:
+        frame = self._decode(raw)
+        if frame is None:
+            return
+        cmd = frame.command
+        if cmd == OP_CHECK_RANDOM:
+            self.commands.append(cmd)
+            self.payloads[cmd] = frame.data
+            self._reply(bytes([OP_CHECK_RANDOM, 0x01, self.battery]))
+            return
+        if cmd == FR_MANAGE:
+            self.commands.append(cmd)
+            self.payloads[cmd] = frame.data
+            if self._outcome == "decline":
+                self._reply(bytes([FR_MANAGE, 0x00, 0x02]))
+                return
+            self._reply(bytes([FR_MANAGE, 0x01, self.battery, 0x02, 0x02]))
+            if self._outcome != "silent":
+                self._tasks.append(
+                    asyncio.get_running_loop().create_task(self._stream())
+                )
+            return
+        super()._respond(raw)
+
+    async def _stream(self) -> None:
+        await asyncio.sleep(0.05)
+        if self._outcome == "hang_up":
+            self.close()
+            return
+        self._reply(bytes([FR_MANAGE, 0x01, self.battery, 0x02, 0x03, 0x01, 0x02]))
+        await asyncio.sleep(0.05)
+        if self._outcome == "feature_write":
+            self._reply(bytes([FR_MANAGE, 0x01, self.battery, 0x02, 0x04]))
+            return
+        if self._outcome == "no_number":
+            self._reply(bytes([FR_MANAGE, 0x01, self.battery, 0x02, 0x01]))
+            return
+        self._reply(
+            bytes([FR_MANAGE, 0x01, self.battery, 0x02, 0x01])
+            + FR_NUMBER.to_bytes(6, "big")
+        )
+
+
+async def test_enroll_fingerprint_streams_to_completion(monkeypatch):
+    monkeypatch.setattr(f"{PROXY}.KEEPALIVE_INTERVAL", 0.02)
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = EnrollFakeLock()
+    task = await _run_takeover(proxy, fake)
+
+    attempted, number = await proxy.async_enroll_fingerprint(LOCK_ID)
+
+    assert attempted is True
+    assert number == FR_NUMBER
+    assert FR_MANAGE in fake.commands
+    assert OP_CHECK_RANDOM in fake.commands  # the full admin handshake ran
+
+    await _end(fake, task)
+
+
+async def test_enroll_fingerprint_decline_raises():
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = EnrollFakeLock(outcome="decline")
+    task = await _run_takeover(proxy, fake)
+
+    with pytest.raises(lock_commands.CommandRejected) as excinfo:
+        await proxy.async_enroll_fingerprint(LOCK_ID)
+    assert "not administrator - no permission" in str(excinfo.value)
+
+    await _end(fake, task)
+
+
+async def test_enroll_fingerprint_feature_write_is_unsupported(monkeypatch):
+    monkeypatch.setattr(f"{PROXY}.KEEPALIVE_INTERVAL", 0.02)
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = EnrollFakeLock(outcome="feature_write")
+    task = await _run_takeover(proxy, fake)
+
+    with pytest.raises(lock_commands.CommandRejected):
+        await proxy.async_enroll_fingerprint(LOCK_ID)
+
+    await _end(fake, task)
+
+
+async def test_enroll_completed_without_a_number_is_a_protocol_error():
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = EnrollFakeLock(outcome="no_number")
+    task = await _run_takeover(proxy, fake)
+
+    with pytest.raises(ProtocolError):
+        await proxy.async_enroll_fingerprint(LOCK_ID)
+
+    await _end(fake, task)
+
+
+async def test_enroll_ends_when_the_lock_hangs_up_mid_scan():
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = EnrollFakeLock(outcome="hang_up")
+    task = await _run_takeover(proxy, fake)
+
+    with pytest.raises(ConnectionError):
+        await proxy.async_enroll_fingerprint(LOCK_ID)
+
+    await asyncio.wait_for(task, timeout=1.0)
+    assert _has_session(proxy) is False
+
+
+async def test_enroll_fingerprint_without_session_is_not_attempted():
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    attempted, number = await proxy.async_enroll_fingerprint(LOCK_ID)
+    assert attempted is False
+    assert number is None
+
+
+async def test_enroll_timeout_keeps_the_session(monkeypatch):
+    """A scan that never arrives times out but must NOT tear the session down."""
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = EnrollFakeLock()
+    task = await _run_takeover(proxy, fake)
+    session = _session(proxy)
+
+    async def enroll_times_out(*_a, **_k):
+        raise TimeoutError("no scan")
+
+    monkeypatch.setattr(session, "enroll_fingerprint", enroll_times_out)
+
+    with pytest.raises(TimeoutError):
+        await proxy.async_enroll_fingerprint(LOCK_ID)
+
+    assert proxy._ready_takeover(LOCK_ID) is not None
+
+    await _end(fake, task)
+
+
+async def test_enroll_silent_lock_times_out_and_releases_the_op_lock(monkeypatch):
+    """A lock that enters add mode then goes quiet times out without wedging."""
+    monkeypatch.setattr(f"{PROXY}.KEEPALIVE_INTERVAL", 0.02)
+    monkeypatch.setattr(f"{PROXY}.FR_ENROLL_FRAME_TIMEOUT", 0.05)
+    monkeypatch.setattr(f"{PROXY}.FR_ENROLL_TOTAL_TIMEOUT", 0.1)
+    proxy = WifiProxy()
+    _register(proxy, cloud=False)
+    fake = EnrollFakeLock(outcome="silent")
+    task = await _run_takeover(proxy, fake)
+
+    with pytest.raises(TimeoutError):
+        await proxy.async_enroll_fingerprint(LOCK_ID)
+
+    # The op-lock was released: a subsequent command still works.
+    assert await proxy.async_status(LOCK_ID) is not None
+
+    await _end(fake, task)
+
+
+async def test_enrolment_runs_out_of_total_time_between_scan_frames(monkeypatch):
+    """The whole enrolment has a deadline, however steadily the lock reports."""
+    fake = EnrollFakeLock(outcome="silent")
+    session = _bare_session(fake)
+    session.start_reader()
+    _run_out_the_clock_on(
+        monkeypatch,
+        session,
+        FR_ENROLL_TOTAL_TIMEOUT,
+        when=lambda frame: frame.data[:1] == bytes([FR_MANAGE]),
+    )
+
+    with pytest.raises(TimeoutError, match="enrolment did not complete in time"):
+        await session.enroll_fingerprint(CREDS)
+
+    assert fake.commands.count(FR_MANAGE) == 1
+    session.close()
+
+
+async def test_a_frame_that_is_not_a_scan_does_not_extend_the_wait(monkeypatch):
+    """Time spent on another FR_MANAGE frame counts against the scan wait."""
+    fake = EnrollFakeLock(outcome="silent")
+    session = _bare_session(fake)
+    session.start_reader()
+    not_a_scan = bytes([FR_MANAGE, 0x01, fake.battery, 0x05])
+    _run_out_the_clock_on(
+        monkeypatch,
+        session,
+        FR_ENROLL_FRAME_TIMEOUT,
+        when=lambda frame: frame.data == not_a_scan,
+    )
+    enrolment = asyncio.create_task(session.enroll_fingerprint(CREDS))
+    await _wait(lambda: FR_MANAGE in fake.commands)
+
+    fake._reply(not_a_scan)
+
+    with pytest.raises(TimeoutError, match="no fingerprint scan frame arrived"):
+        await asyncio.wait_for(enrolment, timeout=1.0)
+    session.close()
 
 
 async def test_unsolicited_frames_while_idle_are_discarded():
@@ -2453,21 +2905,23 @@ async def test_replayed_admission_oracle_is_throttled_over_an_hour(
 
 
 async def test_real_lock_traffic_never_trips_the_fault_path(monkeypatch):
-    """Keepalives, status, unlock/lock with the status push, heartbeat and
-    events all keep the session and leave the address unrecorded."""
+    """Keepalives, status, unlock/lock with the status push, heartbeat, events
+    and an admin op all keep the session and leave the address unrecorded."""
     monkeypatch.setattr(f"{PROXY}.KEEPALIVE_INTERVAL", 0.02)
     proxy = WifiProxy()
     events: list[str] = []
     proxy.register_lock(
         LOCK_ID, MAC, lambda: False, lambda: CREDS, on_event=lambda: events.append("e")
     )
-    fake = FakeLock()
+    fake = _AdminFakeLock()
     task = await _run_takeover(proxy, fake)
     session = _session(proxy)
 
     assert await proxy.async_status(LOCK_ID) == (True, 0x3A)
     assert await proxy.async_unlock(LOCK_ID) is True
     assert await proxy.async_lock(LOCK_ID) is True
+    attempted, config = await proxy.async_admin_op(LOCK_ID, lock_commands.get_auto_lock)
+    assert (attempted, config.seconds) == (True, 45)
     fake.heartbeat()
     fake.event()
     await _wait(lambda: events == ["e"] and fake.commands.count(OP_HEARTBEAT) == 1)

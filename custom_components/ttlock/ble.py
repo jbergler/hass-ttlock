@@ -1,16 +1,16 @@
-"""Local Bluetooth presence, state reads and lock/unlock for TTLock locks.
+"""Local Bluetooth presence, state reads and commands for TTLock locks.
 
 Presence is passive - the advertisements the lock is broadcasting anyway. A
-state read or a lock/unlock opens a short GATT session, which wakes the lock's
-radio, so each is driven only by the coordinator's poll or an explicit request.
-The wire format lives in ble_protocol.py; this module owns the connection
-around it.
+state read, a lock/unlock or an admin command opens a short GATT session, which
+wakes the lock's radio, so each is driven only by the coordinator's poll or an
+explicit request. The wire format lives in ble_protocol.py; this module owns the
+connection around it.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -30,6 +30,8 @@ from .ble_protocol import (
     LockVersion,
     ProtocolError,
     Response,
+    check_admin_data,
+    check_random_data,
     check_user_time_data,
     control_data,
     is_interim_ack,
@@ -430,3 +432,64 @@ async def async_control(
     if not Response.parse(reply.data).succeeded:
         reason = lock_error_name(response_error_code(reply.data))
         raise BleError(f"{name} refused to {action} over Bluetooth: {reason}")
+
+
+class _BleAdminSession:
+    """An AdminSession over an already-admin-authenticated GATT session.
+
+    The CHECK_ADMIN -> token -> CHECK_RANDOM handshake is run once by
+    `async_admin_session` before this is yielded, so `command` only has to send
+    the feature opcode and hand back the decrypted reply payload. One connection,
+    one handshake, however many feature commands.
+    """
+
+    def __init__(self, session: LockSession) -> None:
+        """Wrap a session whose admin handshake has already succeeded."""
+        self._session = session
+
+    async def command(self, opcode: Command, data: bytes = b"") -> bytes:
+        """Send one admin command and return the decrypted reply payload.
+
+        `execute` only returns a reply echoing `opcode`, so a stray frame (eg.
+        an unsolicited status event) is never read as the answer.
+        """
+        return (await self._session.execute(opcode, data)).data
+
+
+@asynccontextmanager
+async def async_admin_session(
+    hass: HomeAssistant,
+    address: str,
+    name: str,
+    version: LockVersion,
+    aes_key: bytes,
+    admin_ps: str | int,
+    unlock_key: str | int,
+    uid: int,
+    lock_flag_pos: int,
+) -> AsyncGenerator[_BleAdminSession]:
+    """Open a session, run the admin handshake, and yield an AdminSession.
+
+    The handshake is CHECK_ADMIN (whose reply carries the admin token) then
+    CHECK_RANDOM echoing `(token + unlockKey)`, both encrypted with the AES key.
+    Every settings/credential command this integration sends over BLE rides
+    behind it. The connection is always closed on exit.
+
+    Raises:
+        BleError: the lock could not be reached or did not answer.
+        ProtocolError: the lock refused the handshake (a wrong admin password
+            fails at CHECK_ADMIN, a wrong unlockKey at CHECK_RANDOM), or a
+            reply could not be parsed.
+        CredentialError: a credential is not a number or does not fit.
+    """
+    async with async_command_session(hass, address, name, version, aes_key) as session:
+        handshake = await session.execute(
+            Command.CHECK_ADMIN, check_admin_data(admin_ps, uid, lock_flag_pos)
+        )
+        token = token_from_response(handshake.data)
+        confirm = await session.execute(
+            Command.CHECK_RANDOM, check_random_data(token, unlock_key)
+        )
+        if not Response.parse(confirm.data).succeeded:
+            raise ProtocolError(f"{name} refused the admin handshake over Bluetooth")
+        yield _BleAdminSession(session)

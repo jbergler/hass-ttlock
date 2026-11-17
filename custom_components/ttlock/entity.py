@@ -24,6 +24,13 @@ def wifi_local_configured(
     )
 
 
+def local_admin_configured(
+    entry: ConfigEntry, coordinator: LockUpdateCoordinator
+) -> bool:
+    """Whether Bluetooth control or the WiFi proxy is set up to manage the lock."""
+    return coordinator.ble_control_enabled or wifi_local_configured(entry, coordinator)
+
+
 class BaseLockEntity(CoordinatorEntity[LockUpdateCoordinator], ABC):
     """Abstract base class for lock entity."""
 

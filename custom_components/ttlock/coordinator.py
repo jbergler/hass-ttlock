@@ -13,14 +13,19 @@ the webhook path in favor of "just poll faster."
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Generator
+from collections import Counter
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 from contextlib import (
+    AbstractAsyncContextManager,
+    asynccontextmanager,
     contextmanager,
+    nullcontext,
     suppress,
 )
 from copy import deepcopy
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, tzinfo
+from functools import partial
 import logging
 from typing import Any, TypeGuard
 
@@ -29,28 +34,36 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import (
     device_registry as dr,
+    entity_registry as er,
     issue_registry as ir,
 )
+from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from . import lock_commands
 from .api import TTLockApi
 from .ble import (
     BleData,
     BleError,
+    async_admin_session,
     async_bluetooth_available,
     async_control,
     async_read_status,
     async_track_address,
 )
 from .ble_protocol import (
+    AutoLockConfig,
+    Command,
+    CredentialError,
     LockStatus,
     LockVersion,
     ProtocolError,
     decode_password,
+    lock_timezone,
     parse_aes_key,
 )
 from .capture import LockTrafficCapture
@@ -60,11 +73,13 @@ from .const import (
     CONF_CLOUD_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
+    CONF_WIFI_LOCAL_ENABLED,
     DEFAULT_BLE_CONTROL,
     DEFAULT_BLUETOOTH_ENABLED,
     DEFAULT_CLOUD_ENABLED,
     DEFAULT_POLL_INTERVAL_MINUTES,
     DEFAULT_SLOW_POLL_INTERVAL_HOURS,
+    DEFAULT_WIFI_LOCAL_ENABLED,
     DOMAIN,
     SIGNAL_NEW_DATA,
     TRANSPORT_BLE,
@@ -75,6 +90,7 @@ from .const import (
     TT_WIFI_PROXY,
     transport_order,
 )
+from .lock_commands import CommandRejected
 from .models import (
     AccessLevel,
     Features,
@@ -120,6 +136,88 @@ NOT_CONNECTABLE_REASON = (
 )
 
 
+class NoLocalAdminTransport(HomeAssistantError):
+    """No local transport (BLE or WiFi-local) could run an admin feature op.
+
+    Either none was reachable/credentialled, or every one that was reachable
+    failed before the op was sent. The caller falls back to the cloud where
+    there is a cloud equivalent; otherwise it reaches the user as is.
+    """
+
+    def __init__(self, name: str) -> None:
+        """Name the lock in the translated message."""
+        super().__init__(
+            translation_domain=DOMAIN,
+            translation_key="no_local_transport",
+            translation_placeholders={"name": name},
+        )
+
+
+class LocalOutcomeUnknown(HomeAssistantError):
+    """A non-idempotent op was sent and then lost its answer.
+
+    The lock may or may not have applied it, so it is never re-run over another
+    transport (that could add a credential twice) and never falls back to the
+    cloud: deliberately not a NoLocalAdminTransport.
+    """
+
+
+class LocalReadInterrupted(Exception):
+    """A lock/unlock wanted the Bluetooth link a long local read was holding.
+
+    The read gives the link up at its next command; being idempotent, it is
+    simply tried over the next transport.
+    """
+
+
+class LocalReadYielded(Exception):
+    """A local op is waiting for the admin op a read is running.
+
+    The read stops at its next command and runs again after that op.
+    """
+
+
+class _InterruptibleReadSession:
+    """An admin session for a read, given up at its next command when needed.
+
+    A waiting write stops the read on any transport, and a background read
+    also stops for a waiting read. A waiting lock/unlock stops it only on
+    Bluetooth, where the read holds the link.
+    """
+
+    def __init__(
+        self,
+        session: lock_commands.AdminSession,
+        coordinator: LockUpdateCoordinator,
+        *,
+        ble: bool,
+        background: bool,
+    ) -> None:
+        """Wrap `session`; `coordinator` says what is waiting."""
+        self._session = session
+        self._coordinator = coordinator
+        self._ble = ble
+        self._background = background
+
+    async def command(self, opcode: Command, data: bytes = b"") -> bytes:
+        """Send one command, unless an op it yields to is waiting."""
+        waiting = self._coordinator._ops_waiting  # noqa: SLF001
+        if waiting["write"] or (self._background and waiting["read"]):
+            raise LocalReadYielded
+        if self._ble and self._coordinator._controls_waiting:  # noqa: SLF001
+            raise LocalReadInterrupted
+        return await self._session.command(opcode, data)
+
+
+# A read of the lock's operation log returns within this many seconds. It starts
+# no page in the last LOG_READ_MARGIN of them, so it normally ends between
+# commands; a command still running at the limit is cancelled.
+LOG_READ_TIME_LIMIT = 45.0
+LOG_READ_MARGIN = 10.0
+# A lock event on the WiFi session reads the log this many seconds later, once
+# for a burst of events, so the record is written first.
+LOG_EVENT_DELAY = 5.0
+
 # A lock the radio can still hear rides out this many failed state reads,
 # retried at this cadence, before it goes unavailable and the poll returns
 # to its normal interval.
@@ -136,6 +234,33 @@ LOCAL_REFRESH_INTERVAL = timedelta(minutes=5)
 # absent after this many consecutive failed checks - see
 # LockUpdateCoordinator._check_for_sensor.
 SENSOR_ABSENT_AFTER_FAILURES = 3
+
+
+def _on_off(on: bool) -> int:
+    """A bool as lock/detail's wire on/off value."""
+    return (OnOff.on if on else OnOff.off).value
+
+
+async def _read_settings(
+    session: lock_commands.AdminSession, read: dict[str, Any], features: Features
+) -> None:
+    """Read the lock's saved settings into `read`, as lock/detail fields.
+
+    Each value lands in `read` as soon as it is decoded, so a later read that
+    fails keeps the earlier ones. Sound goes last: its read is the least proven.
+    A switch the lock lacks the feature for is not recorded.
+    """
+    if (switches := await lock_commands.get_switch_config(session)) is not None:
+        if Features.tamper_alert in features:
+            read["tamperAlert"] = _on_off(switches.settings["tamper_alert"])
+        if Features.passage_mode in features:
+            read["passageModeAutoUnlock"] = _on_off(
+                switches.settings["passage_mode_auto_unlock"]
+            )
+    if (seconds := (await lock_commands.get_auto_lock(session)).seconds) is not None:
+        read["autoLockTime"] = seconds
+    if (sound := await lock_commands.get_lock_sound(session)) is not None:
+        read["lockSound"] = _on_off(sound)
 
 
 def cloud_unreachable_issue_id(entry_id: str) -> str:
@@ -161,6 +286,77 @@ async def async_store_enumeration(
     await store.async_update_entry(
         entry_id, key_records=records, **({"uid": uid} if uid else {})
     )
+
+
+def _wifi_mac_from_ble(ble_mac: str) -> str | None:
+    """Derive the lock's WiFi client MAC from its BLE MAC.
+
+    A heuristic: on the WiFi locks seen so far the WiFi MAC is the BLE MAC with
+    the last octet incremented by one. Returns None for a missing/malformed MAC,
+    or when the last octet is 0xFF (wrapping to 00 could point at an unrelated
+    client), so a bad value just omits the WiFi connection rather than crashing
+    device_info.
+    """
+    if not ble_mac:
+        return None
+    octets = ble_mac.split(":")
+    if len(octets) != 6:
+        return None
+    try:
+        values = [int(octet, 16) for octet in octets]
+    except ValueError:
+        return None
+    if values[-1] == 0xFF:
+        return None
+    values[-1] += 1
+    return ":".join(f"{value:02X}" for value in values)
+
+
+def _validity_or_none(value: datetime | None) -> datetime | None:
+    """Treat an epoch-0 timestamp as "no bound" (permanent).
+
+    The passcode endpoint uses startDate/endDate = 0 to mean permanent, but the
+    Passcode model (unlike Card/Fingerprint) has no zero->None mapping, so a 0
+    parses to 1970-01-01. Normalise it here so a permanent passcode shows no
+    validity window instead of a 1970 one. Leaving the model alone keeps the
+    service actions that consume it unchanged.
+    """
+    if value is None:
+        return None
+    return None if value.timestamp() == 0 else value
+
+
+@dataclass
+class CredentialInfo:
+    """A credential's human-facing metadata - never its secret digits.
+
+    Built from the cloud list endpoints so local credential management can show
+    real names instead of opaque ids. The passcode/card/fingerprint NUMBER is
+    deliberately absent: only id -> name/type/validity is ever stored.
+    """
+
+    name: str | None = None
+    type: str | None = None
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+
+
+@dataclass
+class CredentialNames:
+    """Per-kind id -> CredentialInfo maps for one lock."""
+
+    passcodes: dict[int, CredentialInfo] = field(default_factory=dict)
+    cards: dict[int, CredentialInfo] = field(default_factory=dict)
+    fingerprints: dict[int, CredentialInfo] = field(default_factory=dict)
+
+    @property
+    def counts(self) -> dict[str, int]:
+        """How many of each kind are known."""
+        return {
+            "passcodes": len(self.passcodes),
+            "cards": len(self.cards),
+            "fingerprints": len(self.fingerprints),
+        }
 
 
 @dataclass
@@ -193,6 +389,8 @@ class LockState:
     last_user: str | None = None
     last_reason: str | None = None
     lock_sound: bool | None = None
+    tamper_alert: bool | None = None
+    passage_auto_unlock: bool | None = None
     sensor: SensorData | None = None
     auto_lock_seconds: int | None = None
     passage_mode_config: PassageModeConfig | None = None
@@ -337,6 +535,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self.api = api
         self.lock_id = summary.id
         self.has_gateway = summary.hasGateway
+        self._timezone_raw_offset = summary.timezoneRawOffset
         self.feature_value = summary.featureValue
         # Live v3/key/list record. Properties below forward into it; the
         # slow tier swaps it via _maybe_refresh_summary so admin-side
@@ -384,9 +583,24 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         # any - kept so a newer unlock (or unload) can cancel it.
         self._auto_lock_task: asyncio.Task | None = None
 
-        # The Bluetooth link: one GATT conversation with the lock at a time, so
-        # a state read and a lock/unlock never interleave.
+        # The Bluetooth link: one GATT conversation with the lock at a time. A
+        # write holds it for its whole admin op on any transport (a 0x68 switch
+        # write is a read-modify-write that two concurrent writes would lose one
+        # of); a read holds it only while it has a Bluetooth session open, and
+        # gives it up at its next command when a lock/unlock is waiting.
         self._local_lock = asyncio.Lock()
+        # One admin op at a time, on any transport; lock/unlock never takes it.
+        # A read gives it up at its next command when a write is waiting, and
+        # a background read also when a read is waiting.
+        self._admin_lock = asyncio.Lock()
+        self._controls_waiting = 0
+        self._ops_waiting: Counter[str] = Counter()
+        # The operation log read from the lock so far, loaded from the store on
+        # first use and changed only by an admin op.
+        self._operate_log: lock_commands.OperateLog | None = None
+        # Log reads running, and whether a lock event asked for another.
+        self._log_reads_running = 0
+        self._log_read_again = False
 
         # Slow-tier cadence and its per-call "last fetched" gates. Only lock
         # state is re-verified every poll; detail/passage/gateway fetches run
@@ -410,7 +624,16 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self._cloud_enabled_option: bool = options.get(
             CONF_CLOUD_ENABLED, DEFAULT_CLOUD_ENABLED
         )
+        self._wifi_local_option: bool = options.get(
+            CONF_WIFI_LOCAL_ENABLED, DEFAULT_WIFI_LOCAL_ENABLED
+        )
         self._details_last_fetched: datetime | None = None
+        # Whether the last lock/detail fetch landed; while it has, the settings
+        # are the cloud's and are not also read from the lock.
+        self._cloud_detail_ok = False
+        # When the settings were last read from the lock (see
+        # _async_refresh_settings_locally).
+        self._local_settings_last_read: datetime | None = None
         self._passage_last_fetched: datetime | None = None
         self._gateways_last_fetched: datetime | None = None
 
@@ -418,6 +641,14 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         # cloud), surfaced by the connection diagnostics. None until the first
         # lock/unlock lands.
         self._last_transport: str | None = None
+
+        # Cloud-sourced id -> name/type/validity for the lock's passcodes, IC
+        # cards and fingerprints, so local credential management shows real
+        # names. Refreshed opportunistically on the slow tier and persisted
+        # (names only, never secret digits). Restored lazily when still empty.
+        self.credential_names: CredentialNames = CredentialNames()
+        self._credentials_last_fetched: datetime | None = None
+        self._credentials_restored = False
 
         # A successful local read vouches for the lock this long - longer
         # than the poll, so a healthy lock isn't unproven while waiting for
@@ -434,6 +665,14 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
         self.data = LockState(
             name=summary.name, mac=summary.mac, features=summary.features
+        )
+        self._log_event_read = Debouncer(
+            hass,
+            _LOGGER,
+            cooldown=LOG_EVENT_DELAY,
+            immediate=False,
+            function=self._async_background_log_read,
+            background=True,
         )
         # Ekey record refresh: in-memory shared cache + gate. Shared across
         # every coordinator for the same account via hass.data, so one
@@ -534,7 +773,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         )
 
     async def _async_local_refresh(self, now: datetime) -> None:
-        """Read the bolt locally and publish it if it moved.
+        """Read the bolt locally and publish it if it moved, then read the log.
 
         Only for a lock whose live path is local: one the cloud reaches already
         has the webhook, which is faster and costs the lock nothing. A failed
@@ -549,9 +788,13 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             return
 
         status = await self.async_read_lock_status(cloud=False)
-        if status is None:
-            return
+        if status is not None:
+            self._async_publish_local_status(status)
+        await self._async_background_log_read()
 
+    @callback
+    def _async_publish_local_status(self, status: LockStatus) -> None:
+        """Publish a local state read if it changed anything."""
         self._async_note_verified()
 
         new_data = deepcopy(self.data)
@@ -784,7 +1027,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             self.data.passage_mode_config = PassageModeConfig.model_validate(passage)
 
     async def _persist_detail(self, **fields: Any) -> None:
-        """Merge `fields` into the cached lock/detail."""
+        """Update the cached lock/detail fields a local write just changed."""
         stored = await self._store.async_get(self.lock_id)
         await self._store.async_update(
             self.lock_id, detail={**stored.get("detail", {}), **fields}
@@ -803,8 +1046,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     def _apply_detail(self, data: LockState, detail: LockDetail) -> None:
         """Copy lock/detail's non-secret fields present in `detail` into `data`.
 
-        A field the detail does not carry is left as it was: a partial detail
-        must not wipe the features or model known otherwise.
+        A field the detail does not carry is left as it was: a cache holding
+        only a local write (eg. autoLockTime, before lock/detail was ever
+        cached) must not wipe the features, model or timezone known otherwise.
         """
         present = detail.model_fields_set
         if "model" in present:
@@ -820,6 +1064,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         # An on/off the detail reports as unknown is not carried either.
         if detail.lockSound is not OnOff.unknown:
             data.lock_sound = bool(detail.lockSound)
+        if detail.tamperAlert is not OnOff.unknown:
+            data.tamper_alert = bool(detail.tamperAlert)
+        if detail.passageModeAutoUnlock is not OnOff.unknown:
+            data.passage_auto_unlock = bool(detail.passageModeAutoUnlock)
+        if "timezoneRawOffset" in present:
+            self._timezone_raw_offset = detail.timezoneRawOffset
 
     def _take_credentials(self, details: Lock) -> None:
         """Adopt lock/detail's credentials unless they would degrade a full set.
@@ -884,20 +1134,294 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         if credentials is None:
             return False
         version, aes_key, unlock_key, uid, lock_flag_pos = credentials
-        async with self._local_lock:
-            await async_control(
-                self.hass,
-                self.data.mac,
-                self.data.name,
-                version,
-                aes_key,
-                unlock_key,
-                uid,
-                lock_flag_pos,
-                unlock=unlock,
-            )
+        # Counted while waiting: a long read gives the link up for this.
+        self._controls_waiting += 1
+        waiting = True
+        try:
+            async with self._local_lock:
+                self._controls_waiting -= 1
+                waiting = False
+                await async_control(
+                    self.hass,
+                    self.data.mac,
+                    self.data.name,
+                    version,
+                    aes_key,
+                    unlock_key,
+                    uid,
+                    lock_flag_pos,
+                    unlock=unlock,
+                )
+        finally:
+            if waiting:
+                self._controls_waiting -= 1
         self._ble_verified_at = dt_util.utcnow()
         return True
+
+    async def async_run_local_admin_op[T](
+        self,
+        what: str,
+        op: Callable[[lock_commands.AdminSession], Awaitable[T]],
+        *,
+        idempotent: bool,
+        read_only: bool = False,
+        log_level: int = logging.WARNING,
+        background: bool = False,
+    ) -> T:
+        """Run `op` over the first local transport that can, in configured order.
+
+        BLE and WiFi-local are tried in `transport_order`; the cloud is never a
+        local transport and is the caller's fallback. A transport that is not
+        reachable or not credentialled is skipped, and one that fails before
+        `op` is sent is logged and the next is tried. Once `op` has been sent a
+        lost answer is `LocalOutcomeUnknown` for a non-idempotent op, never a
+        re-run elsewhere. The lock saying no is `local_command_rejected` - the
+        user's answer, not a reason to try elsewhere - and nothing local being
+        able to carry it is `NoLocalAdminTransport`, so the caller can fall back
+        to the cloud. All three are translated HomeAssistantErrors.
+
+        Admin ops run one at a time. A write holds the Bluetooth link for the
+        whole op. A `read_only` op (which must change nothing on the lock) holds
+        it only while its Bluetooth session is open and gives it up at its next
+        command when a lock/unlock is waiting, moving on to the next transport;
+        so a lock/unlock never waits behind a long read. A read also stops at
+        its next command when a write is waiting, and runs again after it. A
+        `background` read goes over WiFi-local only and also stops for any
+        waiting op, a read included. It never counts as waiting itself. A
+        transport failure is logged at `log_level`.
+        """
+        link: AbstractAsyncContextManager[Any] = (
+            nullcontext() if read_only else self._local_lock
+        )
+        while True:
+            try:
+                async with (
+                    self._admin_turn(read_only=read_only, background=background),
+                    link,
+                ):
+                    return await self._run_local_admin_op(
+                        what,
+                        op,
+                        idempotent=idempotent or read_only,
+                        read_only=read_only,
+                        log_level=log_level,
+                        background=background,
+                    )
+            except CommandRejected as err:
+                raise self._rejected(err) from err
+            except LocalReadYielded:
+                continue
+
+    @asynccontextmanager
+    async def _admin_turn(
+        self, *, read_only: bool, background: bool = False
+    ) -> AsyncGenerator[None]:
+        """Hold the admin-op queue. An op counts as waiting until its turn.
+
+        A background read never counts, so it interrupts nothing.
+        """
+        if background:
+            async with self._admin_lock:
+                yield
+            return
+        kind = "read" if read_only else "write"
+        self._ops_waiting[kind] += 1
+        waiting = True
+        try:
+            async with self._admin_lock:
+                self._ops_waiting[kind] -= 1
+                waiting = False
+                yield
+        finally:
+            if waiting:
+                self._ops_waiting[kind] -= 1
+
+    async def async_read_operate_log(
+        self, *, background: bool = False
+    ) -> lock_commands.OperateLog:
+        """Read the lock's operation log on from where the last read stopped.
+
+        The read returns within `LOG_READ_TIME_LIMIT` seconds, waiting for its
+        turn included; what it read by then is kept. Returns a copy of the log
+        read so far, persisted whether or not the read succeeded. A
+        `background` read goes over WiFi-local only, gives way to any waiting
+        op and logs failures at debug. A lock event during the read asks for
+        one more background read after it.
+        """
+        if self._operate_log is None:
+            stored = (await self._store.async_get(self.lock_id)).get("operate_log", {})
+            self._operate_log = lock_commands.OperateLog(
+                last_sequence=stored.get("last_sequence"),
+                records=stored.get("records", []),
+            )
+        log = self._operate_log
+        deadline = asyncio.get_running_loop().time() + LOG_READ_TIME_LIMIT
+        self._log_reads_running += 1
+        try:
+            async with asyncio.timeout_at(deadline):
+                await self.async_run_local_admin_op(
+                    "read operate log",
+                    partial(
+                        lock_commands.read_operate_log,
+                        log=log,
+                        stop_at=deadline - LOG_READ_MARGIN,
+                    ),
+                    idempotent=True,
+                    read_only=True,
+                    log_level=logging.DEBUG if background else logging.WARNING,
+                    background=background,
+                )
+        except TimeoutError:
+            pass
+        finally:
+            self._log_reads_running -= 1
+            if self._log_read_again and not self._log_reads_running:
+                self._log_read_again = False
+                self._log_event_read.async_schedule_call()
+            snapshot = replace(log, records=list(log.records))
+            await self._store.async_update(
+                self.lock_id,
+                operate_log={
+                    "last_sequence": snapshot.last_sequence,
+                    "records": snapshot.records,
+                },
+            )
+        return snapshot
+
+    async def _async_background_log_read(self) -> None:
+        """Read the operation log on into the cache, when it can be done cheaply.
+
+        Only with the cloud off, for an admin key, over a ready WiFi-local
+        takeover session: a background Bluetooth connection costs the lock's
+        battery. A failure logs at debug and keeps the cache.
+        """
+        if not self._log_readable_in_background:
+            return
+        try:
+            await self.async_read_operate_log(background=True)
+        except Exception as err:  # noqa: BLE001 - never fail over the log
+            _LOGGER.debug(
+                "Could not read the operation log of lock %s (%s)",
+                self.lock_id,
+                type(err).__name__,
+            )
+
+    @property
+    def _log_readable_in_background(self) -> bool:
+        """Cloud off, an admin key and a ready WiFi-local takeover session."""
+        proxy = self._wifi_proxy
+        return (
+            not self.cloud_enabled
+            and self.access_level.can_admin
+            and proxy is not None
+            and proxy.is_takeover_ready(self.lock_id)
+        )
+
+    def _rejected(self, err: CommandRejected) -> HomeAssistantError:
+        """The lock's refusal as the translated error the user sees."""
+        return HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="local_command_rejected",
+            translation_placeholders={"name": self.data.name, "reason": str(err)},
+        )
+
+    def _outcome_unknown(self) -> LocalOutcomeUnknown:
+        return LocalOutcomeUnknown(
+            translation_domain=DOMAIN,
+            translation_key="local_outcome_unknown",
+            translation_placeholders={"name": self.data.name},
+        )
+
+    async def _run_local_admin_op[T](
+        self,
+        what: str,
+        op: Callable[[lock_commands.AdminSession], Awaitable[T]],
+        *,
+        idempotent: bool,
+        read_only: bool,
+        log_level: int,
+        background: bool,
+    ) -> T:
+        # A read takes the Bluetooth link only for its own session; a write
+        # already holds it.
+        ble_link: AbstractAsyncContextManager[Any] = (
+            self._local_lock if read_only else nullcontext()
+        )
+        for transport in self._transport_order:
+            if background and transport != TRANSPORT_WIFI_LOCAL:
+                continue
+            # Whether a feature command got past the handshake: from then on a
+            # lost answer leaves the outcome unknown.
+            sent = False
+
+            def mark_sent() -> None:
+                nonlocal sent
+                sent = True
+
+            try:
+                if transport == TRANSPORT_BLE:
+                    if not (self.ble_control_enabled and self.ble_reachable):
+                        continue
+                    control = self._ble_control_credentials()
+                    if control is None or (admin_ps := self.admin_ps) is None:
+                        continue
+                    version, aes_key, unlock_key, uid, lock_flag_pos = control
+                    async with (
+                        ble_link,
+                        async_admin_session(
+                            self.hass,
+                            self.data.mac,
+                            self.data.name,
+                            version,
+                            aes_key,
+                            admin_ps,
+                            unlock_key,
+                            uid,
+                            lock_flag_pos,
+                        ) as session,
+                    ):
+                        mark_sent()  # the handshake is done; op sends at once
+                        result = await op(
+                            _InterruptibleReadSession(
+                                session, self, ble=True, background=background
+                            )
+                            if read_only
+                            else session
+                        )
+                    self._ble_verified_at = dt_util.utcnow()
+                    return result
+                if transport == TRANSPORT_WIFI_LOCAL:
+                    proxy = self._wifi_proxy
+                    if proxy is None or not self.wifi_local_drivable:
+                        continue
+                    if self.wifi_credentials() is None:
+                        continue
+                    attempted, wifi_result = await proxy.async_admin_op(
+                        self.lock_id,
+                        (
+                            lambda session: op(
+                                _InterruptibleReadSession(
+                                    session, self, ble=False, background=background
+                                )
+                            )
+                        )
+                        if read_only
+                        else op,
+                        mark_sent,
+                    )
+                    if attempted:
+                        return wifi_result
+            except (CommandRejected, LocalReadYielded):
+                raise
+            except ValueError as err:
+                if not isinstance(err, CredentialError):
+                    raise  # malformed input: no transport could send it
+                self._log_transport_failure(what, transport, err, log_level)
+            except Exception as err:
+                if sent and not idempotent:
+                    raise self._outcome_unknown() from err
+                self._log_transport_failure(what, transport, err, log_level)
+        raise NoLocalAdminTransport(self.data.name)
 
     def _log_transport_failure(
         self, what: str, transport: str, err: Exception, level: int = logging.WARNING
@@ -1062,7 +1586,10 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             self.async_update_listeners()
             if (self.update_interval is None) == self.connectable:
                 self._async_reconcile_polling()
-            elif self.wifi_local_drivable and self._state_stale:
+            elif self.wifi_local_drivable and (
+                self._state_stale
+                or (self._settings_unknown and self._local_settings_due(dt_util.now()))
+            ):
                 self.hass.async_create_task(self.async_request_refresh())
         except Exception:
             _LOGGER.debug(
@@ -1075,9 +1602,16 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     def async_wifi_local_event(self) -> None:
         """The lock reported an event on its session, so its bolt may have moved.
 
-        Requests a (debounced) refresh to read it.
+        Requests a (debounced) refresh to read it, and a debounced log read:
+        while a log read runs, one more after it, so the event is not missed.
         """
         self.hass.async_create_task(self.async_request_refresh())
+        if not self._log_readable_in_background:
+            return
+        if self._log_reads_running:
+            self._log_read_again = True
+        else:
+            self._log_event_read.async_schedule_call()
 
     @property
     def _state_stale(self) -> bool:
@@ -1132,6 +1666,148 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                 type(err).__name__,
             )
 
+    async def _fetch_credential_kind(
+        self, lister: Callable[[int], Any]
+    ) -> dict[int, CredentialInfo] | None:
+        """List one credential kind as id -> CredentialInfo, or None on failure.
+
+        Best-effort and READ-ONLY: a failure (no such hardware, rate limit, an
+        unreachable cloud) returns None so the caller keeps the
+        previous mapping for that kind rather than blanking it. Only
+        name/type/validity are copied - the secret number is never read or kept.
+        """
+        try:
+            items = await lister(self.lock_id)
+        except Exception:
+            _LOGGER.debug(
+                "Credential list unavailable for lock %s", self.lock_id, exc_info=True
+            )
+            return None
+        result: dict[int, CredentialInfo] = {}
+        for item in items:
+            if item.id is None:
+                continue
+            result[item.id] = CredentialInfo(
+                name=item.name,
+                type=item.type.name if item.type is not None else None,
+                valid_from=_validity_or_none(item.start_date),
+                valid_until=_validity_or_none(item.end_date),
+            )
+        return result
+
+    async def _maybe_refresh_credentials(self, now: datetime) -> None:
+        """Refresh the id -> name/type/validity maps if the slow tier is due.
+
+        Only with the cloud on, for an admin key (the list endpoints 20002 for
+        MEMBER), and only when something uses the names - a local transport
+        that manages credentials, or the Credentials sensor - since it costs
+        three cloud calls per lock. Best-effort, and stamped on attempt so a
+        failing lock doesn't re-hit the endpoints every poll.
+        """
+        await self.async_restore_credential_names()
+        if not (self.cloud_enabled and self.access_level.can_admin):
+            return
+        if not (
+            self.ble_control_enabled
+            or self._wifi_local_option
+            or self._credentials_entity_enabled
+        ):
+            return
+        if not self._slow_tier_due(self._credentials_last_fetched, now):
+            return
+        self._credentials_last_fetched = now
+        current = self.credential_names
+        passcodes = await self._fetch_credential_kind(self.api.list_passcodes)
+        cards = await self._fetch_credential_kind(self.api.list_cards)
+        fingerprints = await self._fetch_credential_kind(self.api.list_fingerprints)
+        updated = CredentialNames(
+            passcodes=current.passcodes if passcodes is None else passcodes,
+            cards=current.cards if cards is None else cards,
+            fingerprints=current.fingerprints if fingerprints is None else fingerprints,
+        )
+        if updated == current:
+            return
+        self.credential_names = updated
+        await self._persist_credential_names()
+
+    @property
+    def _credentials_entity_enabled(self) -> bool:
+        """Whether this lock's Credentials sensor (off by default) is enabled."""
+        registry = er.async_get(self.hass)
+        entity_id = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{self.unique_id}-lockcredentials"
+        )
+        entry = registry.async_get(entity_id) if entity_id else None
+        return entry is not None and not entry.disabled
+
+    @staticmethod
+    def _serialize_credential_kind(
+        kind: dict[int, CredentialInfo],
+    ) -> dict[str, dict[str, Any]]:
+        """JSON-friendly form of one credential map (ISO strings, no secrets)."""
+        return {
+            str(cid): {
+                "name": info.name,
+                "type": info.type,
+                "valid_from": info.valid_from.isoformat() if info.valid_from else None,
+                "valid_until": (
+                    info.valid_until.isoformat() if info.valid_until else None
+                ),
+            }
+            for cid, info in kind.items()
+        }
+
+    @staticmethod
+    def _deserialize_credential_kind(
+        raw: dict[str, Any] | None,
+    ) -> dict[int, CredentialInfo]:
+        """Rebuild one credential map from its persisted form."""
+        result: dict[int, CredentialInfo] = {}
+        for cid, info in (raw or {}).items():
+            with suppress(ValueError, TypeError, AttributeError):
+                result[int(cid)] = CredentialInfo(
+                    name=info.get("name"),
+                    type=info.get("type"),
+                    valid_from=dt_util.parse_datetime(info.get("valid_from") or ""),
+                    valid_until=dt_util.parse_datetime(info.get("valid_until") or ""),
+                )
+        return result
+
+    async def _persist_credential_names(self) -> None:
+        """Persist the name maps so they survive a restart (names only, no secrets)."""
+        await self._store.async_update(
+            self.lock_id,
+            credential_names={
+                "passcodes": self._serialize_credential_kind(
+                    self.credential_names.passcodes
+                ),
+                "cards": self._serialize_credential_kind(self.credential_names.cards),
+                "fingerprints": self._serialize_credential_kind(
+                    self.credential_names.fingerprints
+                ),
+            },
+        )
+
+    async def async_restore_credential_names(self) -> None:
+        """Load persisted credential names once, if the in-memory map is empty.
+
+        Lets management show names straight after a restart, and with the cloud
+        off. No-op after the first attempt or once names are already in memory.
+        """
+        if self._credentials_restored:
+            return
+        self._credentials_restored = True
+        if any(self.credential_names.counts.values()):
+            return
+        stored = (await self._store.async_get(self.lock_id)).get("credential_names")
+        if not stored:
+            return
+        self.credential_names = CredentialNames(
+            passcodes=self._deserialize_credential_kind(stored.get("passcodes")),
+            cards=self._deserialize_credential_kind(stored.get("cards")),
+            fingerprints=self._deserialize_credential_kind(stored.get("fingerprints")),
+        )
+
     async def _async_update_data(self) -> LockState:
         if not self.connectable:
             raise UpdateFailed(
@@ -1145,6 +1821,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         new_data = deepcopy(self.data)
         if self.cloud_enabled:
             await self._async_refresh_slow_tier(new_data, now)
+        await self._async_refresh_settings_locally(new_data, now)
         if Features.door_sensor in new_data.features:
             # a placeholder for the door state if the lock supports one
             if new_data.sensor is None:
@@ -1247,6 +1924,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             self._details_last_fetched, now
         ):
             self._details_last_fetched = now
+            self._cloud_detail_ok = False
             with self._slow_tier_fetch("lock/detail"):
                 details = await self.api.get_lock(self.lock_id)
                 new_data.name = details.name
@@ -1263,6 +1941,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                         exclude_unset=True,
                     )
                 )
+                self._cloud_detail_ok = True
 
         if self._slow_tier_due(self._passage_last_fetched, now):
             self._passage_last_fetched = now
@@ -1278,6 +1957,81 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             self._gateways_last_fetched = now
             with self._slow_tier_fetch("gateway list"):
                 new_data.gateways = await self.api.get_gateways_for_lock(self.lock_id)
+
+        await self._maybe_refresh_credentials(now)
+
+    @property
+    def _settings_unknown(self) -> bool:
+        """Whether any saved setting an entity shows is still unknown."""
+        data = self.data
+        return (
+            None in (data.auto_lock_seconds, data.lock_sound)
+            or (Features.tamper_alert in data.features and data.tamper_alert is None)
+            or (
+                Features.passage_mode in data.features
+                and data.passage_auto_unlock is None
+            )
+        )
+
+    @property
+    def _local_admin_route(self) -> bool:
+        """Whether a local transport could carry an admin op right now."""
+        ble = (
+            self.ble_control_enabled
+            and self.ble_reachable
+            and self._ble_control_credentials() is not None
+            and self.admin_ps is not None
+        )
+        return ble or (self.wifi_local_drivable and self.wifi_credentials() is not None)
+
+    def _local_settings_due(self, now: datetime) -> bool:
+        """Whether to read the saved settings from the lock now.
+
+        Only when the cloud has not supplied them (off, or its last lock/detail
+        fetch failed), the key can administer the lock, a local route is up,
+        and no read was made this slow interval.
+        """
+        return (
+            not (self.cloud_enabled and self._cloud_detail_ok)
+            and self.access_level.can_admin
+            and self._slow_tier_due(self._local_settings_last_read, now)
+            and self._local_admin_route
+        )
+
+    async def _async_refresh_settings_locally(
+        self, new_data: LockState, now: datetime
+    ) -> None:
+        """Read the saved settings from the lock when the cloud can't supply them.
+
+        Stamped only when a value is read, so a lock that does not answer is
+        asked again on the next poll. A failure logs and keeps the values
+        already read; it never fails the poll.
+        """
+        if not self._local_settings_due(now):
+            return
+        read: dict[str, Any] = {}
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await _read_settings(session, read, new_data.features)
+
+        try:
+            await self.async_run_local_admin_op(
+                "read settings",
+                op,
+                idempotent=True,
+                read_only=True,
+                log_level=logging.DEBUG,
+            )
+        except Exception as err:  # noqa: BLE001 - never fail the poll over settings
+            _LOGGER.debug(
+                "Could not read the settings of lock %s (%s); keeping the values read",
+                self.lock_id,
+                type(err).__name__,
+            )
+        if read:
+            self._local_settings_last_read = now
+            self._apply_detail(new_data, LockDetail.model_validate(read))
+            await self._persist_detail(**read)
 
     def _slow_tier_due(self, last_fetched: datetime | None, now: datetime) -> bool:
         """Whether a slow-tier fetch is due, given when it last ran.
@@ -1431,8 +2185,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             self._auto_lock_task = None
 
     async def async_shutdown(self) -> None:
-        """Cancel any pending auto-lock timer along with scheduled refreshes."""
+        """Cancel any pending auto-lock timer and log read with scheduled refreshes."""
         self._cancel_auto_lock()
+        self._log_event_read.async_shutdown()
         await super().async_shutdown()
 
     def _handle_auto_lock(self, lock_ts: datetime):
@@ -1517,8 +2272,20 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         _async_refresh_finished, so it tracks the gateway TTLock's cloud
         would actually use if the best one changes.
         """
+        # The lock carries both its BLE MAC (the cloud lockMac) and, for a WiFi
+        # lock, its derived WiFi client MAC. A shared connection never merges
+        # devices across config entries; the link is via_device, below.
+        connections: set[tuple[str, str]] = set()
+        wifi_mac: str | None = None
+        if self.data.mac:
+            connections.add((dr.CONNECTION_BLUETOOTH, dr.format_mac(self.data.mac)))
+            if Features.wifi in self.data.features and (
+                wifi_mac := _wifi_mac_from_ble(self.data.mac)
+            ):
+                connections.add((dr.CONNECTION_NETWORK_MAC, dr.format_mac(wifi_mac)))
         info = DeviceInfo(
             identifiers={(DOMAIN, self.data.mac)},
+            connections=connections,
             manufacturer="TT Lock",
             model=self.data.model,
             name=self.data.name,
@@ -1531,7 +2298,35 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             )
             if gateway is not None:
                 info["via_device_id"] = gateway.id
+        # The gateway link takes precedence (it is the TTLock topology). A lock
+        # without one is linked under whichever device another integration (a
+        # router or access point, say) registered for its WiFi MAC, if any.
+        if "via_device_id" not in info and wifi_mac is not None:
+            network_id = self._wifi_via_device_id(wifi_mac)
+            if network_id is not None:
+                info["via_device_id"] = network_id
         return info
+
+    def _wifi_via_device_id(self, wifi_mac: str) -> str | None:
+        """The id of another integration's device holding this lock's WiFi MAC.
+
+        The ttlock device declares that same connection, so a single-match
+        lookup can return our own device; all devices are scanned instead and
+        our own (matched by identifier) is skipped. Returns None (link omitted)
+        when no other device holds the MAC yet.
+        """
+        connection = (dr.CONNECTION_NETWORK_MAC, dr.format_mac(wifi_mac))
+        with suppress(Exception):
+            registry = dr.async_get(self.hass)
+            # DeviceRegistryItems is a UserDict; .values() yields DeviceEntry,
+            # which the stub's Collection type hides - hence the narrow ignore.
+            for device in registry.devices.values():  # ty: ignore[unresolved-attribute]
+                if (
+                    connection in device.connections
+                    and (DOMAIN, self.data.mac) not in device.identifiers
+                ):
+                    return device.id
+        return None
 
     @property
     def entities(self) -> list[Entity]:
@@ -1567,6 +2362,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             "last_transport": self.last_transport,
             "control_cloud_free": self.control_cloud_free,
             "cloud_online": self.cloud_online,
+            # Counts only - names are deliberately left out of the shareable
+            # diagnostics export (and secret digits are never stored at all).
+            "credential_counts": self.credential_names.counts,
             "has_gateway": self.has_gateway,
             "feature_value": self.feature_value,
             # Ekey view of this lock from the authenticated account's
@@ -1676,22 +2474,546 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         return bool(await self.api.lock(self.lock_id))
 
     async def set_auto_lock(self, on: bool) -> None:
-        """Turn on/off Autolock."""
-        seconds = 10 if on else 0
-        res = await self.api.set_auto_lock(self.lock_id, seconds)
-        if res:
-            self.data.auto_lock_seconds = seconds
-            if not on:
-                # a countdown started under the old setting no longer applies
-                self._cancel_auto_lock()
-            self.async_update_listeners()
+        """Turn Autolock on (10s) or off, over the best available transport."""
+        await self.set_auto_lock_seconds(10 if on else 0)
+
+    async def set_auto_lock_seconds(self, seconds: int) -> None:
+        """Set the auto-lock delay in seconds (0 disables), local-first.
+
+        Tries BLE / WiFi-local via the admin handshake, then the cloud. On
+        success the cached delay is updated; disabling cancels any pending
+        assume-auto-locked countdown.
+        """
+
+        async def op(session: lock_commands.AdminSession) -> AutoLockConfig:
+            return await lock_commands.set_auto_lock(session, seconds)
+
+        applied = seconds
+        try:
+            config = await self.async_run_local_admin_op(
+                "set auto-lock", op, idempotent=True
+            )
+        except NoLocalAdminTransport:
+            if not self.cloud_enabled:
+                raise
+            if not await self.api.set_auto_lock(self.lock_id, seconds):
+                return
+        else:
+            # The local set re-reads: trust the lock's own value.
+            if config.seconds is not None:
+                applied = config.seconds
+        self.data.auto_lock_seconds = applied
+        await self._persist_detail(autoLockTime=applied)
+        if applied == 0:
+            # a countdown started under the old setting no longer applies
+            self._cancel_auto_lock()
+        self.async_update_listeners()
+
+    @property
+    def _lock_tz(self) -> tzinfo | None:
+        """The lock's own timezone, which every date written to it is rendered in.
+
+        An aware datetime is converted to it; a naive one is sent as given.
+        """
+        return lock_timezone(self._timezone_raw_offset)
 
     async def set_lock_sound(self, on: bool) -> None:
-        """Turn on/off lock sound."""
-        value = 1 if on else 2
-        res = await self.api.set_lock_sound(self.lock_id, value)
-        if res:
-            self.data.lock_sound = on
+        """Turn the lock's prompt sound on/off, local-first then cloud."""
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.set_lock_sound(session, on=on)
+
+        try:
+            await self.async_run_local_admin_op("set lock-sound", op, idempotent=True)
+        except NoLocalAdminTransport:
+            if not self.cloud_enabled:
+                raise
+            # Cloud uses 1=on / 2=off, not the wire's 1/0.
+            if not await self.api.set_lock_sound(self.lock_id, 1 if on else 2):
+                return
+        self.data.lock_sound = on
+        await self._persist_detail(lockSound=_on_off(on))
+        self.async_update_listeners()
+
+    async def sync_clock(self, moment: datetime) -> None:
+        """Write `moment` to the lock's clock, local-only.
+
+        There is no cloud calibrate endpoint, so this needs BLE or WiFi-local;
+        `NoLocalAdminTransport` propagates when neither is available.
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.sync_clock(session, moment, tz=self._lock_tz)
+
+        await self.async_run_local_admin_op("sync clock", op, idempotent=True)
+
+    async def add_passcode_local(
+        self,
+        code: str,
+        *,
+        name: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> None:
+        """Add a passcode over a local transport (PERMANENT, or timed if windowed).
+
+        On success the user-given `name` is recorded in the credential-name cache
+        so the lock's management surface shows it, since the 0x03 wire add carries
+        no name (names are HA/cloud metadata). The secret digits are never stored.
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.add_passcode(
+                session, code, start=start, end=end, tz=self._lock_tz
+            )
+
+        await self.async_run_local_admin_op("add passcode", op, idempotent=False)
+        if name is not None:
+            await self._record_local_name("passcodes", name, start=start, end=end)
+
+    async def _record_local_name(
+        self,
+        kind: str,
+        name: str,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        cred_type: str | None = None,
+    ) -> None:
+        """Keep a locally-added credential's name under a synthetic id.
+
+        A BLE/WiFi add returns no id and carries no name, so the name is kept
+        display-only under a negative id that cannot collide with the cloud's
+        positive ids - never the secret code or number. With the cloud on, the
+        next credential refresh replaces the map with the cloud's own list.
+        `kind` is a CredentialNames field; `cred_type` overrides the display
+        type, else PERIOD (windowed) or PERMANENT.
+        """
+        names = dict(getattr(self.credential_names, kind))
+        names[min([0, *names]) - 1] = CredentialInfo(
+            name=name,
+            type=cred_type or ("PERIOD" if (start and end) else "PERMANENT"),
+            valid_from=start,
+            valid_until=end,
+        )
+        await self._set_credential_names(kind, names)
+
+    async def _drop_local_names(self, kind: str) -> None:
+        """Forget the locally-recorded names of one kind once the lock cleared it.
+
+        Cloud-sourced names are left for the next refresh.
+        """
+        names = getattr(self.credential_names, kind)
+        kept = {cid: info for cid, info in names.items() if cid >= 0}
+        if kept != names:
+            await self._set_credential_names(kind, kept)
+
+    async def _set_credential_names(
+        self, kind: str, names: dict[int, CredentialInfo]
+    ) -> None:
+        self.credential_names = replace(self.credential_names, **{kind: names})
+        await self._persist_credential_names()
+        self.async_update_listeners()
+
+    async def delete_passcode_local(self, code: str, *, pwd_type: int) -> None:
+        """Delete one passcode by value over a local transport."""
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.delete_passcode(session, code, pwd_type=pwd_type)
+
+        await self.async_run_local_admin_op("delete passcode", op, idempotent=False)
+
+    async def add_onetime_passcode_local(
+        self,
+        code: str,
+        *,
+        name: str | None = None,
+        start: datetime,
+        end: datetime,
+    ) -> None:
+        """Add a one-time / use-count (COUNT) passcode over a local transport.
+
+        Local-only (the COUNT type is not wired to the cloud fallback). Both bounds
+        are required. On success the name is recorded for display; the digits are
+        never stored.
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.add_onetime_passcode(
+                session, code, start, end, tz=self._lock_tz
+            )
+
+        await self.async_run_local_admin_op(
+            "add one-time passcode", op, idempotent=False
+        )
+        if name is not None:
+            await self._record_local_name(
+                "passcodes", name, start=start, end=end, cred_type="COUNT"
+            )
+
+    async def add_cyclic_passcode_local(
+        self,
+        code: str,
+        *,
+        name: str | None = None,
+        start: datetime,
+        cycle_type: int,
+    ) -> None:
+        """Add a CIRCLE (cyclic) passcode over a local transport (op=6 RECOVERY path).
+
+        Local-only. `cycle_type` is the raw 2-byte selector; only the HH:MM of
+        `start` is the daily window-open time. On success the name is recorded for
+        display; the digits are never stored.
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.add_cyclic_passcode(
+                session, code, start=start, cycle_type=cycle_type, tz=self._lock_tz
+            )
+
+        await self.async_run_local_admin_op("add cyclic passcode", op, idempotent=False)
+        if name is not None:
+            await self._record_local_name(
+                "passcodes", name, start=start, cred_type="CYCLIC"
+            )
+
+    async def modify_passcode_local(
+        self,
+        old_code: str,
+        new_code: str = "",
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        pwd_type: int,
+    ) -> None:
+        """Change a passcode's value and/or validity over a local transport (op 5).
+
+        Local-only. No credential-name cache update: a local add stores no code, so
+        the entry for `old_code` cannot be located. Some firmware ignores MODIFY
+        (prefer delete + re-add).
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.modify_passcode(
+                session,
+                old_code,
+                new_code,
+                start=start,
+                end=end,
+                pwd_type=pwd_type,
+                tz=self._lock_tz,
+            )
+
+        await self.async_run_local_admin_op("modify passcode", op, idempotent=False)
+
+    async def clear_passcodes_local(self) -> None:
+        """Clear every passcode over a local transport.
+
+        On success the locally-recorded passcode names (synthetic negative ids)
+        are dropped too, so management does not keep showing names for codes the
+        lock no longer holds. Cloud-sourced names are left for the next refresh.
+        """
+        await self.async_run_local_admin_op(
+            "clear passcodes", lock_commands.clear_passcodes, idempotent=True
+        )
+        await self._drop_local_names("passcodes")
+
+    # --- IC / RFID cards (local transport) ---------------------------------
+
+    async def add_card_local(
+        self,
+        card_number: str,
+        *,
+        name: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> None:
+        """Add an IC card by number over a local transport (permanent or timed).
+
+        On success the user-given `name` is recorded in the credential-name cache
+        (the 0x05 wire add carries no name). The raw card number is NEVER stored in
+        state or logs - only the name and validity window are kept.
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.add_card_by_number(
+                session, card_number, start=start, end=end, tz=self._lock_tz
+            )
+
+        await self.async_run_local_admin_op("add card", op, idempotent=False)
+        if name is not None:
+            await self._record_local_name("cards", name, start=start, end=end)
+
+    async def delete_card_local(self, card_number: str) -> None:
+        """Delete one IC card by its number over a local transport."""
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.delete_card(session, card_number)
+
+        await self.async_run_local_admin_op("delete card", op, idempotent=False)
+
+    async def clear_cards_local(self) -> None:
+        """Clear every IC card over a local transport (no cloud/gateway equivalent).
+
+        On success the locally-recorded card names (synthetic negative ids) are
+        dropped too, so management does not keep showing names for cards the lock
+        no longer holds. Cloud-sourced names are left for the next refresh.
+        """
+        await self.async_run_local_admin_op(
+            "clear cards", lock_commands.clear_cards, idempotent=True
+        )
+        await self._drop_local_names("cards")
+
+    async def modify_card_validity_local(
+        self, card_number: str, start: datetime, end: datetime
+    ) -> None:
+        """Change an IC card's validity window over a local transport.
+
+        Some firmware ignores MODIFY (prefer delete + re-add).
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.modify_card_validity(
+                session, card_number, start, end, tz=self._lock_tz
+            )
+
+        await self.async_run_local_admin_op("modify card", op, idempotent=False)
+
+    async def set_card_schedule_local(
+        self,
+        card_number: str,
+        *,
+        week_days: list[int],
+        start_minute: int,
+        end_minute: int,
+    ) -> None:
+        """Set an IC card's weekly schedule (0x70) over a local transport.
+
+        The card must already exist. Clears the card's existing schedule first,
+        then adds one entry per weekday - all in a single admin session so the
+        lock sees one coherent rewrite.
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.clear_card_cyclic(session, card_number)
+            for week_day in week_days:
+                await lock_commands.add_card_cyclic(
+                    session,
+                    card_number,
+                    week_day=week_day,
+                    start_minute=start_minute,
+                    end_minute=end_minute,
+                )
+
+        await self.async_run_local_admin_op("set card schedule", op, idempotent=False)
+
+    async def clear_card_cyclic_local(self, card_number: str) -> None:
+        """Clear an IC card's weekly schedule (0x70) over a local transport."""
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.clear_card_cyclic(session, card_number)
+
+        await self.async_run_local_admin_op("clear card schedule", op, idempotent=True)
+
+    # --- fingerprints (local transport) ------------------------------------
+
+    async def enroll_fingerprint_local(self, *, name: str | None = None) -> int:
+        """Enrol a fingerprint by scanning, over the WiFi-local takeover session.
+
+        Enrolment is multi-frame (the lock streams scan progress then the number),
+        so it is WiFi-local ONLY: BLE's session is one round-trip per command and
+        the cloud has no equivalent. Raises `NoLocalAdminTransport` if there is no
+        drivable WiFi-local session - before anything is sent - so the lock is never
+        left half in add mode. On success the given `name` is recorded under a
+        synthetic negative id (as cards/passcodes are); the returned number is the
+        only place the raw number is surfaced, and it is never logged or stored.
+        """
+        proxy = self._wifi_proxy
+        if (
+            proxy is None
+            or not self.wifi_local_drivable
+            or self.wifi_credentials() is None
+        ):
+            raise NoLocalAdminTransport(self.data.name)
+        try:
+            async with self._admin_turn(read_only=False), self._local_lock:
+                attempted, number = await proxy.async_enroll_fingerprint(self.lock_id)
+        except CommandRejected as err:
+            raise self._rejected(err) from err
+        except Exception as err:
+            # possibly mid-enrolment: never retried elsewhere
+            raise self._outcome_unknown() from err
+        if not attempted or number is None:
+            raise NoLocalAdminTransport(self.data.name)
+        if name is not None:
+            await self._record_local_name("fingerprints", name)
+        return number
+
+    async def delete_fingerprint_local(self, fingerprint_number: str) -> None:
+        """Delete one fingerprint by its number over a local transport."""
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.delete_fingerprint(session, fingerprint_number)
+
+        await self.async_run_local_admin_op("delete fingerprint", op, idempotent=False)
+
+    async def clear_fingerprints_local(self) -> None:
+        """Clear every fingerprint over a local transport (no cloud/gateway path).
+
+        On success the locally-recorded fingerprint names (synthetic negative ids)
+        are dropped too; cloud-sourced names are left for the next refresh.
+        """
+        await self.async_run_local_admin_op(
+            "clear fingerprints", lock_commands.clear_fingerprints, idempotent=True
+        )
+        await self._drop_local_names("fingerprints")
+
+    async def modify_fingerprint_validity_local(
+        self, fingerprint_number: str, start: datetime, end: datetime
+    ) -> None:
+        """Change a fingerprint's validity window over a local transport.
+
+        Some firmware ignores MODIFY (prefer delete + re-enrol).
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.modify_fingerprint_validity(
+                session, fingerprint_number, start, end, tz=self._lock_tz
+            )
+
+        await self.async_run_local_admin_op("modify fingerprint", op, idempotent=False)
+
+    async def set_fingerprint_schedule_local(
+        self,
+        fingerprint_number: str,
+        *,
+        week_days: list[int],
+        start_minute: int,
+        end_minute: int,
+    ) -> None:
+        """Set a fingerprint's weekly schedule (0x70) over a local transport.
+
+        The fingerprint must already exist. Clears its existing schedule first, then
+        adds one entry per weekday - all in a single admin session.
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.clear_fingerprint_cyclic(session, fingerprint_number)
+            for week_day in week_days:
+                await lock_commands.add_fingerprint_cyclic(
+                    session,
+                    fingerprint_number,
+                    week_day=week_day,
+                    start_minute=start_minute,
+                    end_minute=end_minute,
+                )
+
+        await self.async_run_local_admin_op(
+            "set fingerprint schedule", op, idempotent=False
+        )
+
+    async def clear_fingerprint_cyclic_local(self, fingerprint_number: str) -> None:
+        """Clear a fingerprint's weekly schedule (0x70) over a local transport."""
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.clear_fingerprint_cyclic(session, fingerprint_number)
+
+        await self.async_run_local_admin_op(
+            "clear fingerprint schedule", op, idempotent=True
+        )
+
+    # --- switches / config bitmask (0x68, local transport) ------------------
+
+    async def set_tamper_alert(self, on: bool) -> None:
+        """Turn the tamper alarm on/off over a local transport (0x68, local-only).
+
+        There is no cloud setter for the switch bitmask, so this needs BLE or
+        WiFi-local; `NoLocalAdminTransport` propagates when neither is available.
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.set_tamper_alert(session, on=on)
+
+        await self.async_run_local_admin_op("set tamper alert", op, idempotent=False)
+        self.data.tamper_alert = on
+        await self._persist_detail(tamperAlert=_on_off(on))
+        self.async_update_listeners()
+
+    async def set_passage_auto_unlock(self, on: bool) -> None:
+        """Turn passage-mode auto-unlock on/off over a local transport (0x68).
+
+        Local-only (no cloud switch setter); `NoLocalAdminTransport` propagates
+        when no local transport is available.
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.set_passage_auto_unlock(session, on=on)
+
+        await self.async_run_local_admin_op(
+            "set passage auto-unlock", op, idempotent=False
+        )
+        self.data.passage_auto_unlock = on
+        await self._persist_detail(passageModeAutoUnlock=_on_off(on))
+        self.async_update_listeners()
+
+    # --- passage mode (0x66, local transport) -------------------------------
+
+    async def set_passage_mode_local(
+        self,
+        *,
+        week_days: list[int],
+        start_minute: int,
+        end_minute: int,
+        all_day: bool,
+        auto_unlock: bool | None = None,
+    ) -> None:
+        """Enable passage mode over a local transport (0x66, local variant).
+
+        Distinct from the cloud `configure_passage_mode` service: this drives the
+        lock directly (CLEAR then one ADD per weekday, then the optional 0x68
+        auto-unlock), all in one admin session.
+        """
+
+        async def op(session: lock_commands.AdminSession) -> None:
+            await lock_commands.set_passage_mode(
+                session,
+                week_days=week_days,
+                start_minute=start_minute,
+                end_minute=end_minute,
+                all_day=all_day,
+                auto_unlock=auto_unlock,
+            )
+
+        await self.async_run_local_admin_op("set passage mode", op, idempotent=False)
+        # Keep the cached config in step so the passage-mode binary sensor reflects
+        # the local change at once (as the cloud service does), not only after the
+        # next cloud poll.
+        self.data.passage_mode_config = PassageModeConfig(
+            passageMode=OnOff.on,
+            isAllDay=OnOff.on if all_day else OnOff.off,
+            startDate=start_minute,
+            endDate=end_minute,
+            weekDays=list(week_days),
+            autoUnlock=(
+                OnOff.unknown
+                if auto_unlock is None
+                else (OnOff.on if auto_unlock else OnOff.off)
+            ),
+        )
+        await self._persist_passage_mode_config()
+        if auto_unlock is not None:
+            self.data.passage_auto_unlock = auto_unlock
+            await self._persist_detail(passageModeAutoUnlock=_on_off(auto_unlock))
+        self.async_update_listeners()
+
+    async def clear_passage_mode_local(self) -> None:
+        """Disable passage mode over a local transport (0x66 CLEAR, local-only)."""
+        await self.async_run_local_admin_op(
+            "clear passage mode", lock_commands.clear_passage_mode, idempotent=True
+        )
+        if self.data.passage_mode_config is not None:
+            self.data.passage_mode_config = PassageModeConfig(passageMode=OnOff.off)
+            await self._persist_passage_mode_config()
             self.async_update_listeners()
 
 

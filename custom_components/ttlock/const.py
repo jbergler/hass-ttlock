@@ -55,7 +55,7 @@ DEFAULT_SLOW_POLL_INTERVAL_HOURS = 6
 CONF_BLUETOOTH_ENABLED = "bluetooth_enabled"
 DEFAULT_BLUETOOTH_ENABLED = True
 
-# Drive the bolt over Bluetooth. Off by default: it needs
+# Drive the bolt and run admin ops over Bluetooth. Off by default: it needs
 # the lock in connectable range, so it is opt-in. Requires
 # CONF_BLUETOOTH_ENABLED; with the radio off this has no effect.
 CONF_BLE_CONTROL = "ble_control"
@@ -128,10 +128,22 @@ TO_REDACT = {
     "keyboardPwd",
     "newKeyboardPwd",
     "cardNumber",
+    "fingerprintNumber",
     "admin",
     "username",
     "webhook_id",
     "webhook_url",
+    # names and people
+    "keyboardPwdName",
+    "passcodeName",
+    "cardName",
+    "fingerprintName",
+    "senderUsername",
+    "email",
+    "last_user",
+    # hardware addresses
+    "lockMac",
+    "mac",
 }
 
 
@@ -156,6 +168,10 @@ CONF_END_TIME = "end_time"
 CONF_WEEK_DAYS = "days"
 CONF_SECONDS = "seconds"
 
+# Upper bound offered for the auto-lock delay. The lock enforces its own range
+# and declines a value outside it.
+AUTO_LOCK_MAX_SECONDS = 900
+
 SVC_CONFIG_AUTOLOCK = "configure_autolock"
 SVC_CONFIG_PASSAGE_MODE = "configure_passage_mode"
 SVC_CREATE_PASSCODE = "create_passcode"
@@ -172,3 +188,20 @@ SVC_DELETE_CARD = "delete_card"
 SVC_LIST_FINGERPRINTS = "list_fingerprints"
 SVC_RENAME_FINGERPRINT = "rename_fingerprint"
 SVC_DELETE_FINGERPRINT = "delete_fingerprint"
+
+SVC_SYNC_CLOCK = "sync_clock"
+SVC_CLEAR_CREDENTIALS = "clear_credentials"
+SVC_MODIFY_CARD_VALIDITY = "modify_card_validity"
+SVC_SET_CARD_SCHEDULE = "set_card_schedule"
+SVC_CLEAR_CARD_SCHEDULE = "clear_card_schedule"
+SVC_ENROLL_FINGERPRINT = "enroll_fingerprint"
+SVC_MODIFY_FINGERPRINT_VALIDITY = "modify_fingerprint_validity"
+SVC_SET_FINGERPRINT_SCHEDULE = "set_fingerprint_schedule"
+SVC_CLEAR_FINGERPRINT_SCHEDULE = "clear_fingerprint_schedule"
+SVC_GET_LOCK_CONFIG = "get_lock_config"
+
+CONF_CODE = "code"
+CONF_CODE_TYPE = "code_type"
+CONF_CYCLE_TYPE = "cycle_type"
+CONF_CREDENTIAL_TYPE = "credential_type"
+CONF_SOURCE = "source"

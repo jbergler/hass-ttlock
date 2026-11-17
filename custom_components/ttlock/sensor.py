@@ -29,6 +29,7 @@ from .coordinator import (
 from .entity import (
     BaseLockEntity,
     LockDiagnosticEntity,
+    local_admin_configured,
     wifi_local_configured,
 )
 
@@ -58,6 +59,15 @@ async def async_setup_entry(
                 *(
                     [LockWifiLocalLink(coordinator)]
                     if wifi_local_configured(entry, coordinator)
+                    else []
+                ),
+                *(
+                    [LockCredentials(coordinator)]
+                    if coordinator.access_level.can_admin
+                    and (
+                        coordinator.cloud_enabled
+                        or local_admin_configured(entry, coordinator)
+                    )
                     else []
                 ),
             )
@@ -265,3 +275,50 @@ class LockWifiLocalLink(LockDiagnosticEntity, SensorEntity):
         """When the link was last seen, alongside its state."""
         last_seen = self.coordinator.wifi_local_last_seen
         return {"last_seen": last_seen.isoformat() if last_seen else None}
+
+
+class LockCredentials(LockDiagnosticEntity, SensorEntity):
+    """How many passcodes/cards/fingerprints the lock has, with their names.
+
+    The names come from the cloud and from credentials added on the lock from
+    Home Assistant. The value is the total count; the names are attributes.
+    Secret code digits are never fetched into or exposed by this entity.
+    """
+
+    _attr_entity_registry_enabled_default = False
+
+    def _update_from_coordinator(self) -> None:
+        """Fetch state from the device."""
+        self._attr_name = f"{self.coordinator.data.name} Credentials"
+        counts = self.coordinator.credential_names.counts
+        self._attr_native_value = sum(counts.values())
+
+    @staticmethod
+    def _as_list(kind: dict[int, Any]) -> list[dict[str, Any]]:
+        """Render one id -> CredentialInfo map as a list of plain dicts."""
+        return [
+            {
+                "id": cid,
+                "name": info.name,
+                "type": info.type,
+                "valid_from": info.valid_from.isoformat() if info.valid_from else None,
+                "valid_until": (
+                    info.valid_until.isoformat() if info.valid_until else None
+                ),
+            }
+            for cid, info in kind.items()
+        ]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Per-kind counts plus the names (never the secret digits)."""
+        names = self.coordinator.credential_names
+        counts = names.counts
+        return {
+            "passcode_count": counts["passcodes"],
+            "card_count": counts["cards"],
+            "fingerprint_count": counts["fingerprints"],
+            "passcodes": self._as_list(names.passcodes),
+            "cards": self._as_list(names.cards),
+            "fingerprints": self._as_list(names.fingerprints),
+        }

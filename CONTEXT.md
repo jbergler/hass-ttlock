@@ -13,7 +13,7 @@ The one-time enumeration of every lock in a TTLock account, performed at integra
 
 **Ekey**:
 TTLock's wire-level record for one account's access to one lock. Every account-to-lock relationship (owner of their own lock, recipient of a shared key) is represented as a single ekey. Discovery enumerates ekeys via `v3/key/list`, which is why Shared locks appear alongside owned ones.
-_Avoid_: key (ambiguous with physical keys / API keys), credential
+_Avoid_: key (ambiguous with physical keys / API keys), credential (see **Credential**)
 
 **Shared lock**:
 A lock this account can see because someone else's administrator sent it an ekey. Discovery returns it the same way as an owned lock, but its Access level is `authorized` or `member` - not `owner` - so some actions are restricted.
@@ -35,8 +35,12 @@ _Avoid_: account, app (ambiguous with the HA integration/entry itself)
 The set of config entries that share one developer application's `client_id`, and therefore share exactly one registered webhook. Registration is refcounted across the group — registered on the first member's setup, unregistered on the last member's unload — with no member acting as a privileged "owner." See `docs/adr/0002-shared-webhook-per-developer-application.md`.
 _Avoid_: webhook owner
 
+**Credential**:
+A passcode, IC card or fingerprint that opens a lock (`CredentialNames`, `clear_credentials`, the Credentials sensor). In code, "credentials" also names a lock's keys from `lock/detail` (`WifiCredentials`). User-facing text calls those keys.
+_Avoid_: using it for an Ekey
+
 **Transport**:
-One way of reaching a lock: `ble` (Bluetooth), `wifi_local` (**WiFi-local**) or `cloud` (TTLock REST). Lock and unlock try the available transports in the user's `transport_order` and stop at the first success. State reads try `ble` and `wifi_local` in `transport_order` too, then the cloud last.
+One way of reaching a lock: `ble` (Bluetooth), `wifi_local` (**WiFi-local**) or `cloud` (TTLock REST). Lock and unlock try the available transports in the user's `transport_order` and stop at the first success. Admin ops and state reads try `ble` and `wifi_local` in `transport_order` too. Admin ops leave the cloud to the caller as a fallback. State reads try the cloud last.
 _Avoid_: channel, path
 
 **WiFi-local**:
@@ -54,3 +58,7 @@ _Avoid_: local mode
 **Cloud off**:
 An entry with `cloud_enabled` off. HA makes no TTLock REST calls, except one key/list for an entry with no cached lock list. It unregisters the webhook but keeps any cloudhook, and takes WiFi-local locks over. See `docs/adr/0005-cloud-off-mode.md`.
 _Avoid_: offline mode, no-cloud mode
+
+**Outcome unknown**:
+HA sent a local admin op that is not safe to repeat, and lost its answer (`LocalOutcomeUnknown`, translation key `local_outcome_unknown`). The lock may or may not have applied it, so HA never retries it over another transport or the cloud.
+_Avoid_: timeout, failed

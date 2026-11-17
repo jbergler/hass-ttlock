@@ -18,6 +18,10 @@ For each connection the proxy:
     requests:
       - status: 0x14
       - unlock / lock: CHECK_ADMIN (0x41) -> token -> 0x60 / 0x58
+      - admin ops (`lock_commands.AdminSession`): CHECK_ADMIN -> token ->
+        CHECK_RANDOM (0x30) -> op
+      - fingerprint enrolment: the admin handshake, then the multi-frame
+        FR_MANAGE (0x06) stream.
 
 Before a connection is admitted it must prove the key, and nothing it can
 observe may depend on whether its frames decrypt: with IV = key, any such
@@ -43,9 +47,11 @@ is forgotten only 15 minutes after its last failure or refusal period. A new
 connection replaces a lock's session only after it has proved the key.
 
 Residual (a protocol limit): a peer that has seen the constant reply can still
-impersonate the lock for a session. Pass-through relays the lock's frames to
-the cloud unexamined. Nothing here logs a secret (key, token, proof, MAC, admin
-password or decoded payload).
+impersonate the lock for a session. While a paged admin read (passcodes, cards,
+fingerprints, operation log, enrolment) is outstanding its replies may span
+blocks, so a forged reply can then test its padding, once per session and
+throttled. Pass-through relays the lock's frames to the cloud unexamined. Nothing here logs a secret (key, token,
+proof, MAC, admin password or decoded payload).
 """
 
 from __future__ import annotations
@@ -59,15 +65,19 @@ import ipaddress
 import logging
 import socket
 import time
+from typing import Any
 
 from homeassistant.util import dt as dt_util
 
 from .ble_protocol import (
     AES_KEY_LENGTH,
+    FR_ADD_STATE_FEATURE_WRITE,
+    FR_OP_ADD,
     HEADER_LENGTH,
     MAGIC,
     RESPONSE_SUCCESS,
     TRAILER_LENGTH,
+    Command,
     DecryptError,
     Frame,
     FrameAssembler,
@@ -76,7 +86,11 @@ from .ble_protocol import (
     ProtocolError,
     Response,
     check_admin_data,
+    check_random_data,
     control_data,
+    fr_enroll_data,
+    lock_error_name,
+    parse_fr_add,
     response_error_code,
     token_from_response,
 )
@@ -86,6 +100,7 @@ from .const import (
     WIFI_PROXY_BIND,
     WIFI_PROXY_PORT,
 )
+from .lock_commands import AdminSession, CommandRejected
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -100,6 +115,7 @@ OP_CONNECT = 0xF0  # greet; the lock replies with its MAC in the clear
 OP_CONFIG = 0xF7  # handshake, payload 00 78
 OP_POLL = 0xF8  # keepalive, empty body
 OP_QUERY_STATUS = 0x14
+OP_CHECK_RANDOM = 0x30
 OP_CHECK_ADMIN = 0x41
 OP_HEARTBEAT = 0x45  # the lock's own periodic frame; answered with an empty 0x45
 OP_LOCK = 0x58
@@ -124,9 +140,20 @@ REPLY_LENGTHS = {
     OP_POLL: 3,  # f8 01 <battery>
     OP_QUERY_STATUS: 5,  # 14 01 <battery> <bolt> <door>
     OP_CHECK_ADMIN: 6,  # 41 01 <token:4>
+    OP_CHECK_RANDOM: 3,  # 30 01 <battery>
     OP_UNLOCK: 17,  # the operation record
     OP_LOCK: 17,
 }
+# Admin reads that return record pages, which may span AES blocks. Every
+# other reply fits in one block.
+PAGED_COMMANDS = frozenset(
+    {
+        Command.GET_PASSCODES,
+        Command.GET_OPERATE_LOG,
+        Command.IC_MANAGE,
+        Command.FR_MANAGE,
+    }
+)
 LOGIN_MIN_LENGTH = 9  # f0 01 <battery> <MAC:6>
 
 KEEPALIVE_INTERVAL = 10.0
@@ -152,6 +179,9 @@ BACKOFF_MAX = 900.0
 MAX_THROTTLED_PEERS = 256
 HEARTBEAT_MIN_INTERVAL = 5.0  # never answer the lock's 0x45 more often than this
 
+# Fingerprint enrolment: per scan frame, and for the whole enrolment.
+FR_ENROLL_FRAME_TIMEOUT = 30.0
+FR_ENROLL_TOTAL_TIMEOUT = 90.0
 
 # How long a command waits for a recent client's takeover session to come back
 # (the lock recycles its TCP connection every few minutes), and how recently it
@@ -232,14 +262,16 @@ def reply_ok(data: bytes, command: int) -> bool:
     """Whether `data` has the shape of the lock's reply to `command`.
 
     The echo, a status byte, and a length that fits: a successful reply to one
-    of the proxy's own commands has its exact length; any other reply fits in
-    one block.
+    of the proxy's own commands has its exact length; a paged admin read may
+    span blocks; any other reply fits in one block.
     """
     if len(data) < 2 or data[0] != command or data[1] not in (0, RESPONSE_SUCCESS):
         return False
     if data[1] == RESPONSE_SUCCESS and command in REPLY_LENGTHS:
         return len(data) == REPLY_LENGTHS[command]
-    return len(data) < AES_KEY_LENGTH
+    return len(data) < AES_KEY_LENGTH or (
+        data[1] == RESPONSE_SUCCESS and command in PAGED_COMMANDS
+    )
 
 
 def _take_frame(buffer: bytearray) -> bytes | None:
@@ -660,6 +692,35 @@ class WifiProxy:
             _LOGGER.debug("WiFi-local status for lock %s: no ready session", lock_id)
         return result
 
+    async def async_admin_op(
+        self,
+        lock_id: int,
+        op: Callable[[AdminSession], Awaitable[Any]],
+        on_sent: Callable[[], None] | None = None,
+    ) -> tuple[bool, Any]:
+        """Run an admin op over the lock's takeover session.
+
+        Returns `(False, None)` when there is no ready session or credentials
+        (the caller moves to the next transport), else `(True, result)`. A lock
+        rejection and a timeout propagate with the session kept; a socket error
+        closes the session and propagates. `on_sent` is called once a feature
+        command passed the handshake and is about to be sent.
+        """
+        return await self._on_session(
+            lock_id,
+            lambda session, creds: op(_WifiAdminSession(session, creds, on_sent)),
+        )
+
+    async def async_enroll_fingerprint(self, lock_id: int) -> tuple[bool, int | None]:
+        """Enrol a fingerprint by scanning, over the lock's takeover session.
+
+        Returns `(False, None)` when there is no ready session or credentials,
+        else `(True, number)`. Errors propagate as for `async_admin_op`.
+        """
+        return await self._on_session(
+            lock_id, lambda session, creds: session.enroll_fingerprint(creds)
+        )
+
     async def _operate(self, lock_id: int, opcode: int) -> bool:
         opname = "unlock" if opcode == OP_UNLOCK else "lock"
         try:
@@ -984,7 +1045,7 @@ class _LockSession:
             maxsize=MAX_PENDING_REPLIES
         )
         self._op_lock = asyncio.Lock()
-        self._awaiting = False  # a request is waiting for its reply
+        self._awaiting = False  # a request or enrolment is waiting for replies
         self._outstanding: int | None = None  # the command whose reply may come
         self._fault: ProtocolError | None = None  # why the reader closed, if so
         self._last_heartbeat: float | None = None
@@ -1255,26 +1316,121 @@ class _LockSession:
         status = LockStatus.parse(reply.data)
         return status.locked, status.battery
 
-    async def _admin_handshake(self, creds: WifiCredentials) -> int:
-        """CHECK_ADMIN -> token. Call in `_exchange`.
+    async def _admin_handshake(
+        self, creds: WifiCredentials, *, check_random: bool
+    ) -> int:
+        """CHECK_ADMIN -> token, then CHECK_RANDOM when asked. Call in `_exchange`.
 
-        Raises ProtocolError if the lock refuses it.
+        Raises ProtocolError if either step is refused.
         """
         admin = check_admin_data(
             creds.admin_ps, uid=creds.uid, lock_flag_pos=creds.lock_flag_pos
         )
         reply = await self._request(OP_CHECK_ADMIN, admin)
-        return token_from_response(reply.data)
+        token = token_from_response(reply.data)
+        if check_random:
+            confirm = await self._request(
+                OP_CHECK_RANDOM, check_random_data(token, creds.unlock_key)
+            )
+            if not Response.parse(confirm.data).succeeded:
+                raise ProtocolError("WiFi-local admin handshake rejected")
+        return token
 
     async def operate(self, opcode: int, creds: WifiCredentials) -> bool:
         """CHECK_ADMIN -> fresh token -> UNLOCK/LOCK with proof + epoch."""
         async with self._exchange():
-            token = await self._admin_handshake(creds)
+            token = await self._admin_handshake(creds, check_random=False)
             payload = control_data(token, creds.unlock_key, int(time.time()))
             result = await self._request(opcode, payload)
         if not Response.parse(result.data).succeeded:
             raise ProtocolError(f"lock rejected op 0x{opcode:02x}")
         return True
+
+    async def admin_command(
+        self,
+        opcode: int,
+        data: bytes,
+        creds: WifiCredentials,
+        on_sent: Callable[[], None] | None = None,
+    ) -> bytes:
+        """The full admin handshake then one feature command; returns its reply."""
+        async with self._exchange():
+            await self._admin_handshake(creds, check_random=True)
+            if on_sent is not None:
+                on_sent()
+            result = await self._request(opcode, data)
+        return result.data
+
+    # --- fingerprint scan enrolment (multi-frame) ----------------------------
+
+    async def enroll_fingerprint(self, creds: WifiCredentials) -> int:
+        """Drive a fingerprint scan enrolment to completion, returning the number.
+
+        The lock answers the enrol-start with "entered add mode", then sends
+        scan-progress frames and a final frame with the 6-byte number, all
+        echoing FR_MANAGE. The whole stream is one exchange, so the keepalive
+        is parked meanwhile. The number is returned, never logged.
+
+        Raises:
+            CommandRejected: the lock declined, or asked for a template upload.
+            TimeoutError: a scan frame or the whole enrolment took too long.
+            ProtocolError: the admin handshake was refused.
+            ConnectionError: the socket dropped.
+        """
+        frame_timeout = FR_ENROLL_FRAME_TIMEOUT
+        total_timeout = FR_ENROLL_TOTAL_TIMEOUT
+        async with self._exchange():
+            await self._admin_handshake(creds, check_random=True)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + total_timeout
+            frame = await self._request(
+                Command.FR_MANAGE,
+                fr_enroll_data(),
+                timeout=min(frame_timeout, total_timeout),
+            )
+            while True:
+                self._raise_if_enroll_declined(frame)
+                state = parse_fr_add(frame.data)
+                if state.completed:
+                    if state.fingerprint_number is None:
+                        raise ProtocolError(
+                            "fingerprint enrolment completed without a number"
+                        )
+                    return int(state.fingerprint_number)
+                if state.state == FR_ADD_STATE_FEATURE_WRITE:
+                    raise CommandRejected(
+                        "this lock wants the fingerprint template uploaded, which "
+                        "is not supported over the local transport"
+                    )
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise TimeoutError("fingerprint enrolment did not complete in time")
+                frame = await self._await_fr_frame(min(frame_timeout, remaining))
+
+    @staticmethod
+    def _raise_if_enroll_declined(frame: Frame) -> None:
+        """Raise CommandRejected, naming the lock's error code, on a decline."""
+        if not Response.parse(frame.data).succeeded:
+            code = response_error_code(frame.data)
+            raise CommandRejected(
+                f"lock declined fingerprint enrolment: {lock_error_name(code)}"
+            )
+
+    async def _await_fr_frame(self, timeout: float) -> Frame:
+        """Wait for the next FR_MANAGE ADD frame without sending anything."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while (remaining := deadline - loop.time()) > 0:
+            frame = await asyncio.wait_for(self._replies.get(), remaining)
+            if frame is None:
+                raise ConnectionError("lock connection closed during enrolment")
+            data = frame.data
+            # data[3] is the sub-op echo; only ADD (0x02) frames belong here.
+            if data[:1] == bytes([Command.FR_MANAGE]) and data[3:4] == bytes(
+                [FR_OP_ADD]
+            ):
+                return frame
+        raise TimeoutError("no fingerprint scan frame arrived in time")
 
     # --- idle / pass-through -------------------------------------------------
 
@@ -1373,3 +1529,28 @@ class _LockSession:
             cloud_writer.write(reply)
             await cloud_writer.drain()
         return True
+
+
+class _WifiAdminSession:
+    """An `lock_commands.AdminSession` over a live takeover session.
+
+    Each `command` runs the admin handshake and the op as one exchange, so it
+    never interleaves with the keepalive or another op.
+    """
+
+    def __init__(
+        self,
+        session: _LockSession,
+        creds: WifiCredentials,
+        on_sent: Callable[[], None] | None = None,
+    ) -> None:
+        """Wrap a ready takeover session plus the current credentials."""
+        self._session = session
+        self._creds = creds
+        self._on_sent = on_sent
+
+    async def command(self, opcode: int, data: bytes = b"") -> bytes:
+        """Send one admin command, returning the decrypted reply payload."""
+        return await self._session.admin_command(
+            opcode, data, self._creds, self._on_sent
+        )

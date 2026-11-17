@@ -8,6 +8,7 @@ recreated fresh on every restart. This holds what has to outlive that:
   TTLock cloud is unreachable or gone; and whether its door sensor has been
   confirmed absent, since TTLock's API can't distinguish "no sensor paired"
   from a transient failure (see LockUpdateCoordinator's door-sensor handling);
+  and how far its operation log has been read, with the newest records read;
 - per config entry: the account's key/list records, uid and gateway list, so
   setup can build the entry without the cloud.
 

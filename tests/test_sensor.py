@@ -22,7 +22,7 @@ from custom_components.ttlock.models import GatewayLink, LockSummary
 from custom_components.ttlock.sensor import LockBleSignal, LockConnection
 from homeassistant.helpers import entity_registry as er
 
-from .const import MOCK_LOCK_MAC
+from .const import BASIC_EKEY_RECORD_MEMBER, MOCK_LOCK_MAC
 
 
 def _registered(hass, coordinator, suffix: str) -> bool:
@@ -80,6 +80,52 @@ async def test_no_wifi_local_entities_for_a_lock_without_wifi(
         hass, new_mocked_entry, wifi_lock=False, cloud_enabled=False
     )
     assert not _registered(hass, coordinator, "lockwifilocallink")
+    assert not _registered(hass, coordinator, "lockcredentials")
+    registry = er.async_get(hass)
+    assert (
+        registry.async_get_entity_id(
+            "switch", DOMAIN, f"{coordinator.unique_id}-tamperalert"
+        )
+        is None
+    )
+
+
+async def test_credentials_sensor_for_an_admin_key(
+    hass, component_setup, mock_api_responses
+):
+    mock_api_responses("default")
+    coordinator = await component_setup()
+    assert _registered(hass, coordinator, "lockcredentials")
+
+
+async def test_credentials_sensor_with_the_cloud_off_and_a_local_transport(
+    hass, component_setup, mock_api_responses, monkeypatch
+):
+    mock_api_responses("default")
+    monkeypatch.setattr(
+        LockUpdateCoordinator, "cloud_enabled", property(lambda self: False)
+    )
+    monkeypatch.setattr(
+        LockUpdateCoordinator, "ble_control_enabled", property(lambda self: True)
+    )
+    coordinator = await component_setup()
+    assert _registered(hass, coordinator, "lockcredentials")
+
+
+async def test_no_credentials_sensor_with_nothing_to_fill_it(
+    hass, component_setup, mock_api_responses, monkeypatch
+):
+    mock_api_responses("default")
+    monkeypatch.setattr(
+        LockUpdateCoordinator, "cloud_enabled", property(lambda self: False)
+    )
+    coordinator = await component_setup()
+    assert not _registered(hass, coordinator, "lockcredentials")
+
+
+async def test_no_credentials_sensor_for_a_shared_key(hass, ekey_component_setup):
+    coordinator = await ekey_component_setup(BASIC_EKEY_RECORD_MEMBER)
+    assert not _registered(hass, coordinator, "lockcredentials")
 
 
 async def test_sensor_battery_entity_appears_once_presence_confirmed(

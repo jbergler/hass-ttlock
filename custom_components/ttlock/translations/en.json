@@ -58,7 +58,7 @@
           "poll_interval": "How often to re-check whether each lock is locked or unlocked, in minutes.",
           "slow_poll_interval": "How often to refresh slow-changing detail from the TTLock cloud (battery, name, autolock and passage-mode config, gateway signal), in hours.",
           "bluetooth_enabled": "Read lock state directly from a lock in Bluetooth range of Home Assistant.",
-          "ble_control": "Lock and unlock locks directly over Bluetooth when they are in range. Needs \"Read locks over Bluetooth\" on.",
+          "ble_control": "Lock, unlock and manage locks directly over Bluetooth when they are in range. Needs \"Read locks over Bluetooth\" on.",
           "wifi_local_enabled": "Listen on port 4999 for this account's WiFi locks. Your network must redirect their cloud connection (wifilock.ttlock.com) to Home Assistant. Nothing listens unless you turn this on.",
           "transport_order": "The order in which to try Bluetooth, the WiFi proxy and the TTLock cloud. The WiFi proxy is for a WiFi lock redirected to Home Assistant. Lock and unlock use the first one that is available and succeeds.",
           "cloud_enabled": "Use the TTLock cloud for control, state, detail and webhooks. A redirected WiFi lock stays connected to the cloud, so the phone app keeps working. Turn this off to run on Bluetooth and the WiFi proxy alone."
@@ -131,6 +131,15 @@
     "shared_lock_not_yet_valid": {
       "message": "Your ekey for this lock is not valid yet. It becomes active at its configured start time - the owner can see the exact time in the TTLock app."
     },
+    "no_local_transport": {
+      "message": "Neither Bluetooth nor the WiFi proxy could reach {name}."
+    },
+    "local_command_rejected": {
+      "message": "{name} refused: {reason}."
+    },
+    "local_outcome_unknown": {
+      "message": "{name} received the request but did not confirm it. The lock may have applied it. Check the lock before you try again."
+    },
     "no_transport_to_lock": {
       "message": "Nothing can lock {name} now. The cloud is off, and neither Bluetooth nor the WiFi proxy can reach it."
     },
@@ -145,6 +154,12 @@
     },
     "cloud_disabled": {
       "message": "Only the TTLock cloud can do this for {name}, and the cloud is turned off."
+    },
+    "lock_log_dates": {
+      "message": "Records read from the lock cannot be filtered by date. Leave out the start and end date, or read the cloud."
+    },
+    "lock_config_unreadable": {
+      "message": "{name} answered without its settings."
     }
   }
 }

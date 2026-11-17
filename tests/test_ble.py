@@ -21,7 +21,7 @@ from habluetooth import BluetoothScanningMode
 import pytest
 from pytest_homeassistant.common import MockConfigEntry
 
-from custom_components.ttlock import ble
+from custom_components.ttlock import ble, lock_commands
 from custom_components.ttlock.api import RequestFailed
 from custom_components.ttlock.ble import (
     BleConnectionError,
@@ -29,6 +29,7 @@ from custom_components.ttlock.ble import (
     BleError,
     BleNoResponse,
     BleNotInRange,
+    async_admin_session,
     async_bluetooth_available,
     async_command_session,
     async_control,
@@ -1260,32 +1261,163 @@ class TestAsyncControl:
         assert ready_to_unlock.gatt.disconnects == 1
 
 
+class TestAsyncAdminSession:
+    """The admin handshake (CHECK_ADMIN -> token -> CHECK_RANDOM) over BLE, then
+    a feature command run behind it via the lock_commands AdminSession."""
+
+    # Reply payloads, all encrypted with the AES key by the speaking lock.
+    ADMIN_OK = bytes([Command.CHECK_ADMIN, 0x01, 0x00, 0x00, 0x00, 0x05])  # token 5
+    RANDOM_OK = bytes([Command.CHECK_RANDOM, 0x01])
+    RANDOM_NO = bytes([Command.CHECK_RANDOM, 0x00])
+    SOUND_ON = bytes([Command.AUDIO_MANAGE, 0x01, 0x50, 0x01, 0x01])
+
+    @pytest.fixture
+    def admin_lock(self, speaking_lock, aes_key):
+        speaking_lock.answer(
+            Command.RESPONSE, self.ADMIN_OK, key=aes_key, to=Command.CHECK_ADMIN
+        )
+        speaking_lock.answer(
+            Command.RESPONSE, self.RANDOM_OK, key=aes_key, to=Command.CHECK_RANDOM
+        )
+        return speaking_lock
+
+    def _open(self, hass, lock_version, aes_key):
+        return async_admin_session(
+            hass, LOCK_MAC, LOCK_NAME, lock_version, aes_key, 1234, 7, 0, 0
+        )
+
+    async def test_runs_the_handshake_then_the_command(
+        self, hass, mock_bluetooth, admin_lock, lock_version, aes_key
+    ):
+        admin_lock.answer(
+            Command.RESPONSE, self.SOUND_ON, key=aes_key, to=Command.AUDIO_MANAGE
+        )
+
+        async with self._open(hass, lock_version, aes_key) as session:
+            await lock_commands.set_lock_sound(session, on=True)
+
+        asked = [frame.command for frame in admin_lock.asked]
+        assert asked == [
+            Command.CHECK_ADMIN,
+            Command.CHECK_RANDOM,
+            Command.AUDIO_MANAGE,
+        ]
+
+    async def test_check_random_folds_the_token_and_unlock_key(
+        self, hass, mock_bluetooth, admin_lock, lock_version, aes_key
+    ):
+        admin_lock.answer(
+            Command.RESPONSE, self.SOUND_ON, key=aes_key, to=Command.AUDIO_MANAGE
+        )
+
+        async with self._open(hass, lock_version, aes_key) as session:
+            await lock_commands.set_lock_sound(session, on=True)
+
+        random_frame = next(
+            f for f in admin_lock.asked if f.command == Command.CHECK_RANDOM
+        )
+        raw = next(
+            r
+            for r in admin_lock.gatt.received
+            if Frame.decode(r).command == Command.CHECK_RANDOM
+        )
+        # (token 5 + unlockKey 7) = 12, big-endian over 4 bytes.
+        assert Frame.decode(raw, aes_key=aes_key).data == (12).to_bytes(4, "big")
+        assert random_frame is not None
+
+    async def test_a_refused_handshake_raises(
+        self, hass, mock_bluetooth, speaking_lock, lock_version, aes_key
+    ):
+        speaking_lock.answer(
+            Command.RESPONSE, self.ADMIN_OK, key=aes_key, to=Command.CHECK_ADMIN
+        )
+        speaking_lock.answer(
+            Command.RESPONSE, self.RANDOM_NO, key=aes_key, to=Command.CHECK_RANDOM
+        )
+
+        with pytest.raises(ProtocolError):
+            async with self._open(hass, lock_version, aes_key):
+                pass
+
+    async def test_closes_the_connection(
+        self, hass, mock_bluetooth, admin_lock, lock_version, aes_key
+    ):
+        admin_lock.answer(
+            Command.RESPONSE, self.SOUND_ON, key=aes_key, to=Command.AUDIO_MANAGE
+        )
+
+        async with self._open(hass, lock_version, aes_key) as session:
+            await lock_commands.set_lock_sound(session, on=True)
+
+        assert admin_lock.gatt.disconnects == 1
+
+
+class TestAdminSessionEchoGuard:
+    """A feature reply must echo the request opcode; a stray frame must not be
+    read as its answer."""
+
+    async def test_a_non_echoing_reply_raises(
+        self, hass, mock_bluetooth, speaking_lock, lock_version, aes_key
+    ):
+        speaking_lock.answer(
+            Command.RESPONSE,
+            bytes([Command.CHECK_ADMIN, 0x01, 0x00, 0x00, 0x00, 0x05]),
+            key=aes_key,
+            to=Command.CHECK_ADMIN,
+        )
+        speaking_lock.answer(
+            Command.RESPONSE,
+            bytes([Command.CHECK_RANDOM, 0x01]),
+            key=aes_key,
+            to=Command.CHECK_RANDOM,
+        )
+        # A reply to the feature op that echoes the WRONG opcode.
+        speaking_lock.answer(
+            Command.RESPONSE,
+            bytes([0x99, 0x01, 0x50, 0x01, 0x01]),
+            key=aes_key,
+            to=Command.AUDIO_MANAGE,
+        )
+
+        with pytest.raises(ProtocolError):
+            async with async_admin_session(
+                hass, LOCK_MAC, LOCK_NAME, lock_version, aes_key, 1234, 7, 0, 0
+            ) as session:
+                await lock_commands.set_lock_sound(session, on=True)
+
+
 class TestInterimAckIsNotTheAnswer:
     """Error 36 is the lock saying "received, working on it"; wait for the reply."""
 
-    UNLOCKED = bytes([Command.UNLOCK, 0x01])
-    INTERIM = bytes([Command.UNLOCK, 0x00, 36])
+    SOUND_ON = bytes([Command.AUDIO_MANAGE, 0x01, 0x50, 0x01, 0x01])
+    INTERIM = bytes([Command.AUDIO_MANAGE, 0x00, 36])
 
     def _script(
         self, speaking_lock, aes_key, *, one_notification: bool, answers: bool = True
     ):
         speaking_lock.answer(
             Command.RESPONSE,
-            _handshake_reply(Command.CHECK_USER_TIME, _HANDSHAKE_TOKEN),
+            bytes([Command.CHECK_ADMIN, 0x01, 0x00, 0x00, 0x00, 0x05]),
             key=aes_key,
-            to=Command.CHECK_USER_TIME,
+            to=Command.CHECK_ADMIN,
+        )
+        speaking_lock.answer(
+            Command.RESPONSE,
+            bytes([Command.CHECK_RANDOM, 0x01]),
+            key=aes_key,
+            to=Command.CHECK_RANDOM,
         )
         version = speaking_lock.version
         respond = speaking_lock.respond
 
         def responder(raw: bytes) -> list[bytes]:
-            if Frame.decode(raw).command != Command.UNLOCK:
+            if Frame.decode(raw).command != Command.AUDIO_MANAGE:
                 return respond(raw)
             speaking_lock.asked.append(Frame.decode(raw))
             interim = Frame(version, Command.RESPONSE, self.INTERIM).encode(aes_key)
             if not answers:
                 return [interim] * (ble.MAX_INTERIM_ACKS + 1)
-            final = Frame(version, Command.RESPONSE, self.UNLOCKED).encode(aes_key)
+            final = Frame(version, Command.RESPONSE, self.SOUND_ON).encode(aes_key)
             return [interim + final] if one_notification else [interim, final]
 
         speaking_lock.gatt.responder = responder
@@ -1302,17 +1434,10 @@ class TestInterimAckIsNotTheAnswer:
     ):
         self._script(speaking_lock, aes_key, one_notification=one_notification)
 
-        await async_control(
-            hass,
-            LOCK_MAC,
-            LOCK_NAME,
-            lock_version,
-            aes_key,
-            _UNLOCK_KEY,
-            _UID,
-            0,
-            unlock=True,
-        )
+        async with async_admin_session(
+            hass, LOCK_MAC, LOCK_NAME, lock_version, aes_key, 1234, 7, 0, 0
+        ) as session:
+            await lock_commands.set_lock_sound(session, on=True)
 
     async def test_a_lock_that_only_ever_acknowledges_has_not_answered(
         self, hass, mock_bluetooth, speaking_lock, lock_version, aes_key
@@ -1320,23 +1445,60 @@ class TestInterimAckIsNotTheAnswer:
         self._script(speaking_lock, aes_key, one_notification=False, answers=False)
 
         with pytest.raises(BleNoResponse, match="never answered"):
-            await async_control(
-                hass,
-                LOCK_MAC,
-                LOCK_NAME,
-                lock_version,
-                aes_key,
-                _UNLOCK_KEY,
-                _UID,
-                0,
-                unlock=True,
-            )
+            async with async_admin_session(
+                hass, LOCK_MAC, LOCK_NAME, lock_version, aes_key, 1234, 7, 0, 0
+            ) as session:
+                await lock_commands.set_lock_sound(session, on=True)
 
 
 class TestExecuteTakesACommand:
     def test_signature(self):
         hints = get_type_hints(ble.LockSession.execute)
         assert hints["command"] is Command
+
+
+class TestAdminSessionFieldOrder:
+    """Distinct non-zero values, so an argument swap cannot survive."""
+
+    async def test_secrets_land_in_their_fields(
+        self, hass, mock_bluetooth, speaking_lock, lock_version, aes_key
+    ):
+        speaking_lock.answer(
+            Command.RESPONSE,
+            bytes([Command.CHECK_ADMIN, 0x01, 0x00, 0x00, 0x01, 0x00]),  # token 256
+            key=aes_key,
+            to=Command.CHECK_ADMIN,
+        )
+        speaking_lock.answer(
+            Command.RESPONSE,
+            bytes([Command.CHECK_RANDOM, 0x01]),
+            key=aes_key,
+            to=Command.CHECK_RANDOM,
+        )
+
+        async with async_admin_session(
+            hass,
+            LOCK_MAC,
+            LOCK_NAME,
+            lock_version,
+            aes_key,
+            0x01020304,  # admin_ps
+            "17",  # unlock_key
+            0x0A0B0C0D,  # uid
+            0x050607,  # lock_flag_pos
+        ):
+            pass
+
+        sent = {
+            Frame.decode(raw, aes_key=aes_key).command: Frame.decode(
+                raw, aes_key=aes_key
+            ).data
+            for raw in speaking_lock.gatt.received
+        }
+        # adminPs 4 BE | lockFlagPos 3 BE | uid 4 BE
+        assert sent[Command.CHECK_ADMIN] == bytes.fromhex("010203040506070a0b0c0d")
+        # token 256 + unlockKey 17 = 273 = 0x111
+        assert sent[Command.CHECK_RANDOM] == bytes.fromhex("00000111")
 
 
 class TestNotificationEdges:

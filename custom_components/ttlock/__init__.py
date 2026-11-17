@@ -58,6 +58,7 @@ PLATFORMS: list[Platform] = [
     Platform.SENSOR,
     Platform.BINARY_SENSOR,
     Platform.SWITCH,
+    Platform.NUMBER,
 ]
 
 DETAIL_FILL_CONCURRENCY = 3
@@ -176,8 +177,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Load the cached credentials and detail before any cloud fetch, so a lock
     # can be driven locally straight away and even if the cloud is gone.
+    # Restore persisted credential names too, so local management shows real
+    # names immediately (and even while the cloud is bypassed).
     await asyncio.gather(
-        *(coordinator.async_restore_lock_cache() for coordinator in locks)
+        *(coordinator.async_restore_lock_cache() for coordinator in locks),
+        *(coordinator.async_restore_credential_names() for coordinator in locks),
     )
 
     # With the cloud off the inbound webhook is severed too (see the

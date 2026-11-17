@@ -223,7 +223,7 @@ max-complexity = 25
     "SLF001",  # sets LockUpdateCoordinator's cached credentials/order directly
 ]
 "tests/test_connection_diagnostics.py" = [
-    "SLF001",  # drives _update_from_coordinator directly
+    "SLF001",  # drives _update_from_coordinator / _maybe_refresh_credentials directly
 ]
 "custom_components/ttlock/models.py" = [
     "N815",  # fields mirror the TTLock API's camelCase wire format on purpose

@@ -1,6 +1,6 @@
 configure_passage_mode:
   name: Configure passage mode
-  description: Tries to configure passage mode for a lock (or set of locks)
+  description: Configures passage mode for a lock (or set of locks). Uses Bluetooth or the WiFi proxy when one can reach the lock, otherwise the cloud. Setting passage mode on the lock is not yet confirmed on hardware.
   target:
     entity:
       integration: ttlock
@@ -15,9 +15,8 @@ configure_passage_mode:
         boolean:
     auto_unlock:
       name: Auto-unlock
-      description: Should the the lock auto unlock when passage mode starts
+      description: Should the lock auto unlock when passage mode starts. If you leave it out, the cloud turns it off, and the lock keeps its current setting.
       required: false
-      default: false
       selector:
         boolean:
     all_day:
@@ -75,7 +74,7 @@ configure_passage_mode:
 
 create_passcode:
   name: Create a new pass code
-  description: Tries to create a new passcode for a lock. If no start/end time is provided, the passcode will be valid forever.
+  description: Creates a passcode. Uses Bluetooth or the WiFi proxy when one can reach the lock, otherwise the cloud. If no start/end time is provided, the passcode will be valid forever.
   target:
     entity:
       integration: ttlock
@@ -104,14 +103,34 @@ create_passcode:
         datetime:
     end_time:
       name: End date / time
-      description: What date/time pass code will become invalid
+      description: What date/time pass code will become invalid (not used for a cyclic code)
       required: false
       selector:
         datetime:
+    code_type:
+      name: Code type
+      description: Count (one-time) and cyclic codes go on the lock only. Without a type, a code with a start/end time is a period code, and a code without one is permanent.
+      required: false
+      selector:
+        select:
+          options:
+            - permanent
+            - period
+            - count
+            - cyclic
+    cycle_type:
+      name: Cycle type
+      description: For a cyclic code, the lock's 16-bit value (0-65535). It selects the days and the length of the daily window. The window opens at the time of day of Start date / time. Cyclic codes are not yet confirmed on hardware.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
 
 modify_passcode:
   name: Modify an existing pass code
-  description: Modifies an existing passcode for a lock.
+  description: Modifies an existing passcode. Uses the cloud with its ID, or the lock over Bluetooth or the WiFi proxy with its code. Changing a passcode on the lock is not yet confirmed on hardware.
   target:
     entity:
       integration: ttlock
@@ -119,25 +138,44 @@ modify_passcode:
   fields:
     passcode_id:
       name: Pass code ID
-      description: The ID of the passcode to modify
-      required: true
+      description: The ID of the passcode to modify, through the cloud. Give this or Code.
+      required: false
       selector:
         number:
           min: 1
           mode: box
+    code:
+      name: Code
+      description: The current passcode, to modify it on the lock. Give this or Pass code ID.
+      required: false
+      selector:
+        text:
+          type: number
     passcode_name:
       name: Pass code name
-      description: The new name for this pass code (Can be whatever you like)
-      required: true
+      description: The new name for this pass code (required with Pass code ID)
+      required: false
       selector:
         text:
     passcode:
       name: Passcode
-      description: The new passcode that will be typed by the user to unlock the lock. (4-9 digits)
-      required: true
+      description: The new passcode that will be typed by the user to unlock the lock. (4-9 digits, required with Pass code ID)
+      required: false
       selector:
         text:
           type: number
+    code_type:
+      name: Code type
+      description: With Code, the type the code was created as.
+      required: false
+      default: permanent
+      selector:
+        select:
+          options:
+            - permanent
+            - period
+            - count
+            - cyclic
     start_time:
       name: Start date / time
       description: What date/time pass code will become valid
@@ -153,7 +191,7 @@ modify_passcode:
 
 delete_passcode:
   name: Delete a pass code
-  description: Deletes a specific passcode from a lock.
+  description: Deletes a specific passcode. Uses the cloud with its ID, or the lock over Bluetooth or the WiFi proxy with its code.
   target:
     entity:
       integration: ttlock
@@ -161,15 +199,34 @@ delete_passcode:
   fields:
     passcode_id:
       name: Pass code ID
-      description: The ID of the passcode to delete
-      required: true
+      description: The ID of the passcode to delete, through the cloud. Give this or Code.
+      required: false
       selector:
         number:
           min: 1
+    code:
+      name: Code
+      description: The passcode to delete on the lock. Give this or Pass code ID.
+      required: false
+      selector:
+        text:
+          type: number
+    code_type:
+      name: Code type
+      description: With Code, the type the code was created as.
+      required: false
+      default: permanent
+      selector:
+        select:
+          options:
+            - permanent
+            - period
+            - count
+            - cyclic
 
 cleanup_passcodes:
   name: Remove expired passcodes
-  description: Lists all passcodes for the selected lock and deletes ALL expired passcodes (where the end of validity date is older is past).
+  description: Lists all passcodes for the selected lock and deletes ALL expired passcodes (where the end of validity date is older is past). Needs the cloud.
   target:
     entity:
       integration: ttlock
@@ -182,10 +239,20 @@ list_passcodes:
     entity:
       integration: ttlock
       domain: lock
+  fields:
+    source:
+      name: Source
+      description: Read the TTLock cloud, or the lock itself over Bluetooth or the WiFi proxy. Defaults to the cloud while it is on. The cloud has names and IDs, but not credentials added on the lock directly. The lock has those, but no names. It lists a cloud code only after someone has used it.
+      required: false
+      selector:
+        select:
+          options:
+            - cloud
+            - lock
 
 list_records:
   name: List lock records
-  description: Lists operation records for the selected lock.
+  description: Lists operation records for the selected lock. Records read from the lock come newest first. You can page them but not filter them by date.
   target:
     entity:
       integration: ttlock
@@ -221,10 +288,19 @@ list_records:
         number:
           min: 1
           max: 10
+    source:
+      name: Source
+      description: Read the TTLock cloud, or the lock's own log over Bluetooth or the WiFi proxy. Defaults to the cloud while it is on. The lock's log has no user names and gives the lock's own record type numbers. Each call reads more of the log, oldest first, and Home Assistant keeps what it has read. The response's complete is false until a read reaches the newest record. A call reads about 30 records. With the cloud off and the WiFi proxy up, Home Assistant also reads the log in the background and keeps it current.
+      required: false
+      selector:
+        select:
+          options:
+            - cloud
+            - lock
 
 configure_autolock:
   name: Configure Autolock
-  description: Configure Autolock of the device.
+  description: Configure Autolock of the device. Uses Bluetooth or the WiFi proxy when one can reach the lock, otherwise the cloud.
   target:
     entity:
       integration: ttlock
@@ -239,12 +315,12 @@ configure_autolock:
         boolean:
     seconds:
       name: Seconds
-      description: How many seconds before the lock should Autolock? (0-60 secs | default 10)
+      description: How many seconds before the lock should Autolock? (0-900 secs | default 10). The lock may refuse a value outside its own range.
       required: false
       selector:
         number:
           min: 0
-          max: 60
+          max: 900
           unit_of_measurement: secs
 
 update_state:
@@ -262,6 +338,16 @@ list_cards:
     entity:
       integration: ttlock
       domain: lock
+  fields:
+    source:
+      name: Source
+      description: Read the TTLock cloud, or the lock itself over Bluetooth or the WiFi proxy. Defaults to the cloud while it is on. The cloud has names and IDs, but not credentials added on the lock directly. The lock has those, but no names or IDs.
+      required: false
+      selector:
+        select:
+          options:
+            - cloud
+            - lock
 
 rename_card:
   name: Rename an IC card
@@ -288,7 +374,7 @@ rename_card:
 
 delete_card:
   name: Delete an IC card
-  description: Deletes a specific IC card from the selected lock (via gateway or WiFi lock).
+  description: Deletes a specific IC card. Uses the cloud (via gateway or WiFi lock) with its ID, or the lock over Bluetooth or the WiFi proxy with its number.
   target:
     entity:
       integration: ttlock
@@ -296,16 +382,22 @@ delete_card:
   fields:
     card_id:
       name: Card ID
-      description: The ID of the card to delete (from the List IC cards action)
-      required: true
+      description: The ID of the card to delete (from the List IC cards action). Give this or Card number.
+      required: false
       selector:
         number:
           min: 1
           mode: box
+    card_number:
+      name: Card number
+      description: The number of the card to delete on the lock. Give this or Card ID.
+      required: false
+      selector:
+        text:
 
 add_card:
   name: Add an IC card
-  description: Adds an IC card to the selected lock via gateway or WiFi lock, given its card number (for example from the List IC cards action on another lock).
+  description: Adds an IC card given its card number (for example from the List IC cards action on another lock). Uses Bluetooth or the WiFi proxy when one can reach the lock, otherwise the cloud (via gateway or WiFi lock). A card added on the lock has no card ID in the response. Adding a card on the lock is not yet confirmed on hardware.
   target:
     entity:
       integration: ttlock
@@ -337,7 +429,7 @@ add_card:
         datetime:
     reversed_number:
       name: Reversed number
-      description: Use for numbers read by an external reader in the opposite byte order (identityCard/addForReversedCardNumber)
+      description: Use for numbers read by an external reader in the opposite byte order (identityCard/addForReversedCardNumber). Needs the cloud.
       required: false
       default: false
       selector:
@@ -350,6 +442,16 @@ list_fingerprints:
     entity:
       integration: ttlock
       domain: lock
+  fields:
+    source:
+      name: Source
+      description: Read the TTLock cloud, or the lock itself over Bluetooth or the WiFi proxy. Defaults to the cloud while it is on. The cloud has names and IDs, but not credentials added on the lock directly. The lock has those, but no names or IDs.
+      required: false
+      selector:
+        select:
+          options:
+            - cloud
+            - lock
 
 rename_fingerprint:
   name: Rename a fingerprint
@@ -376,7 +478,7 @@ rename_fingerprint:
 
 delete_fingerprint:
   name: Delete a fingerprint
-  description: Deletes a specific fingerprint from the selected lock (via gateway or WiFi lock).
+  description: Deletes a specific fingerprint. Uses the cloud (via gateway or WiFi lock) with its ID, or the lock over Bluetooth or the WiFi proxy with its number.
   target:
     entity:
       integration: ttlock
@@ -384,9 +486,256 @@ delete_fingerprint:
   fields:
     fingerprint_id:
       name: Fingerprint ID
-      description: The ID of the fingerprint to delete (from the List fingerprints action)
-      required: true
+      description: The ID of the fingerprint to delete (from the List fingerprints action). Give this or Fingerprint number.
+      required: false
       selector:
         number:
           min: 1
           mode: box
+    fingerprint_number:
+      name: Fingerprint number
+      description: The number of the fingerprint to delete on the lock. Give this or Fingerprint ID.
+      required: false
+      selector:
+        text:
+
+sync_clock:
+  name: Sync clock
+  description: Sets the lock's clock over Bluetooth or the WiFi proxy, to Time if you give one, otherwise to now.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    time:
+      name: Time
+      description: The time to set (defaults to now).
+      required: false
+      selector:
+        datetime:
+
+clear_credentials:
+  name: Clear credentials
+  description: Removes every passcode, IC card or fingerprint from the lock over Bluetooth or the WiFi proxy.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    credential_type:
+      name: Credential type
+      description: Which kind of credential to remove.
+      required: true
+      selector:
+        select:
+          options:
+            - passcodes
+            - cards
+            - fingerprints
+
+modify_card_validity:
+  name: Change IC card validity
+  description: Changes an IC card's validity period on the lock over Bluetooth or the WiFi proxy. Not yet confirmed on hardware.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    card_number:
+      name: Card number
+      description: The card's number.
+      required: true
+      selector:
+        text:
+    start_time:
+      name: Start date / time
+      description: When the card becomes valid.
+      required: true
+      selector:
+        datetime:
+    end_time:
+      name: End date / time
+      description: When the card stops being valid.
+      required: true
+      selector:
+        datetime:
+
+set_card_schedule:
+  name: Set IC card weekly schedule
+  description: Replaces an IC card's weekly access schedule on the lock over Bluetooth or the WiFi proxy. The card must already be on the lock. Not yet confirmed on hardware.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    card_number:
+      name: Card number
+      description: The card's number.
+      required: true
+      selector:
+        text:
+    days:
+      name: Week days
+      description: The days the card may be used.
+      required: true
+      selector:
+        select:
+          options:
+            - label: Monday
+              value: mon
+            - label: Tuesday
+              value: tue
+            - label: Wednesday
+              value: wed
+            - label: Thursday
+              value: thu
+            - label: Friday
+              value: fri
+            - label: Saturday
+              value: sat
+            - label: Sunday
+              value: sun
+          multiple: true
+          mode: list
+    start_time:
+      name: Start time
+      description: Time of day the window opens.
+      required: true
+      selector:
+        time:
+    end_time:
+      name: End time
+      description: Time of day the window closes.
+      required: true
+      selector:
+        time:
+
+clear_card_schedule:
+  name: Clear IC card weekly schedule
+  description: Clears an IC card's weekly access schedule on the lock over Bluetooth or the WiFi proxy. Not yet confirmed on hardware.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    card_number:
+      name: Card number
+      description: The card's number.
+      required: true
+      selector:
+        text:
+
+enroll_fingerprint:
+  name: Enrol a fingerprint
+  description: Puts the lock into fingerprint enrolment over the WiFi proxy. Waits while the lock scans the finger several times, then returns the new fingerprint number. Bluetooth and the cloud cannot do this. Not yet confirmed on hardware.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    name:
+      name: Fingerprint name
+      description: A name for this fingerprint. Only Home Assistant keeps it.
+      required: false
+      selector:
+        text:
+
+modify_fingerprint_validity:
+  name: Change fingerprint validity
+  description: Changes a fingerprint's validity period on the lock over Bluetooth or the WiFi proxy. Not yet confirmed on hardware.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    fingerprint_number:
+      name: Fingerprint number
+      description: The fingerprint's number.
+      required: true
+      selector:
+        text:
+    start_time:
+      name: Start date / time
+      description: When the fingerprint becomes valid.
+      required: true
+      selector:
+        datetime:
+    end_time:
+      name: End date / time
+      description: When the fingerprint stops being valid.
+      required: true
+      selector:
+        datetime:
+
+set_fingerprint_schedule:
+  name: Set fingerprint weekly schedule
+  description: Replaces a fingerprint's weekly access schedule on the lock over Bluetooth or the WiFi proxy. The fingerprint must already be on the lock. Not yet confirmed on hardware.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    fingerprint_number:
+      name: Fingerprint number
+      description: The fingerprint's number.
+      required: true
+      selector:
+        text:
+    days:
+      name: Week days
+      description: The days the fingerprint may be used.
+      required: true
+      selector:
+        select:
+          options:
+            - label: Monday
+              value: mon
+            - label: Tuesday
+              value: tue
+            - label: Wednesday
+              value: wed
+            - label: Thursday
+              value: thu
+            - label: Friday
+              value: fri
+            - label: Saturday
+              value: sat
+            - label: Sunday
+              value: sun
+          multiple: true
+          mode: list
+    start_time:
+      name: Start time
+      description: Time of day the window opens.
+      required: true
+      selector:
+        time:
+    end_time:
+      name: End time
+      description: Time of day the window closes.
+      required: true
+      selector:
+        time:
+
+clear_fingerprint_schedule:
+  name: Clear fingerprint weekly schedule
+  description: Clears a fingerprint's weekly access schedule on the lock over Bluetooth or the WiFi proxy. Not yet confirmed on hardware.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock
+  fields:
+    fingerprint_number:
+      name: Fingerprint number
+      description: The fingerprint's number.
+      required: true
+      selector:
+        text:
+
+get_lock_config:
+  name: Get lock settings
+  description: Reads the lock's settings switches over Bluetooth or the WiFi proxy. These include tamper alert, privacy lock, reset button and passage auto-unlock. Returns each switch as true or false, plus the raw values.
+  target:
+    entity:
+      integration: ttlock
+      domain: lock

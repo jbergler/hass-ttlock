@@ -6,7 +6,7 @@ We add a `cloud_enabled` option. It is on by default, so nothing changes until a
 
 - Setup builds the entry from the cached key/list records, keys and detail. Only an entry with no cached lock list calls key/list, once.
 - The poll reads state over BLE and WiFi-local only. It skips the slow tier, the door-sensor checks and the gateway coordinator.
-- The cloud is not a lock/unlock transport. Every service except `update_state` raises `cloud_disabled`. HA does not create the auto-lock and lock-sound switches.
+- The cloud is not a lock/unlock transport. Local services with a cloud equivalent raise instead of falling back. Cloud-only services raise `cloud_disabled`. Credential names come only from the cache and from local adds.
 - The WiFi proxy takes over a connecting lock instead of passing it through.
 - The entry does not wire its per-lock webhook listeners, and `WebhookHandler.async_disable` unregisters the shared webhook. HA keeps the Nabu Casa cloudhook, so its URL survives turning the cloud back on. The unregister is best-effort and never fails entry setup.
 
@@ -18,5 +18,5 @@ _This qualifies AGENTS.md's "never trade the webhook push path for faster pollin
 
 - **Updates come from HA's own reads.** With no push, a lock updates after HA's own commands, at each poll, and on the 5-minute local refresh. While the cloud is off, that refresh covers every lock that BLE or WiFi-local can reach. A lock event on a takeover session also requests a refresh.
 - **The TTLock app loses remote features** for a taken-over lock. Local features on the lock itself still work.
-- **Cached data goes stale.** HA does not refresh keys, detail, gateways or the lock list while the cloud is off. A change made in the TTLock app needs the cloud turned on again.
+- **Cached data goes stale.** HA does not refresh keys, detail, gateways or the lock list while the cloud is off. The exception is the saved settings, which HA reads from the lock over a local admin route. A change made in the TTLock app needs the cloud turned on again.
 - **Turning the cloud back on** reloads the entry, and setup registers the webhook again at the same URL.

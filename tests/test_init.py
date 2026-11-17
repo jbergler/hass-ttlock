@@ -36,7 +36,10 @@ from custom_components.ttlock.const import (
     TT_LOCKS,
     TT_WIFI_PROXY,
 )
-from custom_components.ttlock.coordinator import LockUpdateCoordinator
+from custom_components.ttlock.coordinator import (
+    LockUpdateCoordinator,
+    NoLocalAdminTransport,
+)
 from custom_components.ttlock.models import Gateway, LockSummary, WebhookEvent
 from custom_components.ttlock.store import LockStateStore
 from custom_components.ttlock.webhook import WebhookHandler
@@ -47,7 +50,7 @@ from homeassistant.components.application_credentials import (
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_WEBHOOK_ID, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, ServiceValidationError
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import NoURLAvailableError
@@ -1188,7 +1191,7 @@ async def test_cloud_off_create_passcode_never_reaches_the_cloud(
     cloud = AsyncMock(return_value=True)
     monkeypatch.setattr(TTLockApi, "add_passcode", cloud)
 
-    with pytest.raises(ServiceValidationError):
+    with pytest.raises(NoLocalAdminTransport):
         await hass.services.async_call(
             DOMAIN,
             SVC_CREATE_PASSCODE,
@@ -1209,10 +1212,11 @@ async def test_cloud_off_create_passcode_never_reaches_the_cloud(
 async def test_a_partial_cached_detail_keeps_a_cloud_off_wifi_lock_registered(
     hass, hass_storage, new_mocked_entry, mock_api_responses
 ):
-    """A partial detail cache must not wipe the lock's features.
+    """A detail cache holding only a local write must not wipe the lock's features.
 
-    Restoring a cache that holds just autoLockTime on restart must leave the
-    key record's features (WiFi), model and firmware alone.
+    Before lock/detail was ever cached, a local auto-lock write stores just
+    autoLockTime; restoring that on restart must leave the key record's
+    features (WiFi), model and firmware alone.
     """
     mock_api_responses("default")
     entry = new_mocked_entry(
