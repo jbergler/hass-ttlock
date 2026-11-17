@@ -1,6 +1,6 @@
 # hass-ttlock
 
-Home Assistant integration for TTLock-based locks. It uses the TTLock cloud for setup and control, and can read lock state directly over Bluetooth.
+Home Assistant integration for TTLock-based locks. It uses the TTLock cloud for setup and control, and can also read and control locks directly over Bluetooth.
 
 [<img src="https://img.shields.io/github/v/release/jbergler/hass-ttlock?style=for-the-badge" />](https://github.com/jbergler/hass-ttlock/releases/latest)
 <picture><img src="https://img.shields.io/github/downloads/jbergler/hass-ttlock/total?style=for-the-badge" /></picture>
@@ -12,14 +12,17 @@ Home Assistant integration for TTLock-based locks. It uses the TTLock cloud for 
 
 - Lock and unlock through a TTLock gateway or the lock's built-in Wi-Fi
 - Read lock, battery, and supported door state over Home Assistant's Bluetooth
+- Lock and unlock a lock over Bluetooth (opt-in)
+- Choose whether Bluetooth or the cloud is tried first
+- Start from saved data when the cloud cannot be reached
 - Use an ESPHome Bluetooth proxy when the lock is not close to Home Assistant
 - Receive near-real-time updates through a TTLock webhook
 - Use locks shared from another TTLock account
-- See gateway status and signal strength
+- See gateway status, signal strength, and how each lock is connected
 - Manage passage mode, autolock, passcodes, IC cards, and fingerprints
 - View lock records, the last operator, and the last trigger
 
-Bluetooth reads are local, but Bluetooth control is not supported. Locking and unlocking still need a working cloud route through a TTLock gateway or the lock's built-in Wi-Fi.
+Locking and unlocking use the routes you allow, in the order you choose. Without Bluetooth control, they need a working cloud route through a TTLock gateway or the lock's built-in Wi-Fi.
 
 ## How updates reach Home Assistant
 
@@ -29,17 +32,18 @@ Bluetooth reads are local, but Bluetooth control is not supported. Locking and u
 | Cloud polling | Checks lock state and refreshes lock details | State every 30 minutes and details every 6 hours by default |
 | Bluetooth | Reads lock, battery, and supported door state directly | During state checks, plus every 5 minutes for a lock with no cloud route |
 
-The polling intervals and Bluetooth setting are under **Settings > Devices & services > TTLock > Configure**. Webhooks are still the fastest update path for locks with a gateway or built-in Wi-Fi.
+The polling intervals and the connection options are under **Settings > Devices & services > TTLock > Configure**. Webhooks are still the fastest update path for locks with a gateway or built-in Wi-Fi.
 
 ## What you need
 
 | Goal | What you need |
 |---|---|
 | Set up the integration | A TTLock account and an approved TTLock Developer application |
-| Lock or unlock from Home Assistant | A TTLock gateway or built-in Wi-Fi, with Remote unlock enabled |
+| Lock or unlock through the cloud | A TTLock gateway or built-in Wi-Fi, with Remote unlock enabled |
 | Get near-real-time updates | A webhook URL that TTLock can reach from the public internet |
 | Read state over Bluetooth | A Home Assistant Bluetooth adapter or ESPHome Bluetooth proxy in range |
 | Read a lock without a gateway or Wi-Fi | Bluetooth range; updates are scheduled, not instant |
+| Lock or unlock over Bluetooth | Bluetooth range, **Control locks over Bluetooth** turned on, and owner or authorized access |
 
 ## Installation and setup
 
@@ -71,7 +75,7 @@ TTLock allows one callback URL per Developer application. If several TTLock acco
 
 ### Enable Remote unlock
 
-Remote unlock must be enabled for each lock before Home Assistant can lock or unlock it.
+Remote unlock must be enabled for each lock before Home Assistant can lock or unlock it through the TTLock cloud.
 
 1. Stand near the lock with the TTLock mobile app.
 2. Open the lock settings and enable **Remote unlock**.
@@ -82,13 +86,44 @@ Replacing or re-adding a lock can turn this setting off. [This video](https://ww
 
 Local Bluetooth is enabled by default when Home Assistant's [Bluetooth integration](https://www.home-assistant.io/integrations/bluetooth/) is set up. It also works through ESPHome Bluetooth proxies.
 
-The integration gets the read key from the TTLock cloud. It does not need a second mobile-app login. A successful read reports lock, battery, and supported door state.
+The integration gets the lock's keys from the TTLock cloud. It does not need a second mobile-app login. A successful read reports lock, battery, and supported door state.
 
-- Bluetooth cannot lock or unlock the device. TTLock's Developer API does not provide the secret needed for those commands.
+- Bluetooth can lock and unlock the lock when **Control locks over Bluetooth** is turned on under **Configure**. It is off by default.
+- Home Assistant saves the keys. Bluetooth keeps working through a TTLock cloud outage, and after a restart during one.
+- The `member` Access level cannot read the keys. It gets no Bluetooth reads or control.
 - A lock with a gateway or built-in Wi-Fi keeps using webhook updates. Bluetooth handles the state check locally when it can.
-- A lock without a cloud route is read over Bluetooth every 5 minutes. A manual turn may take that long to appear in Home Assistant.
+- Home Assistant reads a lock every 5 minutes when the cloud cannot reach the lock. A manual turn may take that long to appear in Home Assistant.
 - The Bluetooth Signal sensor shows whether the lock is in range. Around -80 dBm and below, connections can be slow or fail.
 - Bluetooth can be turned off under **Configure** by clearing **Read locks over Bluetooth**.
+
+## Configuration options
+
+These options are under **Settings > Devices & services > TTLock > Configure**. They apply to every lock on the account. A change reloads the integration.
+
+| Option | What it does | Default |
+|---|---|---|
+| **Poll interval** | How often to check whether each lock is locked, in minutes. From 5 to 1440 | 30 |
+| **Detail refresh interval** | How often to refresh slow-changing detail from the TTLock cloud, in hours. From 1 to 168 | 6 |
+| **Read locks over Bluetooth** | Read lock state from a lock in Bluetooth range | On |
+| **Control locks over Bluetooth** | Lock and unlock a lock in Bluetooth range | Off |
+| **Transport order** | The order to try Bluetooth and the cloud | Bluetooth, then cloud |
+
+The options form refuses **Control locks over Bluetooth** without **Read locks over Bluetooth**.
+
+### Transport order
+
+Lock and unlock try each route that is available now, in your order. They stop at the first route that succeeds. If a route fails, they try the next route.
+
+- Bluetooth is available when **Control locks over Bluetooth** is on and the lock is in range.
+- The cloud is always available.
+
+If every route tried fails, lock and unlock fail with an error that names those routes.
+
+State reads try Bluetooth first, then the cloud.
+
+### Starting without the cloud
+
+If the integration cannot reach the TTLock cloud at startup, it starts the locks from the saved data. It also raises a repair issue. The issue clears when the cloud answers again. If TTLock refused the credentials, the integration also asks you to sign in again. Bluetooth keeps working in the meantime. The first setup always needs the cloud.
 
 ## Shared locks
 
@@ -100,7 +135,7 @@ The integration discovers owned locks and Shared locks. TTLock represents each a
 
 ## Entities
 
-Entities appear only when the lock supports the feature.
+Entities appear only when the lock supports the feature and your setup can use it.
 
 - Lock control and state
 - Lock battery and door-sensor battery
@@ -110,6 +145,14 @@ Entities appear only when the lock supports the feature.
 - Autolock and lock sound
 - Gateway status
 - Gateway Signal and Bluetooth Signal diagnostic sensors, disabled by default
+
+Connection diagnostic sensors stay available when nothing can reach the lock, so they can show why:
+
+| Sensor | What it shows | When it appears |
+|---|---|---|
+| Connection | The first route in your transport order that can reach the lock now (`ble` or `cloud`), or unknown. Attributes show whether lock and unlock would avoid the cloud, the route they would use, the route the last action used, and the state of each route | Always |
+| Cloud Online | Whether the TTLock cloud can reach the lock | Always |
+| Bluetooth Reachable | Whether Home Assistant's Bluetooth can reach the lock | **Read locks over Bluetooth** on |
 
 ## Actions
 
@@ -152,7 +195,7 @@ Start by updating hass-ttlock to the latest release and restarting Home Assistan
 
 ### A lock is unavailable
 
-The lock is not Connectable: neither the TTLock cloud nor Bluetooth can currently reach it. Check the gateway status and the disabled-by-default Gateway Signal and Bluetooth Signal sensors.
+The lock is not Connectable. The TTLock cloud cannot reach it now, and neither can Bluetooth. Check the gateway status, the Connection sensor, and the disabled-by-default Gateway Signal and Bluetooth Signal sensors.
 
 ### Changes appear only after a poll
 
@@ -163,6 +206,8 @@ Open **Configure**, copy the webhook URL, and make sure it matches the Callback 
 For `-4043`, **The function is not supported for this lock**, or a read-only control, enable Remote unlock in the TTLock mobile app while standing near the lock. Check it again after replacing or re-adding a lock.
 
 For a Shared lock, the owner must also enable Remote unlock for your Ekey.
+
+The error names the routes it tried. Check the Connection sensor's `preferred_control_transport` attribute. For Bluetooth, **Control locks over Bluetooth** must be on and the lock must be in range.
 
 ### Invalid Client ID
 

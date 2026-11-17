@@ -26,6 +26,7 @@ from custom_components.ttlock.ble_protocol import (
     TERMINATOR,
     ChecksumError,
     Command,
+    CredentialError,
     DecryptError,
     DeviceFeatures,
     Frame,
@@ -33,13 +34,23 @@ from custom_components.ttlock.ble_protocol import (
     FrameError,
     LockStatus,
     LockVersion,
+    ProtocolError,
     Response,
     UnsupportedProtocol,
+    _credential_bytes,
+    check_user_time_data,
+    control_data,
     crc8_maxim,
+    decimal_time_bytes,
+    decode_password,
     decrypt,
     encrypt,
     feature_value_bytes,
+    is_interim_ack,
+    lock_error_name,
     parse_aes_key,
+    response_error_code,
+    token_from_response,
 )
 
 from .const import MOCK_LOCK_VERSION
@@ -364,15 +375,6 @@ class TestFrameDecoding:
         with pytest.raises(FrameError, match="declares"):
             Frame.decode(bytes(lying))
 
-    def test_legacy_xor_locks_are_refused_loudly(self):
-        """Decoding these as AES would yield convincing garbage."""
-        raw = Frame(
-            VERSION, Command.QUERY_LOCK_STATUS, b"payload", scramble_key=0x42
-        ).encode()
-
-        with pytest.raises(UnsupportedProtocol, match="0x42"):
-            Frame.decode(raw)
-
     def test_the_wrong_key_surfaces_as_a_decrypt_error(self):
         """Distinct from ChecksumError: the frame arrived intact, we just can't read it."""
         raw = Frame(VERSION, Command.QUERY_LOCK_STATUS, b"payload").encode(KEY)
@@ -590,3 +592,165 @@ class TestFeatureValueBytes:
     def test_anything_unexpected_turns_the_check_off(self, value):
         """Empty disables the comparison; raising would fail a dump over it."""
         assert feature_value_bytes(value) == b""
+
+
+# --- Authenticated control: handshake, lock/unlock, credential decode --------
+
+
+class TestControlOpcodes:
+    """The opcodes added for control match the protocol's own numbering."""
+
+    def test_opcode_values(self) -> None:
+        # Interface facts: the numbers the lock's firmware dispatches on.
+        assert Command.CHECK_USER_TIME == 0x55
+        assert Command.UNLOCK == 0x47
+        assert Command.LOCK == 0x58
+
+
+class TestDecimalTimeBytes:
+    """Dates are decimal-per-byte, not BCD and not raw hex."""
+
+    def test_pairs_are_decimal_valued(self) -> None:
+        # "26" is the value 26 (0x1A), the lock reading it as a calendar field.
+        assert decimal_time_bytes("26") == bytes([26])
+        assert decimal_time_bytes("2611301400") == bytes([26, 11, 30, 14, 0])
+
+    def test_odd_length_is_left_padded(self) -> None:
+        assert decimal_time_bytes("5") == bytes([5])
+
+
+class TestDecodePassword:
+    """`lockKey` / `adminPwd` decode: table-driven one-byte XOR over base64/CSV."""
+
+    def test_hand_computed_vector(self) -> None:
+        # External anchor, worked by hand against the codec table rather than
+        # through the implementation:
+        #   plaintext "246" = bytes 0x32 0x34 0x36, chosen xor constant C=0x0A.
+        #   encoded length 4 -> table index (4-1)=3 -> table[3]=0xE2.
+        #   last byte   = table[3] ^ C      = 0xE2 ^ 0x0A = 0xE8 = 232
+        #   body bytes  = [p ^ C for p ...] = 0x38 0x3E 0x3C = 56 62 60
+        # so the wire field is base64("56,62,60,232") and must decode to "246".
+        field = base64.b64encode(b"56,62,60,232").decode("ascii")
+        assert decode_password(field) == "246"
+
+    def test_short_field_passes_through(self) -> None:
+        # A field of 10 chars or fewer is already plain.
+        assert decode_password("2486") == "2486"
+        assert decode_password("") == ""
+
+    def test_a_single_byte_field_has_no_trailer_to_undo(self) -> None:
+        # One encoded byte carries no xor-constant byte, so it is taken as is.
+        field = base64.b64encode(b"50,,,,,,,,").decode("ascii")
+        assert len(field) > 10
+        assert decode_password(field) == "2"
+
+    def test_garbage_raises(self) -> None:
+        with pytest.raises(ValueError):
+            decode_password("not base64 but certainly longer than ten chars!!")
+
+
+class TestHandshakePayloads:
+    """Wire layouts asserted against hand-written field offsets."""
+
+    def test_check_user_time_layout(self) -> None:
+        data = check_user_time_data(uid=0x01020304, lock_flag_pos=0x0A0B0C)
+        assert len(data) == 17
+        assert data[0:5] == bytes([0, 1, 31, 14, 0])  # default start 0001311400
+        assert data[5:10] == bytes([99, 11, 30, 14, 0])  # default end 9911301400
+        assert data[10:13] == bytes([0x0A, 0x0B, 0x0C])  # lockFlagPos, 3 BE
+        assert data[13:17] == bytes([0x01, 0x02, 0x03, 0x04])  # uid, 4 BE
+
+
+class TestControlPayload:
+    """The 8-byte UNLOCK/LOCK body: folded secret then epoch seconds."""
+
+    def test_layout(self) -> None:
+        data = control_data(token=1000, unlock_key="2345", epoch_seconds=0x5E0BE100)
+        assert len(data) == 8
+        assert data[0:4] == (3345).to_bytes(4, "big")
+        assert data[4:8] == (0x5E0BE100).to_bytes(4, "big")
+
+    def test_folded_secret_wraps(self) -> None:
+        data = control_data(token=0xFFFFFFFF, unlock_key=5, epoch_seconds=1)
+        assert data[0:4] == (4).to_bytes(4, "big")
+
+
+class TestTokenFromResponse:
+    """Reading psFromLock, refusing anything unproven."""
+
+    def test_reads_token_on_success(self) -> None:
+        # envelope [cmd_echo, status=0x01] then the 4-byte token.
+        payload = bytes([0x55, 0x01, 0xDE, 0xAD, 0xBE, 0xEF])
+        assert token_from_response(payload) == 0xDEADBEEF
+
+    def test_rejects_failure_status(self) -> None:
+        with pytest.raises(ProtocolError):
+            token_from_response(bytes([0x55, 0x00, 0xDE, 0xAD, 0xBE, 0xEF]))
+
+    def test_rejects_short_reply(self) -> None:
+        with pytest.raises(ProtocolError):
+            token_from_response(bytes([0x55, 0x01, 0xDE, 0xAD]))
+
+
+class TestLockErrorCodes:
+    """The error byte after a failed reply's envelope."""
+
+    def test_error_code_from_failed_reply(self):
+        # [echo 05][status 00][code 02] -> no permission.
+        assert response_error_code(bytes.fromhex("050002")) == 2
+        assert lock_error_name(2) == "not administrator - no permission"
+
+    def test_no_code_byte(self):
+        assert response_error_code(bytes.fromhex("0500")) is None
+        assert lock_error_name(None) == "no error code"
+
+    def test_unknown_code_falls_through_to_number(self):
+        assert lock_error_name(200) == "error 200"
+
+    def test_known_discriminators(self):
+        assert lock_error_name(3) == "wrong administrator password"
+        assert lock_error_name(48) == "AES parse error - key/session wrong"
+        assert lock_error_name(96) == "lock does not support this change"
+
+
+class TestScrambleByteIsChecked:
+    def test_legacy_xor_locks_are_refused_loudly(self):
+        """Decoding these as AES would yield convincing garbage."""
+        raw = Frame(
+            VERSION, Command.QUERY_LOCK_STATUS, b"payload", scramble_key=0x42
+        ).encode()
+
+        with pytest.raises(UnsupportedProtocol, match="0x42"):
+            Frame.decode(raw)
+
+
+class TestCredentialErrors:
+    """Bad credentials raise a typed error a caller can fall back on."""
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda: control_data(5, "abc", 0),
+            lambda: check_user_time_data(1 << 40, 0),
+            lambda: _credential_bytes("not-a-number", 4, "uid"),
+            lambda: decode_password("!!!!not base64 at all!!!!"),
+        ],
+    )
+    def test_raises_credential_error(self, call):
+        with pytest.raises(CredentialError) as excinfo:
+            call()
+        assert isinstance(excinfo.value, ProtocolError)
+        assert isinstance(excinfo.value, ValueError)
+
+
+class TestInterimAck:
+    def test_command_received_is_named(self):
+        assert lock_error_name(36) == "command received"
+
+    def test_interim_ack_is_recognised(self):
+        assert is_interim_ack(bytes.fromhex("620024"), 0x62)
+
+    def test_other_replies_are_not_interim(self):
+        assert not is_interim_ack(bytes.fromhex("620024"), 0x36)  # other opcode
+        assert not is_interim_ack(bytes.fromhex("620002"), 0x62)  # a real refusal
+        assert not is_interim_ack(bytes.fromhex("620124"), 0x62)  # success

@@ -12,8 +12,8 @@ mock_gatt does the same for the connection: it answers establish_connection
 with a recorder that plays the lock's side of the GATT conversation.
 """
 
-from dataclasses import dataclass, field
 from datetime import timedelta
+from typing import get_type_hints
 from unittest.mock import AsyncMock, patch
 
 from bleak_retry_connector import BleakError
@@ -31,6 +31,7 @@ from custom_components.ttlock.ble import (
     BleNotInRange,
     async_bluetooth_available,
     async_command_session,
+    async_control,
     async_read_status,
     async_track_address,
 )
@@ -40,8 +41,7 @@ from custom_components.ttlock.ble_protocol import (
     ChecksumError,
     Command,
     Frame,
-    LockVersion,
-    parse_aes_key,
+    ProtocolError,
 )
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
@@ -50,14 +50,12 @@ from custom_components.ttlock.const import (
     DOMAIN,
 )
 from custom_components.ttlock.coordinator import RETRY_INTERVAL, LockUpdateCoordinator
-from custom_components.ttlock.models import Lock, LockSummary
+from custom_components.ttlock.models import LockSummary
 from custom_components.ttlock.store import LockStateStore
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from .conftest import GattRecorder
 from .const import (
-    BASIC_LOCK_DETAILS,
     MOCK_LOCK_AES_KEY,
     MOCK_LOCK_MAC as LOCK_MAC,
     MOCK_LOCK_VERSION,
@@ -98,6 +96,14 @@ def _gatewayless(
     return _coordinator(hass, api, summary, options)
 
 
+def _cache_key(
+    coordinator: LockUpdateCoordinator, key: str = MOCK_LOCK_AES_KEY
+) -> None:
+    """The local credentials as restored from the cache at setup, before any poll."""
+    coordinator._ble_version = MOCK_LOCK_VERSION  # noqa: SLF001
+    coordinator._ble_key = key  # noqa: SLF001
+
+
 def _cloud_state_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     async def get_lock_state(self, lock_id):
         raise RequestFailed("no gateway")
@@ -111,64 +117,6 @@ def _cloud_state_fails(monkeypatch: pytest.MonkeyPatch) -> None:
 # battery 100%, locked, door closed.
 STATUS_LOCKED = b"\x14\x01\x64\x00\x01"
 STATUS_UNLOCKED_DOOR_OPEN = b"\x14\x01\x64\x01\x00"
-
-
-@pytest.fixture
-def lock_version() -> LockVersion:
-    return LockVersion.from_cloud(MOCK_LOCK_VERSION)
-
-
-@pytest.fixture
-def aes_key() -> bytes:
-    return parse_aes_key(MOCK_LOCK_AES_KEY)
-
-
-@dataclass
-class SpeakingLock:
-    """A GattRecorder that answers commands the way a lock would.
-
-    `answer` scripts the reply for one opcode (or every opcode, with
-    `to=None`); what the lock was asked lands in `asked`.
-    """
-
-    gatt: GattRecorder
-    version: LockVersion
-    asked: list[Frame] = field(default_factory=list)
-    _replies: dict[int | None, tuple[int, bytes, bytes | None, int]] = field(
-        default_factory=dict
-    )
-
-    def answer(
-        self,
-        command: int = Command.RESPONSE,
-        data: bytes = b"",
-        key: bytes | None = None,
-        chunk: int = 20,
-        *,
-        to: int | None = None,
-    ) -> None:
-        self._replies[to] = (command, data, key, chunk)
-
-    def stay_silent(self) -> None:
-        self._replies.clear()
-
-    def respond(self, raw: bytes) -> list[bytes]:
-        frame = Frame.decode(raw)
-        self.asked.append(frame)
-        reply = self._replies.get(frame.command, self._replies.get(None))
-        if reply is None:
-            return []
-        command, data, key, chunk = reply
-        wire = Frame(self.version, command, data).encode(aes_key=key)
-        return [wire[i : i + chunk] for i in range(0, len(wire), chunk)]
-
-
-@pytest.fixture
-def speaking_lock(mock_gatt: GattRecorder, lock_version: LockVersion) -> SpeakingLock:
-    lock = SpeakingLock(mock_gatt, lock_version)
-    lock.answer()
-    mock_gatt.responder = lock.respond
-    return lock
 
 
 class TestBleData:
@@ -491,12 +439,13 @@ class TestLockSession:
     async def test_reassembles_a_reply_split_across_notifications(
         self, session, speaking_lock
     ):
-        speaking_lock.answer(Command.RESPONSE, bytes(range(40)), chunk=7)
+        payload = bytes([Command.SEARCH_DEVICE_FEATURE]) + bytes(range(39))
+        speaking_lock.answer(Command.RESPONSE, payload, chunk=7)
 
         async with session as lock:
             reply = await lock.execute(Command.SEARCH_DEVICE_FEATURE, encrypted=False)
 
-        assert reply.data == bytes(range(40))
+        assert reply.data == payload
 
     async def test_splits_a_long_command_to_the_mtu(self, session, speaking_lock):
         async with session as lock:
@@ -585,6 +534,7 @@ class TestLockSessionEncryption:
     async def test_the_payload_is_encrypted_on_the_wire(
         self, session, speaking_lock, aes_key
     ):
+        speaking_lock.answer(key=aes_key)
         async with session as lock:
             await lock.execute(Command.QUERY_LOCK_STATUS, b"hello")
 
@@ -675,6 +625,7 @@ class TestCoordinatorBleRead:
     @pytest.fixture
     def in_range(self, coordinator, mock_bluetooth):
         coordinator.ble = BleData(rssi=-60, connectable=True)
+        _cache_key(coordinator)
 
     @pytest.fixture
     def cloud_unreachable(self, monkeypatch):
@@ -722,14 +673,10 @@ class TestCoordinatorBleRead:
         assert locked_locally.gatt.connects == 0
 
     async def test_an_unreadable_key_means_the_cloud(
-        self, coordinator, mock_api_responses, in_range, locked_locally, monkeypatch
+        self, coordinator, mock_api_responses, in_range, locked_locally
     ):
         mock_api_responses("default")
-
-        async def get_lock(self, lock_id):
-            return Lock.model_validate({**BASIC_LOCK_DETAILS, "aesKeyStr": "<REMOVED>"})
-
-        monkeypatch.setattr("custom_components.ttlock.api.TTLockApi.get_lock", get_lock)
+        _cache_key(coordinator, "<REMOVED>")
 
         await coordinator.async_refresh()
 
@@ -982,6 +929,7 @@ class TestCoordinatorBleProof:
         """The coordinator, having just read the lock over Bluetooth."""
         mock_api_responses("default")
         coordinator.ble = BleData(rssi=-60, connectable=True)
+        _cache_key(coordinator)
         await coordinator.async_refresh()
         assert coordinator.data.locked is True
         assert locked_locally.gatt.connects == 1
@@ -1065,3 +1013,360 @@ class TestCoordinatorBleProof:
         await hass.async_block_till_done()
 
         assert read_locally.update_interval == RETRY_INTERVAL
+
+
+# Handshake + control reply fixtures: a CHECK_USER_TIME reply carrying a known
+# psFromLock token, then a success/refusal on the control command itself. The
+# token is distinctive so the folded secret in the control frame is checkable.
+_HANDSHAKE_TOKEN = 1000
+_UNLOCK_KEY = "2345"
+_UID = 7
+
+
+def _handshake_reply(echo: int, token: int) -> bytes:
+    return bytes([echo, 0x01]) + token.to_bytes(4, "big")
+
+
+class TestAsyncControl:
+    """Locking and unlocking over one authenticated session."""
+
+    @pytest.fixture
+    def ready_to_unlock(self, speaking_lock, aes_key):
+        speaking_lock.answer(
+            Command.RESPONSE,
+            _handshake_reply(Command.CHECK_USER_TIME, _HANDSHAKE_TOKEN),
+            key=aes_key,
+            to=Command.CHECK_USER_TIME,
+        )
+        speaking_lock.answer(
+            Command.RESPONSE,
+            bytes([Command.UNLOCK, 0x01]),
+            key=aes_key,
+            to=Command.UNLOCK,
+        )
+        speaking_lock.answer(
+            Command.RESPONSE, bytes([Command.LOCK, 0x01]), key=aes_key, to=Command.LOCK
+        )
+        return speaking_lock
+
+    def _control_frame(self, lock, aes_key, opcode):
+        for raw in lock.gatt.received:
+            frame = Frame.decode(raw, aes_key=aes_key)
+            if frame.command == opcode:
+                return frame
+        raise AssertionError(f"no {opcode:#x} frame was sent")
+
+    async def test_unlock_runs_the_handshake_then_unlocks(
+        self, hass, mock_bluetooth, ready_to_unlock, lock_version, aes_key
+    ):
+        await async_control(
+            hass,
+            LOCK_MAC,
+            LOCK_NAME,
+            lock_version,
+            aes_key,
+            _UNLOCK_KEY,
+            _UID,
+            0,
+            unlock=True,
+        )
+
+        asked = [frame.command for frame in ready_to_unlock.asked]
+        assert asked == [Command.CHECK_USER_TIME, Command.UNLOCK]
+
+    async def test_control_frame_folds_the_token_into_the_unlock_key(
+        self, hass, mock_bluetooth, ready_to_unlock, lock_version, aes_key
+    ):
+        await async_control(
+            hass,
+            LOCK_MAC,
+            LOCK_NAME,
+            lock_version,
+            aes_key,
+            _UNLOCK_KEY,
+            _UID,
+            0,
+            unlock=True,
+        )
+
+        frame = self._control_frame(ready_to_unlock, aes_key, Command.UNLOCK)
+        expected = (_HANDSHAKE_TOKEN + int(_UNLOCK_KEY)) & 0xFFFFFFFF
+        assert frame.data[0:4] == expected.to_bytes(4, "big")
+        assert len(frame.data) == 8  # folded secret + timestamp
+
+    async def test_check_user_time_carries_uid_and_flag_pos(
+        self, hass, mock_bluetooth, ready_to_unlock, lock_version, aes_key
+    ):
+        await async_control(
+            hass,
+            LOCK_MAC,
+            LOCK_NAME,
+            lock_version,
+            aes_key,
+            _UNLOCK_KEY,
+            _UID,
+            0x0A,
+            unlock=True,
+        )
+
+        frame = self._control_frame(ready_to_unlock, aes_key, Command.CHECK_USER_TIME)
+        assert frame.data[10:13] == bytes([0, 0, 0x0A])  # lockFlagPos
+        assert frame.data[13:17] == _UID.to_bytes(4, "big")
+
+    async def test_lock_uses_the_lock_opcode(
+        self, hass, mock_bluetooth, ready_to_unlock, lock_version, aes_key
+    ):
+        await async_control(
+            hass,
+            LOCK_MAC,
+            LOCK_NAME,
+            lock_version,
+            aes_key,
+            _UNLOCK_KEY,
+            _UID,
+            0,
+            unlock=False,
+        )
+
+        asked = [frame.command for frame in ready_to_unlock.asked]
+        assert asked == [Command.CHECK_USER_TIME, Command.LOCK]
+
+    async def test_a_refused_command_raises_rejected(
+        self, hass, mock_bluetooth, speaking_lock, lock_version, aes_key
+    ):
+        speaking_lock.answer(
+            Command.RESPONSE,
+            _handshake_reply(Command.CHECK_USER_TIME, _HANDSHAKE_TOKEN),
+            key=aes_key,
+            to=Command.CHECK_USER_TIME,
+        )
+        # status byte 0x00: the lock answered but declined to act.
+        speaking_lock.answer(
+            Command.RESPONSE,
+            bytes([Command.UNLOCK, 0x00]),
+            key=aes_key,
+            to=Command.UNLOCK,
+        )
+
+        with pytest.raises(BleError):
+            await async_control(
+                hass,
+                LOCK_MAC,
+                LOCK_NAME,
+                lock_version,
+                aes_key,
+                _UNLOCK_KEY,
+                _UID,
+                0,
+                unlock=True,
+            )
+
+    async def test_a_failed_handshake_raises(
+        self, hass, mock_bluetooth, speaking_lock, lock_version, aes_key
+    ):
+        # CHECK_USER_TIME itself rejected: no token, so never reaches the bolt.
+        speaking_lock.answer(
+            Command.RESPONSE,
+            bytes([Command.CHECK_USER_TIME, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            key=aes_key,
+            to=Command.CHECK_USER_TIME,
+        )
+
+        with pytest.raises(ProtocolError):
+            await async_control(
+                hass,
+                LOCK_MAC,
+                LOCK_NAME,
+                lock_version,
+                aes_key,
+                _UNLOCK_KEY,
+                _UID,
+                0,
+                unlock=True,
+            )
+        # the bolt command was never sent
+        assert all(frame.command != Command.UNLOCK for frame in speaking_lock.asked)
+
+    async def test_a_reply_that_does_not_echo_unlock_is_not_success(
+        self, hass, mock_bluetooth, speaking_lock, lock_version, aes_key
+    ):
+        """A status reply (14 01 ...) to UNLOCK is not the lock having unlocked."""
+        speaking_lock.answer(
+            Command.RESPONSE,
+            _handshake_reply(Command.CHECK_USER_TIME, _HANDSHAKE_TOKEN),
+            key=aes_key,
+            to=Command.CHECK_USER_TIME,
+        )
+        speaking_lock.answer(
+            Command.RESPONSE,
+            bytes([Command.QUERY_LOCK_STATUS, 0x01, 0x64, 0x00, 0x01]),
+            key=aes_key,
+            to=Command.UNLOCK,
+        )
+
+        with pytest.raises(ProtocolError):
+            await async_control(
+                hass,
+                LOCK_MAC,
+                LOCK_NAME,
+                lock_version,
+                aes_key,
+                _UNLOCK_KEY,
+                _UID,
+                0,
+                unlock=True,
+            )
+
+    async def test_a_token_from_a_reply_to_another_command_is_refused(
+        self, hass, mock_bluetooth, speaking_lock, lock_version, aes_key
+    ):
+        speaking_lock.answer(
+            Command.RESPONSE,
+            _handshake_reply(Command.QUERY_LOCK_STATUS, _HANDSHAKE_TOKEN),
+            key=aes_key,
+            to=Command.CHECK_USER_TIME,
+        )
+
+        with pytest.raises(ProtocolError):
+            await async_control(
+                hass,
+                LOCK_MAC,
+                LOCK_NAME,
+                lock_version,
+                aes_key,
+                _UNLOCK_KEY,
+                _UID,
+                0,
+                unlock=True,
+            )
+        assert all(frame.command != Command.UNLOCK for frame in speaking_lock.asked)
+
+    async def test_closes_the_connection(
+        self, hass, mock_bluetooth, ready_to_unlock, lock_version, aes_key
+    ):
+        await async_control(
+            hass,
+            LOCK_MAC,
+            LOCK_NAME,
+            lock_version,
+            aes_key,
+            _UNLOCK_KEY,
+            _UID,
+            0,
+            unlock=True,
+        )
+
+        assert ready_to_unlock.gatt.notify_stops == [NOTIFY_UUID]
+        assert ready_to_unlock.gatt.disconnects == 1
+
+
+class TestInterimAckIsNotTheAnswer:
+    """Error 36 is the lock saying "received, working on it"; wait for the reply."""
+
+    UNLOCKED = bytes([Command.UNLOCK, 0x01])
+    INTERIM = bytes([Command.UNLOCK, 0x00, 36])
+
+    def _script(
+        self, speaking_lock, aes_key, *, one_notification: bool, answers: bool = True
+    ):
+        speaking_lock.answer(
+            Command.RESPONSE,
+            _handshake_reply(Command.CHECK_USER_TIME, _HANDSHAKE_TOKEN),
+            key=aes_key,
+            to=Command.CHECK_USER_TIME,
+        )
+        version = speaking_lock.version
+        respond = speaking_lock.respond
+
+        def responder(raw: bytes) -> list[bytes]:
+            if Frame.decode(raw).command != Command.UNLOCK:
+                return respond(raw)
+            speaking_lock.asked.append(Frame.decode(raw))
+            interim = Frame(version, Command.RESPONSE, self.INTERIM).encode(aes_key)
+            if not answers:
+                return [interim] * (ble.MAX_INTERIM_ACKS + 1)
+            final = Frame(version, Command.RESPONSE, self.UNLOCKED).encode(aes_key)
+            return [interim + final] if one_notification else [interim, final]
+
+        speaking_lock.gatt.responder = responder
+
+    @pytest.mark.parametrize("one_notification", [False, True])
+    async def test_the_real_reply_after_an_interim_ack_is_used(
+        self,
+        hass,
+        mock_bluetooth,
+        speaking_lock,
+        lock_version,
+        aes_key,
+        one_notification,
+    ):
+        self._script(speaking_lock, aes_key, one_notification=one_notification)
+
+        await async_control(
+            hass,
+            LOCK_MAC,
+            LOCK_NAME,
+            lock_version,
+            aes_key,
+            _UNLOCK_KEY,
+            _UID,
+            0,
+            unlock=True,
+        )
+
+    async def test_a_lock_that_only_ever_acknowledges_has_not_answered(
+        self, hass, mock_bluetooth, speaking_lock, lock_version, aes_key
+    ):
+        self._script(speaking_lock, aes_key, one_notification=False, answers=False)
+
+        with pytest.raises(BleNoResponse, match="never answered"):
+            await async_control(
+                hass,
+                LOCK_MAC,
+                LOCK_NAME,
+                lock_version,
+                aes_key,
+                _UNLOCK_KEY,
+                _UID,
+                0,
+                unlock=True,
+            )
+
+
+class TestExecuteTakesACommand:
+    def test_signature(self):
+        hints = get_type_hints(ble.LockSession.execute)
+        assert hints["command"] is Command
+
+
+class TestNotificationEdges:
+    async def test_two_frames_in_one_notification(
+        self, hass, mock_bluetooth, speaking_lock, lock_version
+    ):
+        one = Frame(lock_version, Command.RESPONSE, b"\x14\x01").encode()
+        speaking_lock.gatt.responder = lambda raw: [one + one]
+
+        async with async_command_session(
+            hass, LOCK_MAC, LOCK_NAME, lock_version
+        ) as session:
+            reply = await session.execute(Command.QUERY_LOCK_STATUS, encrypted=False)
+
+        assert reply.data == b"\x14\x01"
+
+    async def test_a_stale_partial_frame_is_discarded(
+        self, hass, mock_bluetooth, speaking_lock, lock_version
+    ):
+        good = Frame(lock_version, Command.RESPONSE, b"\x14\x01").encode()
+        speaking_lock.gatt.responder = lambda raw: [good]
+
+        async with async_command_session(
+            hass, LOCK_MAC, LOCK_NAME, lock_version
+        ) as session:
+            # A truncated frame whose header claims 40 bytes arrives between
+            # commands; it must not swallow the next reply.
+            notify = speaking_lock.gatt.notify_handler
+            assert notify is not None
+            notify(None, bytearray(good[:11] + bytes([40])))
+            reply = await session.execute(Command.QUERY_LOCK_STATUS, encrypted=False)
+
+        assert reply.data == b"\x14\x01"

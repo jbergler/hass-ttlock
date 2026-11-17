@@ -1,9 +1,10 @@
-"""Local Bluetooth presence and state reads for TTLock locks.
+"""Local Bluetooth presence, state reads and lock/unlock for TTLock locks.
 
 Presence is passive - the advertisements the lock is broadcasting anyway. A
-state read opens a short GATT session, which wakes the lock's radio, so it is
-only ever driven by the coordinator's poll. The wire format lives in
-ble_protocol.py; this module owns the connection around it.
+state read or a lock/unlock opens a short GATT session, which wakes the lock's
+radio, so each is driven only by the coordinator's poll or an explicit request.
+The wire format lives in ble_protocol.py; this module owns the connection
+around it.
 """
 
 from __future__ import annotations
@@ -27,6 +28,14 @@ from .ble_protocol import (
     FrameAssembler,
     LockStatus,
     LockVersion,
+    ProtocolError,
+    Response,
+    check_user_time_data,
+    control_data,
+    is_interim_ack,
+    lock_error_name,
+    response_error_code,
+    token_from_response,
 )
 
 if TYPE_CHECKING:
@@ -39,11 +48,14 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# The poll is the only caller and has the cloud behind it, so give up early
-# rather than hold the poll for a lock that isn't answering.
+# Every caller has another transport behind it, so give up early rather than
+# hold it for a lock that isn't answering.
 CONNECT_TIMEOUT = 15.0
 CONNECT_ATTEMPTS = 3
 RESPONSE_TIMEOUT = 10.0
+
+# How many "command received" notes a command may get before its real reply.
+MAX_INTERIM_ACKS = 3
 
 # Writes are split to the negotiated MTU minus the ATT write header.
 DEFAULT_MTU = 23
@@ -230,8 +242,10 @@ async def async_disconnect(client: BleakClient, name: str) -> None:
 class LockSession:
     """One request/response conversation over an open connection.
 
-    Commands are serialised: a frame arriving while one is pending is its
-    answer, anything else is dropped.
+    Commands are serialised: the first frame arriving while one is pending is
+    its answer, unless it is the lock's interim "command received" note, in
+    which case the next frame is awaited. Frames with no command pending are
+    dropped.
     """
 
     def __init__(
@@ -247,7 +261,7 @@ class LockSession:
         self._version = version
         self._aes_key = aes_key
         self._assembler = FrameAssembler()
-        self._pending: asyncio.Future[bytes] | None = None
+        self._inbox: asyncio.Queue[bytes] | None = None
         self._turn = asyncio.Lock()
 
     async def start(self) -> None:
@@ -273,7 +287,16 @@ class LockSession:
     async def execute(
         self, command: Command, data: bytes = b"", *, encrypted: bool = True
     ) -> Frame:
-        """Send one command and return the lock's decoded reply."""
+        """Send one command and return the lock's decoded reply to it.
+
+        An interim "command received" reply restarts the wait for the real one,
+        up to `MAX_INTERIM_ACKS` times. The reply must echo `command` as its
+        first byte: anything else (eg. a status push) is never taken as the
+        answer, so a lock/unlock or a token is only accepted from its own reply.
+
+        Raises:
+            ProtocolError: the reply answers a different command.
+        """
         aes_key = self._aes_key if encrypted else None
         if encrypted and aes_key is None:
             raise BleError(
@@ -282,23 +305,35 @@ class LockSession:
 
         async with self._turn:
             self._assembler.reset()
-            pending = asyncio.get_running_loop().create_future()
-            self._pending = pending
+            inbox: asyncio.Queue[bytes] = asyncio.Queue()
+            self._inbox = inbox
             try:
                 await self._write(
                     Frame(self._version, command, data).encode(aes_key=aes_key)
                 )
-                async with asyncio.timeout(RESPONSE_TIMEOUT):
-                    raw = await pending
+                for _ in range(MAX_INTERIM_ACKS + 1):
+                    async with asyncio.timeout(RESPONSE_TIMEOUT):
+                        raw = await inbox.get()
+                    reply = Frame.decode(raw, aes_key=aes_key)
+                    if is_interim_ack(reply.data, command):
+                        continue
+                    if reply.data[:1] != bytes((command,)):
+                        raise ProtocolError(
+                            f"Reply to command {int(command)} did not echo it "
+                            f"(got {reply.data[:1].hex() or 'nothing'})"
+                        )
+                    return reply
             except TimeoutError as err:
                 raise BleNoResponse(
                     f"{self._name} did not answer command {int(command)} "
                     f"within {RESPONSE_TIMEOUT:.0f}s"
                 ) from err
             finally:
-                self._pending = None
+                self._inbox = None
 
-        return Frame.decode(raw, aes_key=aes_key)
+        raise BleNoResponse(
+            f"{self._name} acknowledged command {int(command)} but never answered it"
+        )
 
     async def _write(self, payload: bytes) -> None:
         from bleak_retry_connector import BleakError  # noqa: PLC0415
@@ -316,11 +351,10 @@ class LockSession:
     @callback
     def _notification(self, _characteristic: object, data: bytearray) -> None:
         for raw in self._assembler.feed(bytes(data)):
-            pending = self._pending
-            if pending is None or pending.done():
+            if self._inbox is None:
                 _LOGGER.debug("Discarding an unexpected frame from %s", self._name)
                 continue
-            pending.set_result(raw)
+            self._inbox.put_nowait(raw)
 
 
 @asynccontextmanager
@@ -357,3 +391,42 @@ async def async_read_status(
     async with async_command_session(hass, address, name, version, aes_key) as session:
         reply = await session.execute(Command.QUERY_LOCK_STATUS)
     return LockStatus.parse(reply.data)
+
+
+async def async_control(
+    hass: HomeAssistant,
+    address: str,
+    name: str,
+    version: LockVersion,
+    aes_key: bytes,
+    unlock_key: str | int,
+    uid: int,
+    lock_flag_pos: int,
+    *,
+    unlock: bool,
+) -> None:
+    """Lock or unlock the bolt over one short authenticated session.
+
+    Runs the per-key handshake (CHECK_USER_TIME, whose reply carries the
+    psFromLock token) then the control command, both encrypted with the lock's
+    AES key. Unlike `async_read_status` this changes physical state, so it is
+    only ever called from an explicit lock/unlock, never the poll.
+
+    Raises:
+        BleError: if the lock could not be reached, did not answer, or declined
+            the control command - the caller falls back to the next transport.
+        ProtocolError: if the lock refused the handshake or a reply could not
+            be parsed.
+    """
+    action = "unlock" if unlock else "lock"
+    command = Command.UNLOCK if unlock else Command.LOCK
+    async with async_command_session(hass, address, name, version, aes_key) as session:
+        handshake = await session.execute(
+            Command.CHECK_USER_TIME, check_user_time_data(uid, lock_flag_pos)
+        )
+        token = token_from_response(handshake.data)
+        reply = await session.execute(command, control_data(token, unlock_key))
+
+    if not Response.parse(reply.data).succeeded:
+        reason = lock_error_name(response_error_code(reply.data))
+        raise BleError(f"{name} refused to {action} over Bluetooth: {reason}")

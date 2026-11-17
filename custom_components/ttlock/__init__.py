@@ -11,8 +11,16 @@ from aiohttp import ClientError, ClientResponseError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_WEBHOOK_ID, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    HomeAssistantError,
+)
+from homeassistant.helpers import (
+    aiohttp_client,
+    config_entry_oauth2_flow,
+    issue_registry as ir,
+)
 from homeassistant.helpers.device_registry import DeviceEntry
 
 from .api import RequestFailed, TTLockApi
@@ -25,8 +33,15 @@ from .const import (
     TT_CAPTURE,
     TT_GATEWAYS,
     TT_LOCKS,
+    TT_STORE,
 )
-from .coordinator import GatewaysUpdateCoordinator, LockUpdateCoordinator
+from .coordinator import (
+    GatewaysUpdateCoordinator,
+    LockUpdateCoordinator,
+    async_store_enumeration,
+    cloud_unreachable_issue_id,
+)
+from .models import LockSummary
 from .services import Services
 from .store import LockStateStore
 from .webhook import WebhookHandler
@@ -45,19 +60,14 @@ DETAIL_FILL_CONCURRENCY = 3
 # config entry, so a second TTLock account doesn't get a second buffer.
 _CAPTURE_KEY = "_capture"
 
-# Same pattern as _CAPTURE_KEY: one LockStateStore shared by every loaded
-# config entry, since it's a single JSON file keyed by lock ID, not
-# per-account state.
-_STORE_KEY = "_lock_state_store"
-
 # Per-entry key holding the options snapshot the coordinators were built with,
 # so _reload_on_options_update can ignore non-options entry updates.
 _OPTIONS_KEY = "_options_snapshot"
 
 # TTLock errcodes (docs/ttlock-cloud-api/errorCode.md) meaning the account's
-# credentials themselves are bad - retrying setup won't fix these, so they stay
-# a hard setup error. Every other errcode (90000 internal server error, 30006
-# rate limit, 80000 clock skew right after boot, ...) is treated as transient.
+# credentials themselves are bad - retrying setup won't fix these, so they start
+# reauth. Every other errcode (90000 internal server error, 30006 rate limit,
+# 80000 clock skew right after boot, ...) is treated as transient.
 _AUTH_ERRCODES = frozenset({10000, 10001, 10003, 10004, 10007, 10011})
 
 # HTTP statuses worth retrying; other 4xx (eg. a 400/401 from a rejected
@@ -67,12 +77,19 @@ _TRANSIENT_HTTP_STATUSES = frozenset({408, 429})
 _LOGGER = logging.getLogger(__name__)
 
 
-def _not_ready_reason(err: ClientError | TimeoutError | RequestFailed) -> str | None:
-    """Return why setup should be retried, or None if err isn't transient.
+# What a failed key/list can raise: no network, an HTTP error, an unreadable
+# body (ValueError), an errcode (RequestFailed) or a failed OAuth refresh.
+_CLOUD_ERRORS = (ClientError, TimeoutError, ValueError, HomeAssistantError)
+
+
+def _not_ready_reason(err: Exception) -> str | None:
+    """Return why setup should be retried, or None if the credentials are bad.
 
     The reason is shown in the UI and logs, so it never includes str(err) -
     aiohttp's messages embed the request URL, accessToken and clientId included.
     """
+    if isinstance(err, ConfigEntryAuthFailed):
+        return None
     if isinstance(err, RequestFailed):
         if err.errcode in _AUTH_ERRCODES:
             return None
@@ -81,6 +98,8 @@ def _not_ready_reason(err: ClientError | TimeoutError | RequestFailed) -> str | 
         if err.status < 500 and err.status not in _TRANSIENT_HTTP_STATUSES:
             return None
         return f"TTLock cloud returned HTTP {err.status}"
+    if isinstance(err, ValueError):
+        return "TTLock cloud returned an unreadable response"
     return f"Unable to reach the TTLock cloud ({type(err).__name__})"
 
 
@@ -126,10 +145,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         capture = LockTrafficCapture()
         domain_data[_CAPTURE_KEY] = capture
 
-    store = domain_data.get(_STORE_KEY)
+    store = domain_data.get(TT_STORE)
     if store is None:
         store = LockStateStore(hass)
-        domain_data[_STORE_KEY] = store
+        domain_data[TT_STORE] = store
 
     client = TTLockApi(
         aiohttp_client.async_get_clientsession(hass),
@@ -137,33 +156,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         capture,
         region=entry.data.get(CONF_REGION, DEFAULT_REGION),
     )
+    cache = await store.async_get_entry(entry.entry_id)
+    client.cached_uid = cache.get("uid", 0)
 
-    # First cloud call of setup, and the one that also refreshes the OAuth
-    # token if needed - when the network isn't up yet (eg. HA booting after a
-    # power outage) it has to end in a retry, not a permanent setup error.
-    try:
-        summaries = await client.get_locks()
-    except (ClientError, TimeoutError, RequestFailed) as err:
-        if (reason := _not_ready_reason(err)) is None:
-            raise
-        raise ConfigEntryNotReady(reason) from err
+    summaries = await _async_discover(hass, entry, client, store, cache)
 
     locks = [
         LockUpdateCoordinator(hass, entry, client, summary, capture, store)
         for summary in summaries
     ]
 
+    # Load the cached credentials and detail before any cloud fetch, so a lock
+    # can be driven locally straight away and even if the cloud is gone.
+    await asyncio.gather(
+        *(coordinator.async_restore_lock_cache() for coordinator in locks)
+    )
+
     for coordinator in locks:
         entry.async_on_unload(coordinator.async_start_webhook_tracking())
         entry.async_on_unload(coordinator.async_start_ble_tracking())
         entry.async_on_unload(coordinator.async_start_local_refresh())
 
-    # Wraps any failure in ConfigEntryNotReady itself.
-    gateway_coordinator = GatewaysUpdateCoordinator(hass, entry, client)
-    await gateway_coordinator.async_config_entry_first_refresh()
+    # Gateways only matter to the cloud, so they never hold setup up: a failed
+    # first refresh leaves the cached list in place, marked unavailable.
+    gateway_coordinator = GatewaysUpdateCoordinator(hass, entry, client, store)
+    gateway_coordinator.async_restore(cache.get("gateways", []))
+    await gateway_coordinator.async_refresh()
 
-    # Only published once the cloud calls above succeeded, so an entry waiting
-    # in SETUP_RETRY doesn't leave half-initialized runtime data behind for
+    # Only published once discovery succeeded, so an entry waiting in
+    # SETUP_RETRY doesn't leave half-initialized runtime data behind for
     # async_remove_config_entry_device / async_unload_entry to trip over.
     domain_data[entry.entry_id] = {
         TT_API: client,
@@ -208,6 +229,50 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def _async_discover(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    client: TTLockApi,
+    store: LockStateStore,
+    cache: dict,
+) -> list[LockSummary]:
+    """The entry's locks: from key/list, or from the cache when that fails.
+
+    A failure with a cache still loads the entry (raising a repair, and
+    starting reauth when the credentials were refused); without one, a
+    transient failure retries setup and refused credentials start reauth.
+    """
+    cached = [LockSummary.model_validate(r) for r in cache.get("key_records", [])]
+    # Also the call that refreshes the OAuth token if needed.
+    try:
+        summaries = await client.get_locks()
+    except _CLOUD_ERRORS as err:
+        reason = _not_ready_reason(err)
+        if not cached:
+            if reason is None:
+                raise ConfigEntryAuthFailed("TTLock refused the credentials") from err
+            raise ConfigEntryNotReady(reason) from err
+        _LOGGER.warning(
+            "TTLock cloud unavailable (%s); starting %d lock(s) from the cache",
+            reason or "credentials refused",
+            len(cached),
+        )
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            cloud_unreachable_issue_id(entry.entry_id),
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="cloud_unreachable",
+            translation_placeholders={"entry_title": entry.title},
+        )
+        if reason is None:
+            entry.async_start_reauth(hass)
+        return cached
+    await async_store_enumeration(hass, store, entry.entry_id, summaries, client.uid)
+    return summaries or cached
+
+
 async def _reload_on_options_update(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload the entry when its options change, so coordinators pick them up.
 
@@ -236,7 +301,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # is still loaded" here.
         if not any(not key.startswith("_") for key in domain_data):
             domain_data.pop(_CAPTURE_KEY, None)
-            domain_data.pop(_STORE_KEY, None)
+            domain_data.pop(TT_STORE, None)
 
     return unload_ok
 
@@ -267,7 +332,7 @@ async def async_remove_config_entry_device(
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete this entry's cloudhook, once no sibling entry still shares it.
+    """Purge the entry's cache; delete its cloudhook once no sibling shares it.
 
     Sibling config entries under the same client_id share one webhook_id
     (see webhook.py's module docstring), so deleting on every removal would
@@ -277,6 +342,10 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     needing this entry's OAuth2 implementation, which may no longer be
     resolvable this late in removal.
     """
+    store = hass.data.get(DOMAIN, {}).get(TT_STORE) or LockStateStore(hass)
+    await store.async_remove_entry(entry.entry_id)
+    ir.async_delete_issue(hass, DOMAIN, cloud_unreachable_issue_id(entry.entry_id))
+
     webhook_id = entry.data.get(CONF_WEBHOOK_ID)
     if webhook_id is None:
         return

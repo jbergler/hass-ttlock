@@ -216,6 +216,12 @@ max-complexity = 25
 "tests/test_webhook.py" = [
     "SLF001",  # exercises WebhookHandler._resolve_group_webhook_id directly
 ]
+"tests/test_transport.py" = [
+    "SLF001",  # sets LockUpdateCoordinator's cached credentials/order directly
+]
+"tests/test_connection_diagnostics.py" = [
+    "SLF001",  # drives _update_from_coordinator directly
+]
 "custom_components/ttlock/models.py" = [
     "N815",  # fields mirror the TTLock API's camelCase wire format on purpose
 ]

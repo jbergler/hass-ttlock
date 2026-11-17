@@ -25,6 +25,7 @@ import base64
 import binascii
 from dataclasses import dataclass
 from enum import IntEnum
+import time
 
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -76,6 +77,15 @@ class Command(IntEnum):
     QUERY_LOCK_STATUS = 20
     """Read locked/unlocked state - the local equivalent of a cloud poll."""
 
+    CHECK_USER_TIME = 0x55
+    """Prove a key is valid now; the reply carries the psFromLock token."""
+
+    UNLOCK = 0x47
+    """Throw the bolt open, authenticated with psFromLock + unlockKey."""
+
+    LOCK = 0x58
+    """Throw the bolt closed; same authentication as UNLOCK."""
+
     RESPONSE = 84
     """Generic acknowledgement wrapper the lock replies with."""
 
@@ -98,6 +108,14 @@ class DecryptError(ProtocolError):
 
 class UnsupportedProtocol(ProtocolError):
     """The lock is speaking a variant of the protocol we do not implement."""
+
+
+class CredentialError(ProtocolError, ValueError):
+    """A credential (unlockKey, uid, lockFlagPos) is unusable.
+
+    Also a ValueError, so a caller already guarding credential decoding with
+    ValueError keeps working. The message never carries the value.
+    """
 
 
 def _crc8_maxim_table() -> tuple[int, ...]:
@@ -652,3 +670,241 @@ def feature_value_bytes(feature_value: str) -> bytes:
     if len(raw) != 8:
         return b""
     return raw[4:] + raw[:4]
+
+
+# --- Password-field decoding -------------------------------------------------
+#
+# The cloud returns `lockKey` (the per-key unlockKey) and `adminPwd` not as
+# plain numbers but obfuscated: base64 of a comma-separated list of the encoded
+# bytes' decimal values, each byte then XORed by a constant recovered from the
+# payload's own last byte through the frame CRC table (`_CRC8_TABLE`). `aesKeyStr` is NOT
+# encoded this way - `parse_aes_key` handles it.
+# Nothing here logs.
+
+
+# A field this short is already plain.
+_PASSWORD_PLAIN_MAX = 10
+
+
+def decode_password(field: str) -> str:
+    """Decode a cloud `lockKey` / `adminPwd` field into its numeric string.
+
+    Short fields are already plain and returned unchanged. Otherwise:
+    base64-decode to a CSV of decimal byte values, XOR every byte but the last
+    by `table[(len - 1) % 256] ^ last_byte`, and read the result as text.
+
+    Raises:
+        CredentialError: if the field is not the expected base64-of-CSV shape,
+            so a wrong encoding fails loudly rather than yielding silent
+            garbage that would then be sent to the lock as a key.
+    """
+    if not field or len(field) <= _PASSWORD_PLAIN_MAX:
+        return field
+    try:
+        csv = base64.b64decode(field).decode("ascii")
+        encoded = bytes(int(part) & 0xFF for part in csv.split(",") if part)
+    except (ValueError, binascii.Error) as err:
+        raise CredentialError(
+            "password field is not base64 of a decimal-byte CSV"
+        ) from err
+    if len(encoded) < 2:
+        return encoded.decode("latin1")
+    xor_const = _CRC8_TABLE[(len(encoded) - 1) % 256] ^ encoded[-1]
+    return bytes(byte ^ xor_const for byte in encoded[:-1]).decode("latin1")
+
+
+# --- Authenticated control: session handshake, lock and unlock ---------------
+#
+# Reading state needs only the AES key. Driving the bolt needs one more secret
+# lock/detail also returns:
+#
+#   unlockKey  (cloud field `lockKey`)  a per-key number, proves "this key"
+#
+# recovered by `decode_password`. CHECK_USER_TIME hands back psFromLock, a
+# 4-byte number the lock gives us to fold the unlockKey into; UNLOCK/LOCK then
+# carries (psFromLock + unlockKey) and a timestamp.
+
+# A permanent validity window (yymmddHHMM): a far-past start, a far-future end.
+_PERMANENT_KEY_START = "0001311400"
+_PERMANENT_KEY_END = "9911301400"
+
+
+def decimal_time_bytes(digits: str) -> bytes:
+    """Pack a digit string two at a time into decimal-valued bytes.
+
+    "26" becomes byte 26 (0x1A), not 0x26: the lock reads each byte as a
+    decimal field of a yy/mm/dd/HH/MM date, so this is what its clock and
+    key-window checks expect. An odd-length string is left-padded.
+    """
+    if len(digits) % 2:
+        digits = "0" + digits
+    return bytes(int(digits[i : i + 2]) for i in range(0, len(digits), 2))
+
+
+def _credential_bytes(value: str | int, width: int, what: str) -> bytes:
+    """`value` as a `width`-byte big-endian unsigned number.
+
+    Raises:
+        CredentialError: if `value` is not a number or does not fit. The
+            message names the field, never its value.
+    """
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as err:
+        raise CredentialError(f"{what} is not a number") from err
+    if not 0 <= number < 1 << (8 * width):
+        raise CredentialError(f"{what} does not fit in {width} bytes")
+    return number.to_bytes(width, "big")
+
+
+def _folded_secret(token: int, unlock_key: str | int) -> bytes:
+    """`(token + unlockKey) mod 2**32`, 4 bytes big-endian."""
+    try:
+        key = int(unlock_key)
+    except (TypeError, ValueError) as err:
+        raise CredentialError("unlockKey is not a number") from err
+    return ((int(token) + key) & 0xFFFFFFFF).to_bytes(4, "big")
+
+
+def check_user_time_data(uid: int = 0, lock_flag_pos: int = 0) -> bytes:
+    """Build the CHECK_USER_TIME payload: prove a key is valid right now.
+
+    17 bytes: a 5-byte start date, a 5-byte end date, the 3-byte lockFlagPos,
+    and the 4-byte account uid. The lock refuses a lockFlagPos below the one it
+    holds for the key (it reads as a reset key), so pass the key's own value.
+
+    Raises:
+        CredentialError: if the uid or lockFlagPos does not fit its field.
+    """
+    return b"".join(
+        (
+            decimal_time_bytes(_PERMANENT_KEY_START),
+            decimal_time_bytes(_PERMANENT_KEY_END),
+            _credential_bytes(lock_flag_pos, 3, "lockFlagPos"),
+            _credential_bytes(uid, 4, "uid"),
+        )
+    )
+
+
+def control_data(
+    token: int, unlock_key: str | int, epoch_seconds: int | None = None
+) -> bytes:
+    """Build the UNLOCK / LOCK payload.
+
+    8 bytes: `(psFromLock + unlockKey) mod 2**32`, then the current time as
+    unix epoch seconds, both big-endian. The first proves the time-window check
+    passed and that we hold the key; the second stamps the lock's own log
+    record. `epoch_seconds` defaults to now and is provided for tests.
+
+    Raises:
+        CredentialError: if the unlockKey is not a number.
+    """
+    if epoch_seconds is None:
+        epoch_seconds = int(time.time())
+    return _folded_secret(token, unlock_key) + (epoch_seconds & 0xFFFFFFFF).to_bytes(
+        4, "big"
+    )
+
+
+def token_from_response(payload: bytes) -> int:
+    """Read the 4-byte token a CHECK_USER_TIME reply carries.
+
+    It answers with the response envelope then a 4-byte big-endian number,
+    `psFromLock`, which the next command folds the unlockKey into.
+
+    Raises:
+        ProtocolError: if the lock did not report success, or the reply is too
+            short to hold the token, so a caller can never fold a garbage value
+            into the next command and send it to the bolt.
+    """
+    response = Response.parse(payload)
+    if not response.succeeded:
+        raise ProtocolError(f"Lock rejected the handshake: {payload.hex()}")
+    if len(response.data) < 4:
+        raise ProtocolError(
+            f"Handshake reply too short to hold a token: {payload.hex()}"
+        )
+    return int.from_bytes(response.data[:4], "big")
+
+
+# --- Lock error codes and reply status ---------------------------------------
+#
+# A reply's envelope is `[echo][status][...]`: status 1 = success. Otherwise the
+# lock puts a numeric error code in the next byte (the first byte of
+# `Response.data`). Unlisted codes fall through to their number. SUCCESS is 0 in
+# this numbering although the wire *status* byte for success is 1 - the two
+# schemes are separate.
+
+ERROR_COMMAND_RECEIVED = 36
+
+LOCK_ERROR_NAMES: dict[int, str] = {
+    0: "success",
+    1: "CRC error",
+    2: "not administrator - no permission",
+    3: "wrong administrator password",
+    5: "lock is in setting mode",
+    6: "lock has no administrator",
+    7: "lock is in non-setting mode",
+    8: "invalid dynamic code",
+    10: "out of battery",
+    11: "keyboard-password init failed",
+    13: "invalid ekey - lock flag position too low",
+    14: "ekey expired",
+    15: "invalid password length",
+    17: "ekey not yet effective",
+    18: "user not logged in",
+    19: "undefined failure",
+    20: "already exists",
+    21: "does not exist",
+    22: "out of memory",
+    24: "card number does not exist",
+    25: "duplicate data",
+    26: "fingerprint does not exist",
+    27: "invalid command",
+    28: "lock frozen",
+    31: "record does not exist",
+    32: "invalid parameter",
+    ERROR_COMMAND_RECEIVED: "command received",
+    39: "record already exists",
+    40: "low battery",
+    48: "AES parse error - key/session wrong",
+    49: "key invalid - may be reset",
+    96: "lock does not support this change",
+}
+
+
+def lock_error_name(code: int | None) -> str:
+    """A human-readable name for a lock error code, or a fallback.
+
+    `None` (reply too short to carry a code) and unknown codes degrade to a plain
+    string. No secret ever reaches here - the error byte is not credential data.
+    """
+    if code is None:
+        return "no error code"
+    return LOCK_ERROR_NAMES.get(code, f"error {code}")
+
+
+def response_error_code(payload: bytes) -> int | None:
+    """The lock error code from a failed reply, or None if none is present.
+
+    Only meaningful when `Response.parse(payload).succeeded` is False. The code is
+    `Response.data[0]`, the byte after the `[echo][status]` envelope. A short
+    reply (e.g. a bare `[echo][00]`) has no code byte and returns None.
+    """
+    data = Response.parse(payload).data
+    return data[0] if data else None
+
+
+def is_interim_ack(payload: bytes, opcode: int) -> bool:
+    """Whether a reply is the lock's "command received" note, not its answer.
+
+    `[opcode][00][36]`: the lock has the command and is still working on it; the
+    real reply follows, so a caller keeps waiting rather than treating this as a
+    refusal.
+    """
+    response = Response.parse(payload)
+    return (
+        response.command == opcode
+        and response.succeeded is False
+        and response.data[:1] == bytes((ERROR_COMMAND_RECEIVED,))
+    )

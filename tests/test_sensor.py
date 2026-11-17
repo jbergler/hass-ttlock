@@ -7,9 +7,16 @@ refresh, which __init__.py runs in the background after platforms are set up
 confirms presence, not decided up front.
 """
 
-from custom_components.ttlock.const import CONF_BLUETOOTH_ENABLED, DOMAIN, TT_LOCKS
+from custom_components.ttlock.const import (
+    CONF_BLUETOOTH_ENABLED,
+    DOMAIN,
+    TRANSPORT_BLE,
+    TRANSPORT_CLOUD,
+    TT_LOCKS,
+)
+from custom_components.ttlock.coordinator import LockUpdateCoordinator
 from custom_components.ttlock.models import GatewayLink, LockSummary
-from custom_components.ttlock.sensor import LockBleSignal
+from custom_components.ttlock.sensor import LockBleSignal, LockConnection
 from homeassistant.helpers import entity_registry as er
 
 from .const import MOCK_LOCK_MAC
@@ -220,3 +227,19 @@ async def test_bluetooth_signal_entity_reports_locally_heard_rssi(
 async def test_bluetooth_signal_entity_has_no_attributes_when_never_heard(coordinator):
     """A lock we've never heard exposes no source/last_seen to report."""
     assert LockBleSignal(coordinator).extra_state_attributes is None
+
+
+async def test_connection_shows_bluetooth_when_it_reads_the_lock_without_control(
+    coordinator, monkeypatch
+):
+    """The value is the transport that reaches the lock, not the control path."""
+    monkeypatch.setattr(
+        LockUpdateCoordinator, "ble_reachable", property(lambda self: True)
+    )
+    sensor = LockConnection(coordinator)
+
+    assert coordinator.ble_control_enabled is False
+    assert sensor.native_value == TRANSPORT_BLE
+    attrs = sensor.extra_state_attributes
+    assert attrs is not None
+    assert attrs["preferred_control_transport"] == TRANSPORT_CLOUD

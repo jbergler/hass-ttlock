@@ -21,8 +21,8 @@ diagnostics.
 Redaction happens here, once, against each call's original structured
 arguments (still real dicts/lists at this point) rather than a rendered
 message string - that's what makes field-level redaction possible instead of
-regex-scrubbing text. This only affects what's surfaced through diagnostics;
-HA's live log output for the same call is built and redacted independently.
+regex-scrubbing text. The live log line gets the same field-level redaction,
+so neither view shows a lock's key, passwords or credentials.
 """
 
 from __future__ import annotations
@@ -110,8 +110,9 @@ def log_and_capture(
     TTLock traffic - see this module's docstring. `logger` is the opt-in,
     live-log view (enabled via HA's Configure Logger UI); `capture` is the
     always-on diagnostics ring buffer - it doesn't care whether `logger` is
-    actually enabled for DEBUG.
+    actually enabled for DEBUG. Both get the arguments redacted.
     """
-    logger.debug(msg, *args)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(msg, *(_redact_arg(arg) for arg in args))
     if lock_id is not None and capture is not None:
         capture.capture(lock_id, "DEBUG", msg, *args)
