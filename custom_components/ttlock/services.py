@@ -58,6 +58,16 @@ _LIST_RECORDS_SCHEMA = vol.Schema(
 )
 
 
+def _require_cloud(coordinator: LockUpdateCoordinator) -> None:
+    """Refuse an action only the cloud can carry while the cloud is off."""
+    if not coordinator.cloud_enabled:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="cloud_disabled",
+            translation_placeholders={"name": coordinator.data.name},
+        )
+
+
 class Services:
     """Wraps service handlers."""
 
@@ -357,6 +367,7 @@ class Services:
         passcodes = {}
 
         for entity_id, coordinator in self._get_admin_coordinators(call).items():
+            _require_cloud(coordinator)
             codes = await coordinator.api.list_passcodes(coordinator.lock_id)
             passcodes[entity_id] = [
                 {
@@ -393,6 +404,7 @@ class Services:
         )
 
         for coordinator in self._get_admin_coordinators(call).values():
+            _require_cloud(coordinator)
             if await coordinator.api.set_passage_mode(coordinator.lock_id, config):
                 coordinator.data.passage_mode_config = config
                 coordinator.async_update_listeners()
@@ -422,6 +434,7 @@ class Services:
         )
 
         for coordinator in self._get_admin_coordinators(call).values():
+            _require_cloud(coordinator)
             await coordinator.api.add_passcode(coordinator.lock_id, config)
 
     async def handle_modify_passcode(self, call: ServiceCall):
@@ -451,6 +464,7 @@ class Services:
         passcode_id = call.data["passcode_id"]
 
         for coordinator in self._get_admin_coordinators(call).values():
+            _require_cloud(coordinator)
             await coordinator.api.modify_passcode(
                 coordinator.lock_id, passcode_id, config
             )
@@ -461,6 +475,7 @@ class Services:
         passcode_id = call.data["passcode_id"]
 
         for coordinator in self._get_admin_coordinators(call).values():
+            _require_cloud(coordinator)
             await coordinator.api.delete_passcode(coordinator.lock_id, passcode_id)
 
     async def handle_cleanup_passcodes(self, call: ServiceCall) -> ServiceResponse:
@@ -468,6 +483,7 @@ class Services:
         removed: dict[str, list[str | None]] = {}
 
         for entity_id, coordinator in self._get_admin_coordinators(call).items():
+            _require_cloud(coordinator)
             removed_for_lock: list[str | None] = []
             codes = await coordinator.api.list_passcodes(coordinator.lock_id)
             for code in codes:
@@ -490,6 +506,7 @@ class Services:
             seconds = 0
 
         for coordinator in self._get_admin_coordinators(call).values():
+            _require_cloud(coordinator)
             if await coordinator.api.set_auto_lock(coordinator.lock_id, seconds):
                 coordinator.data.auto_lock_seconds = seconds
                 coordinator.async_update_listeners()
@@ -510,6 +527,7 @@ class Services:
         params["page_size"] = min(call.data.get("page_size", 50), 200)
 
         for entity_id, coordinator in self._get_admin_coordinators(call).items():
+            _require_cloud(coordinator)
             lock_records = await coordinator.api.get_lock_records(
                 coordinator.lock_id, **params
             )
@@ -547,6 +565,7 @@ class Services:
         cards = {}
 
         for entity_id, coordinator in self._get_admin_coordinators(call).items():
+            _require_cloud(coordinator)
             enrolled = await coordinator.api.list_cards(coordinator.lock_id)
             cards[entity_id] = [
                 {
@@ -572,6 +591,7 @@ class Services:
         name = call.data["name"]
 
         for coordinator in self._get_admin_coordinators(call).values():
+            _require_cloud(coordinator)
             await coordinator.api.rename_card(coordinator.lock_id, card_id, name)
 
     async def handle_add_card(self, call: ServiceCall) -> ServiceResponse:
@@ -585,6 +605,7 @@ class Services:
         results: dict[str, dict[str, int | str | None]] = {}
         for entity_id, coordinator in self._get_admin_coordinators(call).items():
             try:
+                _require_cloud(coordinator)
                 card_id = await coordinator.api.add_card(
                     coordinator.lock_id,
                     call.data["card_number"],
@@ -610,6 +631,7 @@ class Services:
         card_id = call.data["card_id"]
 
         for coordinator in self._get_admin_coordinators(call).values():
+            _require_cloud(coordinator)
             await coordinator.api.delete_card(coordinator.lock_id, card_id)
 
     async def handle_list_fingerprints(self, call: ServiceCall) -> ServiceResponse:
@@ -617,6 +639,7 @@ class Services:
         fingerprints = {}
 
         for entity_id, coordinator in self._get_admin_coordinators(call).items():
+            _require_cloud(coordinator)
             enrolled = await coordinator.api.list_fingerprints(coordinator.lock_id)
             fingerprints[entity_id] = [
                 {
@@ -646,6 +669,7 @@ class Services:
         name = call.data["name"]
 
         for coordinator in self._get_admin_coordinators(call).values():
+            _require_cloud(coordinator)
             await coordinator.api.rename_fingerprint(
                 coordinator.lock_id, fingerprint_id, name
             )
@@ -655,6 +679,7 @@ class Services:
         fingerprint_id = call.data["fingerprint_id"]
 
         for coordinator in self._get_admin_coordinators(call).values():
+            _require_cloud(coordinator)
             await coordinator.api.delete_fingerprint(
                 coordinator.lock_id, fingerprint_id
             )

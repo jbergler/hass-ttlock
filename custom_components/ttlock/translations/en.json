@@ -44,25 +44,31 @@
     "step": {
       "init": {
         "title": "Connection options",
-        "description": "How the integration reaches your locks: the TTLock cloud and Bluetooth. Locks update in near real time via webhooks. So the poll intervals can stay high, which keeps multi-lock accounts under TTLock's free-tier API-call limit. Lower the poll interval if your webhooks are unreliable.\n\nTTLock webhook URL for this account:\n\n`{webhook_url}`",
+        "description": "How the integration reaches your locks: the TTLock cloud, Bluetooth, and WiFi locks redirected to Home Assistant. With the cloud on, locks update in near real time via webhooks. So the poll intervals can stay high, which keeps multi-lock accounts under TTLock's free-tier API-call limit. Lower the poll interval if your webhooks are unreliable.\n\nTTLock webhook URL for this account:\n\n`{webhook_url}`",
         "data": {
           "poll_interval": "Poll interval",
           "slow_poll_interval": "Detail refresh interval",
           "bluetooth_enabled": "Read locks over Bluetooth",
           "ble_control": "Control locks over Bluetooth",
-          "transport_order": "Transport order"
+          "wifi_local_enabled": "Accept WiFi locks redirected to Home Assistant",
+          "transport_order": "Transport order",
+          "cloud_enabled": "Use the TTLock cloud"
         },
         "data_description": {
           "poll_interval": "How often to re-check whether each lock is locked or unlocked, in minutes.",
           "slow_poll_interval": "How often to refresh slow-changing detail from the TTLock cloud (battery, name, autolock and passage-mode config, gateway signal), in hours.",
           "bluetooth_enabled": "Read lock state directly from a lock in Bluetooth range of Home Assistant.",
           "ble_control": "Lock and unlock locks directly over Bluetooth when they are in range. Needs \"Read locks over Bluetooth\" on.",
-          "transport_order": "The order in which to try Bluetooth and the TTLock cloud. Lock and unlock use the first one that is available and succeeds."
+          "wifi_local_enabled": "Listen on port 4999 for this account's WiFi locks. Your network must redirect their cloud connection (wifilock.ttlock.com) to Home Assistant. Nothing listens unless you turn this on.",
+          "transport_order": "The order in which to try Bluetooth, the WiFi proxy and the TTLock cloud. The WiFi proxy is for a WiFi lock redirected to Home Assistant. Lock and unlock use the first one that is available and succeeds.",
+          "cloud_enabled": "Use the TTLock cloud for control, state, detail and webhooks. A redirected WiFi lock stays connected to the cloud, so the phone app keeps working. Turn this off to run on Bluetooth and the WiFi proxy alone."
         }
       }
     },
     "error": {
-      "ble_control_needs_bluetooth": "Turn on \"Read locks over Bluetooth\" to control locks over Bluetooth."
+      "ble_control_needs_bluetooth": "Turn on \"Read locks over Bluetooth\" to control locks over Bluetooth.",
+      "cloud_off_needs_local": "Without the cloud, the locks need another route. Turn on Bluetooth control or the WiFi proxy.",
+      "cloud_off_needs_admin": "Every lock on this account is shared with you without admin rights. Only the cloud can control these locks."
     }
   },
   "selector": {
@@ -74,8 +80,12 @@
     },
     "transport_order": {
       "options": {
-        "ble-cloud": "Bluetooth, then cloud",
-        "cloud-ble": "Cloud, then Bluetooth"
+        "ble-wifi_local-cloud": "Bluetooth, then WiFi proxy, then cloud",
+        "ble-cloud-wifi_local": "Bluetooth, then cloud, then WiFi proxy",
+        "wifi_local-ble-cloud": "WiFi proxy, then Bluetooth, then cloud",
+        "wifi_local-cloud-ble": "WiFi proxy, then cloud, then Bluetooth",
+        "cloud-ble-wifi_local": "Cloud, then Bluetooth, then WiFi proxy",
+        "cloud-wifi_local-ble": "Cloud, then WiFi proxy, then Bluetooth"
       }
     }
   },
@@ -98,7 +108,11 @@
     },
     "cloud_unreachable": {
       "title": "TTLock cloud unreachable",
-      "description": "Home Assistant could not reach the TTLock cloud for {entry_title}, so it set up the locks from the last saved data. Bluetooth control keeps working. Cloud features return when the cloud answers again, and this repair then clears itself."
+      "description": "Home Assistant could not reach the TTLock cloud for {entry_title}, so it set up the locks from the last saved data. Bluetooth and the WiFi proxy keep working. Cloud features return when the cloud answers again, and this repair then clears itself."
+    },
+    "wifi_proxy_bind_failed": {
+      "title": "WiFi proxy could not start",
+      "description": "Home Assistant could not listen on port {port} for redirected WiFi locks, usually because another program already uses it. Bluetooth and the cloud keep working. Free the port, then reload the integration."
     }
   },
   "exceptions": {
@@ -117,11 +131,20 @@
     "shared_lock_not_yet_valid": {
       "message": "Your ekey for this lock is not valid yet. It becomes active at its configured start time - the owner can see the exact time in the TTLock app."
     },
+    "no_transport_to_lock": {
+      "message": "Nothing can lock {name} now. The cloud is off, and neither Bluetooth nor the WiFi proxy can reach it."
+    },
+    "no_transport_to_unlock": {
+      "message": "Nothing can unlock {name} now. The cloud is off, and neither Bluetooth nor the WiFi proxy can reach it."
+    },
     "lock_failed": {
       "message": "{name} did not lock. Every transport tried failed ({transports})."
     },
     "unlock_failed": {
       "message": "{name} did not unlock. Every transport tried failed ({transports})."
+    },
+    "cloud_disabled": {
+      "message": "Only the TTLock cloud can do this for {name}, and the cloud is turned off."
     }
   }
 }

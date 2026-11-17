@@ -38,6 +38,7 @@ from custom_components.ttlock.ble_protocol import (
     Response,
     UnsupportedProtocol,
     _credential_bytes,
+    check_admin_data,
     check_user_time_data,
     control_data,
     crc8_maxim,
@@ -375,6 +376,33 @@ class TestFrameDecoding:
         with pytest.raises(FrameError, match="declares"):
             Frame.decode(bytes(lying))
 
+    def test_wifi_dialect_frame_still_aes_decodes(self):
+        """byte 10 = 0x56 marks the WiFi dialect, not legacy XOR: same AES.
+
+        The WiFi transport sets a constant dialect marker in the scramble byte
+        but encrypts the payload with the very same AES-128-CBC as BLE, so a
+        non-zero marker must round-trip through encode/decode and be carried
+        back out on the frame (the encoder echoes it).
+        """
+        raw = Frame(
+            VERSION, Command.QUERY_LOCK_STATUS, b"payload", scramble_key=0x56
+        ).encode(KEY)
+        assert raw[10] == 0x56
+
+        decoded = Frame.decode(raw, KEY)
+        assert decoded.scramble_key == 0x56
+        assert decoded.command == Command.QUERY_LOCK_STATUS
+        assert decoded.data == b"payload"
+
+    def test_a_wifi_cleartext_frame_decodes_without_a_key(self):
+        """The 9-byte login reply is cleartext under the 0x56 marker."""
+        login = bytes([0xF0, 0x01, 0x50, 1, 2, 3, 4, 5, 6])
+        raw = Frame(VERSION, 0x54, login, scramble_key=0x56).encode()
+
+        decoded = Frame.decode(raw, None)
+        assert decoded.scramble_key == 0x56
+        assert decoded.data == login
+
     def test_the_wrong_key_surfaces_as_a_decrypt_error(self):
         """Distinct from ChecksumError: the frame arrived intact, we just can't read it."""
         raw = Frame(VERSION, Command.QUERY_LOCK_STATUS, b"payload").encode(KEY)
@@ -603,6 +631,7 @@ class TestControlOpcodes:
     def test_opcode_values(self) -> None:
         # Interface facts: the numbers the lock's firmware dispatches on.
         assert Command.CHECK_USER_TIME == 0x55
+        assert Command.CHECK_ADMIN == 0x41
         assert Command.UNLOCK == 0x47
         assert Command.LOCK == 0x58
 
@@ -660,6 +689,13 @@ class TestHandshakePayloads:
         assert data[10:13] == bytes([0x0A, 0x0B, 0x0C])  # lockFlagPos, 3 BE
         assert data[13:17] == bytes([0x01, 0x02, 0x03, 0x04])  # uid, 4 BE
 
+    def test_check_admin_layout(self) -> None:
+        data = check_admin_data(admin_ps="305419896", uid=0x11223344, lock_flag_pos=7)
+        assert len(data) == 11
+        assert data[0:4] == (305419896).to_bytes(4, "big")  # 0x12345678
+        assert data[4:7] == bytes([0, 0, 7])
+        assert data[7:11] == bytes([0x11, 0x22, 0x33, 0x44])
+
 
 class TestControlPayload:
     """The 8-byte UNLOCK/LOCK body: folded secret then epoch seconds."""
@@ -676,7 +712,7 @@ class TestControlPayload:
 
 
 class TestTokenFromResponse:
-    """Reading psFromLock, refusing anything unproven."""
+    """Reading psFromLock / the admin token, refusing anything unproven."""
 
     def test_reads_token_on_success(self) -> None:
         # envelope [cmd_echo, status=0x01] then the 4-byte token.
@@ -723,6 +759,13 @@ class TestScrambleByteIsChecked:
         with pytest.raises(UnsupportedProtocol, match="0x42"):
             Frame.decode(raw)
 
+    def test_ble_and_wifi_markers_decode(self):
+        for marker in (0x00, 0x56):
+            raw = Frame(
+                VERSION, Command.QUERY_LOCK_STATUS, b"x", scramble_key=marker
+            ).encode()
+            assert Frame.decode(raw).scramble_key == marker
+
 
 class TestCredentialErrors:
     """Bad credentials raise a typed error a caller can fall back on."""
@@ -730,6 +773,10 @@ class TestCredentialErrors:
     @pytest.mark.parametrize(
         "call",
         [
+            lambda: check_admin_data("not-a-number", 1, 2),
+            lambda: check_admin_data(1 << 40, 1, 2),
+            lambda: check_admin_data(1, 1 << 40, 2),
+            lambda: check_admin_data(1, 1, 1 << 30),
             lambda: control_data(5, "abc", 0),
             lambda: check_user_time_data(1 << 40, 0),
             lambda: _credential_bytes("not-a-number", 4, "uid"),

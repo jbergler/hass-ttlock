@@ -42,8 +42,10 @@ from homeassistant.helpers.network import NoURLAvailableError
 
 from .capture import LockTrafficCapture, log_and_capture
 from .const import (
+    CONF_CLOUD_ENABLED,
     CONF_WEBHOOK_STATUS,
     CONF_WEBHOOK_URL,
+    DEFAULT_CLOUD_ENABLED,
     DOMAIN,
     SIGNAL_NEW_DATA,
     get_device_logger,
@@ -375,6 +377,38 @@ class WebhookHandler:
                     self.handle_webhook,
                 )
                 group.registered = True
+
+    async def async_disable(self) -> None:
+        """Sever the inbound channel when this entry runs with the cloud off.
+
+        With the cloud off the TTLock cloud must not be able to call HA either,
+        so the shared webhook is unregistered. The registration is shared per
+        developer application (client_id), so this respects siblings: if any
+        other entry on the same client_id still has the cloud enabled, the
+        webhook stays for them and this is a no-op. A Nabu Casa cloudhook is
+        kept: deleting it would change its URL, so turning the cloud back on
+        (which reloads the entry and registers the webhook again) would
+        silently stop push until the URL was updated in the TTLock console.
+        """
+        for member in await self._group_members():
+            if member.entry_id == self.entry.entry_id:
+                continue
+            if member.options.get(CONF_CLOUD_ENABLED, DEFAULT_CLOUD_ENABLED):
+                return
+
+        webhook_id = self.entry.data.get(CONF_WEBHOOK_ID)
+        if webhook_id is None:
+            return
+
+        async with _GROUPS_LOCK:
+            domain_data = self.hass.data.get(DOMAIN, {})
+            groups: dict[str, _WebhookGroup] = domain_data.get(_GROUPS_KEY, {})
+            groups.pop(self.client_id, None)
+            if not groups:
+                domain_data.pop(_GROUPS_KEY, None)
+
+        webhook_unregister(self.hass, webhook_id)
+        _LOGGER.info("Webhook disabled (cloud off); inbound channel severed")
 
     async def handle_webhook(
         self, hass: HomeAssistant, webhook_id: str, request: Request

@@ -80,6 +80,9 @@ class Command(IntEnum):
     CHECK_USER_TIME = 0x55
     """Prove a key is valid now; the reply carries the psFromLock token."""
 
+    CHECK_ADMIN = 0x41
+    """Prove we hold the admin password; opens a lock/unlock over WiFi."""
+
     UNLOCK = 0x47
     """Throw the bolt open, authenticated with psFromLock + unlockKey."""
 
@@ -111,7 +114,7 @@ class UnsupportedProtocol(ProtocolError):
 
 
 class CredentialError(ProtocolError, ValueError):
-    """A credential (unlockKey, uid, lockFlagPos) is unusable.
+    """A credential (admin password, unlockKey, uid, lockFlagPos) is unusable.
 
     Also a ValueError, so a caller already guarding credential decoding with
     ValueError keeps working. The message never carries the value.
@@ -360,8 +363,9 @@ class Frame:
     `command` is a plain int, not `Command` - an unrecognised opcode should
     arrive intact rather than raise. `data` is the payload in the clear;
     encryption happens in `encode` and decryption in `decode`, so nothing
-    outside this module handles ciphertext. `scramble_key` is zero on the AES
-    locks this integration targets; older locks put an XOR seed there instead.
+    outside this module handles ciphertext. `scramble_key` is zero over BLE and
+    0x56 over the WiFi transport, both AES; any other value is a legacy XOR
+    seed, which `decode` refuses.
     """
 
     version: LockVersion
@@ -443,9 +447,9 @@ class Frame:
                 f"CRC is {actual:#04x}, expected {want:#04x}; frame was {raw.hex()}"
             )
 
-        # A non-zero scramble key means legacy XOR obfuscation. Refusing loudly
+        # Any other scramble key means legacy XOR obfuscation. Refusing loudly
         # beats decrypting it as AES into plausible-looking garbage.
-        if scramble_key := raw[10]:
+        if (scramble_key := raw[10]) not in _AES_SCRAMBLE_KEYS:
             raise UnsupportedProtocol(
                 f"Lock is using legacy XOR scrambling (key {scramble_key:#04x}); only AES locks are supported"
             )
@@ -465,6 +469,10 @@ class Frame:
             else payload,
             scramble_key=scramble_key,
         )
+
+
+# Byte 10 values of AES frames: 0x00 over BLE, 0x56 over the WiFi transport.
+_AES_SCRAMBLE_KEYS = frozenset({0x00, 0x56})
 
 
 def _checksummed(body: bytes) -> bytes:
@@ -715,14 +723,20 @@ def decode_password(field: str) -> str:
 
 # --- Authenticated control: session handshake, lock and unlock ---------------
 #
-# Reading state needs only the AES key. Driving the bolt needs one more secret
+# Reading state needs only the AES key. Driving the bolt needs more secrets
 # lock/detail also returns:
 #
 #   unlockKey  (cloud field `lockKey`)  a per-key number, proves "this key"
+#   adminPs    (cloud field `adminPwd`) the admin password
 #
-# recovered by `decode_password`. CHECK_USER_TIME hands back psFromLock, a
-# 4-byte number the lock gives us to fold the unlockKey into; UNLOCK/LOCK then
-# carries (psFromLock + unlockKey) and a timestamp.
+# both recovered by `decode_password`. A handshake hands back a token, then
+# UNLOCK/LOCK carries (token + unlockKey) and a timestamp:
+#
+#   over Bluetooth : CHECK_USER_TIME -> psFromLock
+#   over WiFi      : CHECK_ADMIN -> token
+#
+# psFromLock and the admin token are one wire shape - a 4-byte number the lock
+# hands back for us to fold the unlockKey into - so one parser reads both.
 
 # A permanent validity window (yymmddHHMM): a far-past start, a far-future end.
 _PERMANENT_KEY_START = "0001311400"
@@ -786,6 +800,26 @@ def check_user_time_data(uid: int = 0, lock_flag_pos: int = 0) -> bytes:
     )
 
 
+def check_admin_data(
+    admin_ps: str | int, uid: int = 0, lock_flag_pos: int = 0
+) -> bytes:
+    """Build the CHECK_ADMIN payload: prove we hold the admin password.
+
+    11 bytes: the admin password as a 4-byte number, the 3-byte lockFlagPos,
+    then the 4-byte uid.
+
+    Raises:
+        CredentialError: if a field is not a number or does not fit.
+    """
+    return b"".join(
+        (
+            _credential_bytes(admin_ps, 4, "admin password"),
+            _credential_bytes(lock_flag_pos, 3, "lockFlagPos"),
+            _credential_bytes(uid, 4, "uid"),
+        )
+    )
+
+
 def control_data(
     token: int, unlock_key: str | int, epoch_seconds: int | None = None
 ) -> bytes:
@@ -807,10 +841,11 @@ def control_data(
 
 
 def token_from_response(payload: bytes) -> int:
-    """Read the 4-byte token a CHECK_USER_TIME reply carries.
+    """Read the 4-byte token a CHECK_USER_TIME or CHECK_ADMIN reply carries.
 
-    It answers with the response envelope then a 4-byte big-endian number,
-    `psFromLock`, which the next command folds the unlockKey into.
+    Both answer with the response envelope then a 4-byte big-endian number -
+    `psFromLock` for the user check, the admin `token` for the admin check -
+    which the next command folds the unlockKey into.
 
     Raises:
         ProtocolError: if the lock did not report success, or the reply is too

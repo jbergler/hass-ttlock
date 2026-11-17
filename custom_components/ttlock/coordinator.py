@@ -57,20 +57,23 @@ from .capture import LockTrafficCapture
 from .const import (
     CONF_BLE_CONTROL,
     CONF_BLUETOOTH_ENABLED,
+    CONF_CLOUD_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
-    CONF_TRANSPORT_ORDER,
     DEFAULT_BLE_CONTROL,
     DEFAULT_BLUETOOTH_ENABLED,
+    DEFAULT_CLOUD_ENABLED,
     DEFAULT_POLL_INTERVAL_MINUTES,
     DEFAULT_SLOW_POLL_INTERVAL_HOURS,
-    DEFAULT_TRANSPORT_ORDER,
     DOMAIN,
     SIGNAL_NEW_DATA,
     TRANSPORT_BLE,
     TRANSPORT_CLOUD,
+    TRANSPORT_WIFI_LOCAL,
     TT_GATEWAYS,
     TT_LOCKS,
+    TT_WIFI_PROXY,
+    transport_order,
 )
 from .models import (
     AccessLevel,
@@ -88,9 +91,27 @@ from .models import (
     WebhookEvent,
 )
 from .store import LockStateStore
+from .wifi_proxy import (
+    MODE_PASSTHROUGH,
+    MODE_TAKEOVER,
+    WifiCredentials,
+    WifiProxy,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
+# The wifi-local link states surfaced by the connection diagnostics. The two
+# live-session values reuse wifi_proxy's own mode strings so the sensor never
+# drifts from what session_mode() returns; the other two cover "no session but
+# reconnecting" and "nothing".
+WIFI_LOCAL_DOWN = "down"
+WIFI_LOCAL_RECONNECTING = "reconnecting"
+WIFI_LOCAL_STATES = (
+    WIFI_LOCAL_DOWN,
+    MODE_PASSTHROUGH,
+    MODE_TAKEOVER,
+    WIFI_LOCAL_RECONNECTING,
+)
 
 NOT_CONNECTABLE_REASON = (
     "No gateway paired, no WiFi, and not in Bluetooth range of Home Assistant - "
@@ -283,8 +304,8 @@ def lock_coordinators(hass: HomeAssistant, entry: ConfigEntry):
 
 def gateway_coordinator(
     hass: HomeAssistant, entry: ConfigEntry
-) -> GatewaysUpdateCoordinator:
-    """Get the gateway coordinator."""
+) -> GatewaysUpdateCoordinator | None:
+    """Get the gateway coordinator; None while the entry runs with the cloud off."""
     return hass.data[DOMAIN][entry.entry_id][TT_GATEWAYS]
 
 
@@ -349,6 +370,10 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         # use, like the AES key.
         self._ble_unlock_key: str | None = None
         self._ble_lock_flag_pos: int = 0
+        # The admin password (cloud `adminPwd`, obfuscated), needed by the
+        # wifi_local CHECK_ADMIN handshake - which the BLE control path never
+        # used (it goes via CHECK_USER_TIME). Decoded on use, like the AES key.
+        self._ble_admin_pwd: str | None = None
 
         # Whether we've already made this restart's one-shot door-sensor
         # recheck (see _check_for_sensor) - deliberately in-memory, not
@@ -381,15 +406,16 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self._ble_control_option: bool = options.get(
             CONF_BLE_CONTROL, DEFAULT_BLE_CONTROL
         )
-        self._transport_order: list[str] = list(
-            options.get(CONF_TRANSPORT_ORDER, DEFAULT_TRANSPORT_ORDER)
+        self._transport_order: list[str] = transport_order(options)
+        self._cloud_enabled_option: bool = options.get(
+            CONF_CLOUD_ENABLED, DEFAULT_CLOUD_ENABLED
         )
         self._details_last_fetched: datetime | None = None
         self._passage_last_fetched: datetime | None = None
         self._gateways_last_fetched: datetime | None = None
 
-        # The transport that last successfully drove the bolt (BLE / cloud),
-        # surfaced by the connection diagnostics. None until the first
+        # The transport that last successfully drove the bolt (BLE / wifi_local /
+        # cloud), surfaced by the connection diagnostics. None until the first
         # lock/unlock lands.
         self._last_transport: str | None = None
 
@@ -517,7 +543,9 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         `async_set_updated_data`, which would reschedule the poll and, at
         this cadence, starve the slow tier that supplies the AES key.
         """
-        if self.cloud_connectable or not self.ble_reachable:
+        if (self.cloud_enabled and self.cloud_connectable) or not (
+            self.ble_reachable or self.wifi_local_drivable
+        ):
             return
 
         status = await self.async_read_lock_status(cloud=False)
@@ -572,8 +600,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
 
     @property
     def connectable(self) -> bool:
-        """Whether anything - cloud or radio - can reach the lock."""
-        return self.cloud_connectable or self.ble_reachable
+        """Whether anything - cloud, radio or WiFi-local - can reach the lock."""
+        return (
+            (self.cloud_enabled and self.cloud_connectable)
+            or self.ble_reachable
+            or self.wifi_local_drivable
+        )
 
     @property
     def access_level(self) -> AccessLevel:
@@ -612,7 +644,11 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             and TT_GATEWAYS in self.hass.data[DOMAIN][self.config_entry.entry_id]
         ):
             gw_coord = self.hass.data[DOMAIN][self.config_entry.entry_id][TT_GATEWAYS]
-            if not gw_coord.last_update_success or not gw_coord.data:
+            if (
+                gw_coord is None
+                or not gw_coord.last_update_success
+                or not gw_coord.data
+            ):
                 return False
             if self.data.gateways:
                 return any(
@@ -660,13 +696,14 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     def _async_tolerate_failed_verification(self) -> bool:
         """Whether to keep the last known state after a failed state read.
 
-        Only for a lock something can still reach - the radio or an online
-        gateway: one read that didn't take says nothing about the bolt. A lock
-        nothing can reach goes unavailable on the first failure. Retries are
-        quick only while the grace lasts - past it the lock is unavailable
-        either way, and dialling it every minute just spends its battery.
+        Only for a lock something can still reach - the radio, an online
+        gateway or a WiFi-local session (or one reconnecting): one read that
+        didn't take says nothing about the bolt. A lock nothing can reach goes
+        unavailable on the first failure. Retries are quick only while the
+        grace lasts - past it the lock is unavailable either way, and dialling
+        it every minute just spends its battery.
         """
-        if not (self.ble_reachable or self.gateway_online):
+        if not (self.ble_reachable or self.gateway_online or self.wifi_local_drivable):
             return False
         self._reverify_failures += 1
         if self._reverify_failures > REVERIFY_GRACE:
@@ -724,6 +761,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             ble_key=self._ble_key,
             ble_unlock_key=self._ble_unlock_key,
             ble_lock_flag_pos=self._ble_lock_flag_pos,
+            ble_admin_pwd=self._ble_admin_pwd,
         )
 
     async def async_restore_lock_cache(self) -> None:
@@ -739,6 +777,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             self._ble_key = stored.get("ble_key")
             self._ble_unlock_key = stored.get("ble_unlock_key")
             self._ble_lock_flag_pos = stored.get("ble_lock_flag_pos", 0)
+            self._ble_admin_pwd = stored.get("ble_admin_pwd")
         if detail := stored.get("detail"):
             self._apply_detail(self.data, LockDetail.model_validate(detail))
         if passage := stored.get("passage_mode_config"):
@@ -793,11 +832,13 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             details.lockVersion,
             details.aesKeyStr,
             details.lockKey,
+            details.noKeyPwd,
         )
         cached = (
             self._ble_version,
             self._ble_key,
             self._ble_unlock_key,
+            self._ble_admin_pwd,
         )
         if all(cached) and not all(incoming):
             _LOGGER.debug(
@@ -810,6 +851,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self._ble_key = details.aesKeyStr
         self._ble_unlock_key = details.lockKey
         self._ble_lock_flag_pos = details.lockFlagPos
+        self._ble_admin_pwd = details.noKeyPwd
 
     def _ble_control_credentials(
         self,
@@ -870,6 +912,52 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         )
 
     @property
+    def admin_ps(self) -> int | None:
+        """The lock's admin password as a number, or None if not available yet.
+
+        Decoded from the cloud's obfuscated `adminPwd` (stored as the lock's
+        `noKeyPwd` field). Needed by the wifi_local CHECK_ADMIN handshake.
+        """
+        if self._ble_admin_pwd is None:
+            return None
+        with suppress(ValueError):
+            return int(decode_password(self._ble_admin_pwd))
+        return None
+
+    def wifi_credentials(self) -> WifiCredentials | None:
+        """Everything the wifi_local command path needs, or None if incomplete."""
+        control = self._ble_control_credentials()
+        admin_ps = self.admin_ps
+        if control is None or admin_ps is None:
+            return None
+        _version, aes_key, unlock_key, uid, lock_flag_pos = control
+        return WifiCredentials(
+            aes_key=aes_key,
+            admin_ps=admin_ps,
+            unlock_key=unlock_key,
+            uid=uid,
+            lock_flag_pos=lock_flag_pos,
+        )
+
+    @property
+    def _wifi_proxy(self) -> WifiProxy | None:
+        """The shared wifi_proxy listener, if one is running.
+
+        `connectable` reads this, and it is evaluated inside `__init__` before
+        `DataUpdateCoordinator.__init__` has set `self.hass`, so tolerate that
+        early call (no proxy is running that early anyway).
+        """
+        hass = getattr(self, "hass", None)
+        if hass is None:
+            return None
+        return hass.data.get(DOMAIN, {}).get(TT_WIFI_PROXY)
+
+    @property
+    def cloud_enabled(self) -> bool:
+        """Whether the cloud transport may be used for this entry."""
+        return self._cloud_enabled_option
+
+    @property
     def transport_order(self) -> list[str]:
         """The configured order transports are tried in."""
         return list(self._transport_order)
@@ -887,17 +975,19 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         """
         if transport == TRANSPORT_BLE:
             return self.ble_reachable
-        if transport == TRANSPORT_CLOUD:
-            return self.cloud_connectable
-        return False
+        if transport == TRANSPORT_WIFI_LOCAL:
+            return self.wifi_local_drivable
+        # The cloud: `transport_order` admits no other name.
+        return self.cloud_enabled and self.cloud_connectable
 
     def _control_transport_available(self, transport: str) -> bool:
         """Whether a lock/unlock right now could actually go over this transport."""
         if transport == TRANSPORT_BLE:
             return self.ble_control_enabled and self.ble_reachable
-        if transport == TRANSPORT_CLOUD:
-            return True
-        return False
+        if transport == TRANSPORT_WIFI_LOCAL:
+            return self.wifi_local_drivable
+        # The cloud: `transport_order` admits no other name.
+        return self.cloud_enabled
 
     @property
     def available_transports(self) -> list[str]:
@@ -921,21 +1011,113 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
     @property
     def control_cloud_free(self) -> bool:
         """Whether a lock/unlock right now would avoid the cloud entirely."""
-        return self.preferred_control_transport == TRANSPORT_BLE
+        return self.preferred_control_transport in (
+            TRANSPORT_BLE,
+            TRANSPORT_WIFI_LOCAL,
+        )
+
+    @property
+    def wifi_local_state(self) -> str:
+        """The wifi-local link state: down / passthrough / takeover / reconnecting."""
+        proxy = self._wifi_proxy
+        if proxy is None:
+            return WIFI_LOCAL_DOWN
+        mode = proxy.session_mode(self.lock_id)
+        if mode is not None:
+            # MODE_PASSTHROUGH or MODE_TAKEOVER - a live session.
+            return mode
+        if proxy.is_reconnecting_client(self.lock_id):
+            return WIFI_LOCAL_RECONNECTING
+        return WIFI_LOCAL_DOWN
+
+    @property
+    def wifi_local_last_seen(self) -> datetime | None:
+        """When the lock last had traffic on its wifi-local proxy connection."""
+        proxy = self._wifi_proxy
+        return proxy.last_seen(self.lock_id) if proxy is not None else None
 
     @property
     def cloud_online(self) -> bool:
         """Whether the cloud transport can currently reach this lock.
 
-        The lock must be cloud-reachable; for a gatewayed lock that further
-        means at least one linked gateway is online, where a WiFi-capable lock
-        is reachable by the cloud by design.
+        Cloud must be enabled and the lock cloud-reachable; for a gatewayed
+        lock that further means at least one linked gateway is online, where a
+        WiFi-capable lock is reachable by the cloud by design.
         """
-        if not self.cloud_connectable:
+        if not self.cloud_enabled or not self.cloud_connectable:
             return False
         if self.has_gateway:
             return self.gateway_online
         return True
+
+    @callback
+    def async_wifi_local_changed(self) -> None:
+        """Let entities re-read wifi-local state when a proxy session changes.
+
+        Called by wifi_proxy when a session is accepted, becomes takeover-ready
+        or ends - without it the connection diagnostics could sit a whole poll
+        interval stale. Guarded so a listener error never breaks a proxy session.
+        """
+        try:
+            self.async_update_listeners()
+            if (self.update_interval is None) == self.connectable:
+                self._async_reconcile_polling()
+            elif self.wifi_local_drivable and self._state_stale:
+                self.hass.async_create_task(self.async_request_refresh())
+        except Exception:
+            _LOGGER.debug(
+                "wifi-local change notification failed for lock %s",
+                self.lock_id,
+                exc_info=True,
+            )
+
+    @callback
+    def async_wifi_local_event(self) -> None:
+        """The lock reported an event on its session, so its bolt may have moved.
+
+        Requests a (debounced) refresh to read it.
+        """
+        self.hass.async_create_task(self.async_request_refresh())
+
+    @property
+    def _state_stale(self) -> bool:
+        """Whether the bolt is unread, or last read longer than a poll ago."""
+        return (
+            self._verified_at is None
+            or dt_util.utcnow() - self._verified_at > self._poll_interval
+        )
+
+    @property
+    def wifi_local_drivable(self) -> bool:
+        """Whether the WiFi-local transport can read or drive the lock for us.
+
+        True for a ready takeover session, and for a recent takeover client whose
+        session is momentarily down in a reconnect blip - the proxy then waits
+        briefly for it to return rather than skipping straight to the next
+        transport. A pass-through session relays to the cloud, so it gives no
+        local path and does not count.
+        """
+        proxy = self._wifi_proxy
+        return proxy is not None and (
+            proxy.is_takeover_ready(self.lock_id)
+            or proxy.is_reconnecting_client(self.lock_id)
+        )
+
+    async def async_read_state_wifi_local(
+        self,
+    ) -> tuple[bool | None, int | None] | None:
+        """Read (locked, battery) over the WiFi-local takeover session.
+
+        None when WiFi-local can't serve us or the read didn't land, so the
+        caller falls back exactly as a missed Bluetooth read does. Never raises:
+        wifi_proxy.async_status swallows a stalled or declined read and keeps
+        the session. A reconnecting client is read too, so a poll can wait up
+        to wifi_proxy.RECONNECT_WAIT for its session to return.
+        """
+        proxy = self._wifi_proxy
+        if proxy is None or not self.wifi_local_drivable:
+            return None
+        return await proxy.async_status(self.lock_id)
 
     @contextmanager
     def _slow_tier_fetch(self, what: str) -> Generator[None]:
@@ -961,16 +1143,18 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         # only thing that decides availability.
         status = await self._async_poll_state()
         new_data = deepcopy(self.data)
-        await self._async_refresh_slow_tier(new_data, now)
+        if self.cloud_enabled:
+            await self._async_refresh_slow_tier(new_data, now)
         if Features.door_sensor in new_data.features:
             # a placeholder for the door state if the lock supports one
             if new_data.sensor is None:
                 new_data.sensor = SensorData()
-            with self._slow_tier_fetch("door sensor"):
-                if sensor_present(new_data.sensor):
-                    await self._update_present_sensor(new_data.sensor)
-                else:
-                    await self._check_for_sensor(new_data.sensor)
+            if self.cloud_enabled:
+                with self._slow_tier_fetch("door sensor"):
+                    if sensor_present(new_data.sensor):
+                        await self._update_present_sensor(new_data.sensor)
+                    else:
+                        await self._check_for_sensor(new_data.sensor)
         else:
             new_data.sensor = None
         if status is not None:
@@ -990,7 +1174,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         so a stale state is never shown as fresh.
         """
         try:
-            status = await self.async_read_lock_status(cloud=True)
+            status = await self.async_read_lock_status(cloud=self.cloud_enabled)
         except Exception:
             _LOGGER.debug("State read for lock %s failed", self.lock_id, exc_info=True)
             status = None
@@ -1012,16 +1196,22 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         return None
 
     async def async_read_lock_status(self, *, cloud: bool) -> LockStatus | None:
-        """Read the bolt over BLE, then the cloud.
+        """Read the bolt over BLE and WiFi-local in `transport_order`, then the cloud.
 
-        The cloud is asked last, and only if `cloud`. None when BLE did not
-        answer and the cloud wasn't asked. A cloud read that fails
+        The cloud is asked last, and only if `cloud`. None when no local
+        transport answered and the cloud wasn't asked. A cloud read that fails
         raises; the cloud's "could not read" (`2`) is a read whose bolt is None
         - a bolt we could not read is not an unlocked one.
         """
-        status = await self.async_read_state_ble()
-        if status is not None and status.locked is not None:
-            return status
+        for transport in self._transport_order:
+            if transport == TRANSPORT_BLE:
+                status = await self.async_read_state_ble()
+                if status is not None and status.locked is not None:
+                    return status
+            elif transport == TRANSPORT_WIFI_LOCAL:
+                wifi = await self.async_read_state_wifi_local()
+                if wifi is not None and wifi[0] is not None:
+                    return LockStatus(battery=wifi[1], locked=wifi[0], door_open=None)
         if not cloud:
             return None
         state = await self.api.get_lock_state(self.lock_id)
@@ -1276,7 +1466,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             return
 
         try:
-            status = await self.async_read_lock_status(cloud=True)
+            status = await self.async_read_lock_status(cloud=self.cloud_enabled)
         except Exception:
             _LOGGER.debug(
                 "Could not check lock %s after its auto-lock delay",
@@ -1369,7 +1559,10 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             "ble_control_enabled": self.ble_control_enabled,
             "ble_reachable": self.ble_reachable,
             "ble_proven": self.ble_proven,
+            "cloud_enabled": self.cloud_enabled,
             "transport_order": self._transport_order,
+            "wifi_local_drivable": self.wifi_local_drivable,
+            "wifi_local_state": self.wifi_local_state,
             "active_transport": self.active_transport,
             "last_transport": self.last_transport,
             "control_cloud_free": self.control_cloud_free,
@@ -1408,10 +1601,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         """Try each configured, available transport in order; first success wins.
 
         Availability is decided per transport right now - BLE (control enabled
-        and reachable) and cloud (always). A transport that fails, by declining
-        or by raising, is logged and the next is tried. If everything tried
-        failed, it raises so an automation never takes a failed lock or unlock
-        for a done one.
+        and reachable), wifi_local (a live proxy session, or a recent
+        reconnecting client whose session the control path then waits briefly
+        to return) and cloud (cloud_enabled). A transport that fails, by
+        declining or by raising, is logged and the next is tried. If nothing is
+        available, or everything tried failed, it raises so an automation never
+        takes a failed lock or unlock for a done one.
         """
         action = "unlock" if unlock else "lock"
         with lock_action(self):
@@ -1433,6 +1628,12 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
                         # the cloud's webhook reports its own unlocks
                         self._handle_auto_lock(dt_util.now())
                     return
+            if not tried:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key=f"no_transport_to_{action}",
+                    translation_placeholders={"name": self.data.name},
+                )
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key=f"{action}_failed",
@@ -1450,9 +1651,23 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             if not (self.ble_control_enabled and self.ble_reachable):
                 return None
             return lambda: self.async_control_ble(unlock=unlock)
-        if transport == TRANSPORT_CLOUD:
-            return lambda: self._async_control_cloud(unlock=unlock)
-        return None
+        if transport == TRANSPORT_WIFI_LOCAL:
+            if not self.wifi_local_drivable:
+                return None
+            return lambda: self._async_control_wifi_local(unlock=unlock)
+        # The cloud: `transport_order` admits no other name.
+        if not self.cloud_enabled:
+            return None
+        return lambda: self._async_control_cloud(unlock=unlock)
+
+    async def _async_control_wifi_local(self, *, unlock: bool) -> bool:
+        """Drive the bolt over the lock's live proxy session; False on failure."""
+        proxy = self._wifi_proxy
+        if proxy is None:
+            return False
+        if unlock:
+            return await proxy.async_unlock(self.lock_id)
+        return await proxy.async_lock(self.lock_id)
 
     async def _async_control_cloud(self, *, unlock: bool) -> bool:
         """Drive the bolt over the TTLock cloud; False if the cloud declined."""

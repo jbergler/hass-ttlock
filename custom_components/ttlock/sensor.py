@@ -21,8 +21,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .coordinator import async_add_when_sensor_present, lock_coordinators
-from .entity import BaseLockEntity, LockDiagnosticEntity
+from .coordinator import (
+    WIFI_LOCAL_STATES,
+    async_add_when_sensor_present,
+    lock_coordinators,
+)
+from .entity import (
+    BaseLockEntity,
+    LockDiagnosticEntity,
+    wifi_local_configured,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +55,11 @@ async def async_setup_entry(
                 *([LockGateway(coordinator)] if coordinator.has_gateway else []),
                 *([LockBleSignal(coordinator)] if coordinator.ble_enabled else []),
                 LockConnection(coordinator),
+                *(
+                    [LockWifiLocalLink(coordinator)]
+                    if wifi_local_configured(entry, coordinator)
+                    else []
+                ),
             )
         ]
     )
@@ -206,8 +219,8 @@ class LockBleSignal(BaseLockEntity, SensorEntity):
 class LockConnection(LockDiagnosticEntity, SensorEntity):
     """How the lock is currently reaching the integration.
 
-    Value is the preferred transport that can reach the lock right now (BLE or
-    cloud), by the configured transport order, or unknown if
+    Value is the preferred transport that can reach the lock right now (BLE,
+    wifi_local or cloud), by the configured transport order, or unknown if
     nothing can. Attributes explain whether a command would avoid the cloud and
     which transport last drove the bolt.
     """
@@ -227,6 +240,28 @@ class LockConnection(LockDiagnosticEntity, SensorEntity):
             "last_transport": coordinator.last_transport,
             "available_transports": coordinator.available_transports,
             "transport_order": coordinator.transport_order,
+            "cloud_enabled": coordinator.cloud_enabled,
             "cloud_online": coordinator.cloud_online,
             "ble_reachable": coordinator.ble_reachable,
+            "wifi_local": coordinator.wifi_local_state,
         }
+
+
+class LockWifiLocalLink(LockDiagnosticEntity, SensorEntity):
+    """State of the lock's wifi-local proxy link."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+
+    def _update_from_coordinator(self) -> None:
+        """Fetch state from the device."""
+        self._attr_name = f"{self.coordinator.data.name} WiFi-local Link"
+        # Set here (not as a mutable class attribute) so the ENUM options are
+        # declared without tripping ruff's RUF012 or ty's LSP check.
+        self._attr_options = list(WIFI_LOCAL_STATES)
+        self._attr_native_value = self.coordinator.wifi_local_state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """When the link was last seen, alongside its state."""
+        last_seen = self.coordinator.wifi_local_last_seen
+        return {"last_seen": last_seen.isoformat() if last_seen else None}

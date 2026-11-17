@@ -58,10 +58,10 @@ async def async_setup_entry(
             ready=door_state_known,
         )
 
-    coordinator = gateway_coordinator(hass, entry)
-    async_add_entities(
-        GatewaySensor(coordinator, gateway_id) for gateway_id in coordinator.data
-    )
+    if (coordinator := gateway_coordinator(hass, entry)) is not None:
+        async_add_entities(
+            GatewaySensor(coordinator, gateway_id) for gateway_id in coordinator.data
+        )
 
 
 class Sensor(BaseLockEntity, BinarySensorEntity):

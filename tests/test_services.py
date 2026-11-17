@@ -12,6 +12,7 @@ from custom_components.ttlock.const import (
     SVC_ADD_CARD,
     SVC_CLEANUP_PASSCODES,
     SVC_CONFIG_AUTOLOCK,
+    SVC_CONFIG_PASSAGE_MODE,
     SVC_CREATE_PASSCODE,
     SVC_DELETE_CARD,
     SVC_DELETE_FINGERPRINT,
@@ -26,6 +27,7 @@ from custom_components.ttlock.const import (
     SVC_UPDATE_STATE,
     TT_LOCKS,
 )
+from custom_components.ttlock.coordinator import LockUpdateCoordinator
 from custom_components.ttlock.models import (
     AddPasscodeConfig,
     Card,
@@ -1391,3 +1393,101 @@ class Test_cloud_errors:
             await hass.async_block_till_done()
 
         assert mock.call_count == 2
+
+
+def _cloud_off(monkeypatch) -> None:
+    monkeypatch.setattr(
+        LockUpdateCoordinator, "cloud_enabled", property(lambda self: False)
+    )
+
+
+class TestCloudOnlyWithTheCloudOff:
+    @pytest.mark.parametrize(
+        ("service", "fields", "api_method"),
+        [
+            (SVC_CONFIG_PASSAGE_MODE, {"enabled": True}, "set_passage_mode"),
+            (
+                SVC_CREATE_PASSCODE,
+                {"passcode_name": "n", "passcode": "1234"},
+                "add_passcode",
+            ),
+            (
+                SVC_MODIFY_PASSCODE,
+                {"passcode_id": 1, "passcode_name": "n", "passcode": "5678"},
+                "modify_passcode",
+            ),
+            (SVC_DELETE_PASSCODE, {"passcode_id": 1}, "delete_passcode"),
+            (SVC_CLEANUP_PASSCODES, {}, "list_passcodes"),
+            (SVC_CONFIG_AUTOLOCK, {"enabled": True}, "set_auto_lock"),
+            (SVC_RENAME_CARD, {"card_id": 1, "name": "n"}, "rename_card"),
+            (SVC_DELETE_CARD, {"card_id": 1}, "delete_card"),
+            (
+                SVC_RENAME_FINGERPRINT,
+                {"fingerprint_id": 1, "name": "n"},
+                "rename_fingerprint",
+            ),
+            (SVC_DELETE_FINGERPRINT, {"fingerprint_id": 1}, "delete_fingerprint"),
+            (SVC_LIST_PASSCODES, {}, "list_passcodes"),
+            (SVC_LIST_CARDS, {}, "list_cards"),
+            (SVC_LIST_FINGERPRINTS, {}, "list_fingerprints"),
+            (SVC_LIST_RECORDS, {}, "get_lock_records"),
+        ],
+    )
+    async def test_is_refused_without_calling_the_cloud(
+        self,
+        hass,
+        component_setup,
+        mock_api_responses,
+        monkeypatch,
+        service,
+        fields,
+        api_method,
+    ):
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = next(
+            entity.entity_id
+            for entity in coordinator.entities
+            if entity.entity_id.startswith("lock.")
+        )
+        _cloud_off(monkeypatch)
+        cloud = AsyncMock()
+        monkeypatch.setattr(coordinator.api, api_method, cloud)
+
+        with pytest.raises(ServiceValidationError) as excinfo:
+            await hass.services.async_call(
+                DOMAIN,
+                service,
+                {ATTR_ENTITY_ID: entity_id, **fields},
+                blocking=True,
+                return_response=service.startswith("list_"),
+            )
+
+        assert excinfo.value.translation_key == "cloud_disabled"
+        cloud.assert_not_awaited()
+
+    async def test_add_card_reports_the_refusal_per_lock(
+        self, hass, component_setup, mock_api_responses, monkeypatch
+    ):
+        mock_api_responses("default")
+        coordinator = await component_setup()
+        entity_id = next(
+            entity.entity_id
+            for entity in coordinator.entities
+            if entity.entity_id.startswith("lock.")
+        )
+        _cloud_off(monkeypatch)
+        cloud = AsyncMock()
+        monkeypatch.setattr(coordinator.api, "add_card", cloud)
+
+        response = await hass.services.async_call(
+            DOMAIN,
+            SVC_ADD_CARD,
+            {ATTR_ENTITY_ID: entity_id, "card_number": "123", "name": "n"},
+            blocking=True,
+            return_response=True,
+        )
+
+        assert response is not None
+        assert response["cards"][entity_id]["card_id"] is None
+        cloud.assert_not_awaited()

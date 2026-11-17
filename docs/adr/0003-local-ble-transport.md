@@ -5,7 +5,7 @@ Every lock/unlock, state read and event used to go `HA → TTLock cloud → gate
 The credentials come from the cloud API this integration already authenticates against. No second login against the TTLock mobile-app account is needed, which is what the BLE-only integrations do. `lock/detail` returns:
 
 - `aesKeyStr`, the AES-128 key that encrypts every frame, and `lockVersion`, the protocol dialect. `QUERY_LOCK_STATUS` needs no authenticated session, so with these alone a lock in range reports bolt, battery and door state locally.
-- `lockKey` (the `unlockKey`). It is obfuscated as base64 of a decimal-byte CSV, XORed with a fixed table. `ble_protocol.decode_password` recovers it. The lock accepts writes with it, `lockFlagPos` from the same response, and the account `uid` from the OAuth token.
+- `lockKey` (the `unlockKey`) and `adminPwd` (the model's `noKeyPwd`, the admin password). Each is obfuscated as base64 of a decimal-byte CSV, XORed with a fixed table. `ble_protocol.decode_password` recovers both. The lock accepts writes with these two, `lockFlagPos` from the same response, and the account `uid` from the OAuth token.
 
 The writes:
 
@@ -22,7 +22,7 @@ The writes:
 ## Consequences
 
 - **`connectable` is a question, not a verdict.** It means *anything can reach the lock*: the cloud half is decided once from `hasGateway`/WiFi; the radio half changes while running and polling starts and stops to match. A lock advertises in bursts minutes apart, so a recent successful read stands as proof of reachability between them, and a lock the radio can hear rides out a couple of failed reads, retried a minute apart, before going unavailable - and then goes back to its normal poll, so a lock that stays silent isn't dialled every minute for its battery's sake.
-- **A separate local refresh timer, not a faster poll.** A poll is not one request - it also fetches `lock/detail`, passage mode and the gateway list - so polling faster to refresh the one value that is free would multiply the quota spend. The timer reads state only, over BLE only, and only for a lock the cloud can't reach. A lock with a gateway has the webhook, which is faster and costs the lock's battery nothing.
+- **A separate local refresh timer, not a faster poll.** A poll is not one request - it also fetches `lock/detail`, passage mode and the gateway list - so polling faster to refresh the one value that is free would multiply the quota spend. The timer reads state only, over the local transports only, and only when the cloud is off or can't reach the lock. A lock with a gateway has the webhook, which is faster and costs the lock's battery nothing.
 - **The radio can be turned off.** A boolean in the integration's options, on by default. Off means no presence tracking, no local reads, no local control, no signal sensor and no grace: the lock behaves exactly as it did before this transport existed. It's the exit for anyone whose adapter or lock misbehaves, without uninstalling anything.
 - **Credentials are cached.** `lock/detail` is their only source, and it needs the cloud. So `store.py` persists them to `.storage` on each fetch, inside the same trust boundary as the OAuth token. It caches the entry's lock list too. A lock in range stays drivable through a cloud outage, and across a restart during one.
 - **The webhook path stays.** For a lock with a gateway it remains the near-real-time path; nothing local replaces it.

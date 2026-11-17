@@ -23,14 +23,15 @@ async def async_setup_entry(
     Autolock and lock-sound call admin REST (lock/setAutoLockTime,
     lock/setLockSound) which returns 20002 for MEMBER. Skip creation
     rather than materialise an always-failing switch; see
-    docs/architecture.md on capability gating.
+    docs/architecture.md on capability gating. Only the cloud can set them,
+    so they are not created while the cloud is off.
     """
 
     async_add_entities(
         [
             entity
             for coordinator in lock_coordinators(hass, entry)
-            if coordinator.access_level.can_admin
+            if coordinator.access_level.can_admin and coordinator.cloud_enabled
             for entity in (
                 AutoLock(coordinator),
                 LockSound(coordinator),

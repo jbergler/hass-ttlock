@@ -137,9 +137,9 @@ class Lock(LockMacModel, LockDetail):
     date: int
     # Protocol dialect every BLE frame echoes back, see ble_protocol.LockVersion.
     lockVersion: dict[str, int] | None = None
-    # The key's flag generation. CHECK_USER_TIME must not send a lower value
-    # (the lock reads a lower one as a reset key and refuses it); 0 on a
-    # freshly paired key. Not sensitive.
+    # The key's flag generation. CHECK_USER_TIME / CHECK_ADMIN must not send a
+    # lower value (the lock reads a lower one as a reset key and refuses it);
+    # 0 on a freshly paired key. Not sensitive.
     lockFlagPos: int = 0
 
     # sensitive fields

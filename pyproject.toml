@@ -216,6 +216,9 @@ max-complexity = 25
 "tests/test_webhook.py" = [
     "SLF001",  # exercises WebhookHandler._resolve_group_webhook_id directly
 ]
+"tests/test_wifi_proxy.py" = [
+    "SLF001",  # drives WifiProxy._handle_connection/_ready_takeover directly
+]
 "tests/test_transport.py" = [
     "SLF001",  # sets LockUpdateCoordinator's cached credentials/order directly
 ]

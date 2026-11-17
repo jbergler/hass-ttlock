@@ -1222,7 +1222,7 @@ class TestAsyncControl:
     ):
         speaking_lock.answer(
             Command.RESPONSE,
-            _handshake_reply(Command.QUERY_LOCK_STATUS, _HANDSHAKE_TOKEN),
+            _handshake_reply(Command.CHECK_ADMIN, _HANDSHAKE_TOKEN),
             key=aes_key,
             to=Command.CHECK_USER_TIME,
         )

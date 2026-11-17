@@ -13,6 +13,8 @@ from pytest_homeassistant.common import (
 from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.ttlock import (
+    _async_release_wifi_proxy,
+    _mac_bytes,
     async_remove_config_entry_device,
     coordinator as coord_mod,
 )
@@ -21,21 +23,21 @@ from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
     CONF_BLE_CONTROL,
     CONF_BLUETOOTH_ENABLED,
+    CONF_CLOUD_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
     CONF_WEBHOOK_STATUS,
+    CONF_WIFI_LOCAL_ENABLED,
     DOMAIN,
     SIGNAL_NEW_DATA,
+    SVC_CREATE_PASSCODE,
     TT_CAPTURE,
     TT_GATEWAYS,
     TT_LOCKS,
+    TT_WIFI_PROXY,
 )
-from custom_components.ttlock.models import (
-    Features,
-    Gateway,
-    LockSummary,
-    WebhookEvent,
-)
+from custom_components.ttlock.coordinator import LockUpdateCoordinator
+from custom_components.ttlock.models import Gateway, LockSummary, WebhookEvent
 from custom_components.ttlock.store import LockStateStore
 from custom_components.ttlock.webhook import WebhookHandler
 from homeassistant.components.application_credentials import (
@@ -45,7 +47,7 @@ from homeassistant.components.application_credentials import (
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_WEBHOOK_ID, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, ServiceValidationError
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import NoURLAvailableError
@@ -86,6 +88,134 @@ def _wifi_lock(lock_id: int = 7252408, mac: str = MOCK_LOCK_MAC) -> LockSummary:
         featureValue=f"{2**56:X}",
         userType="110301",
     )
+
+
+async def _setup_wifi_entry(
+    hass, new_mocked_entry, options: dict, locks: list[LockSummary]
+) -> MockConfigEntry:
+    entry = new_mocked_entry(options=options)
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.ttlock.api.TTLockApi.get_locks",
+        AsyncMock(return_value=locks),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done(wait_background_tasks=True)
+    return entry
+
+
+async def test_nothing_listens_for_wifi_locks_by_default(
+    hass,
+    multi_account_credential,
+    new_mocked_entry,
+    mock_api_responses,
+    stub_wifi_proxy_bind,
+):
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+
+    await _setup_wifi_entry(hass, new_mocked_entry, {}, [_wifi_lock()])
+
+    assert TT_WIFI_PROXY not in hass.data[DOMAIN]
+    stub_wifi_proxy_bind.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("mac", "raw"),
+    [
+        ("0A:0B:0C:0D:0E:0F", bytes.fromhex("0a0b0c0d0e0f")),
+        ("0a-0b-0c-0d-0e-0f", bytes.fromhex("0a0b0c0d0e0f")),
+        ("0A:0B:0C:0D:0E:ZZ", None),  # not hex
+        ("0A:0B:0C", None),  # too short
+    ],
+)
+def test_a_lock_mac_is_read_as_six_raw_bytes(mac, raw):
+    assert _mac_bytes(mac) == raw
+
+
+async def test_wifi_proxy_lifecycle(
+    hass, multi_account_credential, new_mocked_entry, mock_api_responses
+):
+    """Opted in, only WiFi locks are registered; the last release stops it."""
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+    not_wifi = _cached_summary().model_copy(
+        update={"id": 2, "mac": "00:00:00:00:00:02"}
+    )
+
+    entry = await _setup_wifi_entry(
+        hass,
+        new_mocked_entry,
+        {CONF_WIFI_LOCAL_ENABLED: True},
+        [_wifi_lock(), not_wifi],
+    )
+
+    proxy = hass.data[DOMAIN][TT_WIFI_PROXY]
+    assert list(proxy._by_id) == [7252408]  # noqa: SLF001
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert TT_WIFI_PROXY not in hass.data[DOMAIN]
+
+
+async def test_releasing_wifi_locks_once_the_proxy_is_gone_does_nothing(hass):
+    await _async_release_wifi_proxy(hass, [(7252408, object())])
+
+    assert TT_WIFI_PROXY not in hass.data.get(DOMAIN, {})
+
+
+async def test_a_sibling_unload_keeps_the_other_entrys_wifi_locks(
+    hass, multi_account_credential, new_mocked_entry, mock_api_responses
+):
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+    options = {CONF_WIFI_LOCAL_ENABLED: True}
+    entry_a = await _setup_wifi_entry(hass, new_mocked_entry, options, [_wifi_lock()])
+    await _setup_wifi_entry(
+        hass, new_mocked_entry, options, [_wifi_lock(2, "00:00:00:00:00:02")]
+    )
+
+    assert await hass.config_entries.async_unload(entry_a.entry_id)
+
+    proxy = hass.data[DOMAIN][TT_WIFI_PROXY]
+    assert list(proxy._by_id) == [2]  # noqa: SLF001
+
+
+async def test_a_cloud_off_entry_takes_its_wifi_lock_over(
+    hass, multi_account_credential, new_mocked_entry, mock_api_responses
+):
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+
+    await _setup_wifi_entry(
+        hass,
+        new_mocked_entry,
+        {CONF_WIFI_LOCAL_ENABLED: True, CONF_CLOUD_ENABLED: False},
+        [_wifi_lock()],
+    )
+
+    registration = hass.data[DOMAIN][TT_WIFI_PROXY]._by_id[7252408]  # noqa: SLF001
+    assert registration.cloud_enabled() is False
+
+
+async def test_a_bind_failure_raises_a_repair(
+    hass,
+    multi_account_credential,
+    new_mocked_entry,
+    mock_api_responses,
+    stub_wifi_proxy_bind,
+):
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+    stub_wifi_proxy_bind.return_value = False
+
+    entry = await _setup_wifi_entry(
+        hass, new_mocked_entry, {CONF_WIFI_LOCAL_ENABLED: True}, [_wifi_lock()]
+    )
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "wifi_proxy_bind_failed")
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert not ir.async_get(hass).async_get_issue(DOMAIN, "wifi_proxy_bind_failed")
 
 
 async def test_reload_releases_the_webhook_listener(
@@ -757,6 +887,7 @@ def _seed_cache(hass_storage, entry_id: str, **entry_extra) -> None:
                 "ble_key": MOCK_LOCK_AES_KEY,
                 "ble_unlock_key": "2345",
                 "ble_lock_flag_pos": 3,
+                "ble_admin_pwd": "4242",
                 "detail": {"modelNum": "SN9206_PV53", "autoLockTime": 60},
             },
             "entries": {
@@ -884,6 +1015,30 @@ async def test_cloud_down_entry_drives_the_lock_over_bluetooth(
     assert control.await_args.args[6:8] == (777, 3)  # cached uid and lockFlagPos
     unreachable.assert_not_awaited()
     assert coordinator.data.locked is False
+
+
+async def test_cloud_off_with_a_cache_never_enumerates(
+    hass, hass_storage, multi_account_credential, new_mocked_entry, mock_api_responses
+):
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+    entry = new_mocked_entry(options={CONF_CLOUD_ENABLED: False})
+    _seed_cache(hass_storage, entry.entry_id)
+    entry.add_to_hass(hass)
+    get_locks = AsyncMock()
+    get_gateways = AsyncMock()
+
+    with (
+        patch("custom_components.ttlock.api.TTLockApi.get_locks", get_locks),
+        patch("custom_components.ttlock.api.TTLockApi.get_gateways", get_gateways),
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert entry.state is ConfigEntryState.LOADED
+    get_locks.assert_not_awaited()
+    get_gateways.assert_not_awaited()
+    assert hass.data[DOMAIN][entry.entry_id][TT_GATEWAYS] is None
 
 
 async def test_successful_enumeration_is_cached_with_the_uid(
@@ -1017,13 +1172,42 @@ async def test_setup_restores_cached_credentials_before_any_detail(
     await _setup_entry(hass, config_entry)
 
     coordinator = hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS][0]
-    credentials = coordinator._ble_control_credentials()  # noqa: SLF001
+    credentials = coordinator.wifi_credentials()
     assert credentials is not None
-    assert credentials[2:] == ("2345", 777, 3)
+    assert (credentials.admin_ps, credentials.lock_flag_pos) == (4242, 3)
 
 
-async def test_a_partial_cached_detail_keeps_the_key_records_features(
-    hass, hass_storage, config_entry, mock_api_responses, monkeypatch
+async def test_cloud_off_create_passcode_never_reaches_the_cloud(
+    hass, component_setup, mock_api_responses, monkeypatch
+):
+    mock_api_responses("default")
+    coordinator = await component_setup()
+    monkeypatch.setattr(
+        LockUpdateCoordinator, "cloud_enabled", property(lambda self: False)
+    )
+    cloud = AsyncMock(return_value=True)
+    monkeypatch.setattr(TTLockApi, "add_passcode", cloud)
+
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN,
+            SVC_CREATE_PASSCODE,
+            {
+                "entity_id": next(
+                    entity.entity_id
+                    for entity in coordinator.entities
+                    if entity.entity_id.startswith("lock.")
+                ),
+                "passcode_name": "n",
+                "passcode": "1234",
+            },
+            blocking=True,
+        )
+    cloud.assert_not_awaited()
+
+
+async def test_a_partial_cached_detail_keeps_a_cloud_off_wifi_lock_registered(
+    hass, hass_storage, new_mocked_entry, mock_api_responses
 ):
     """A partial detail cache must not wipe the lock's features.
 
@@ -1031,21 +1215,18 @@ async def test_a_partial_cached_detail_keeps_the_key_records_features(
     key record's features (WiFi), model and firmware alone.
     """
     mock_api_responses("default")
-    _seed_cache(hass_storage, config_entry.entry_id)
+    entry = new_mocked_entry(
+        options={CONF_WIFI_LOCAL_ENABLED: True, CONF_CLOUD_ENABLED: False}
+    )
+    _seed_cache(hass_storage, entry.entry_id)
     state = hass_storage["ttlock_lock_state"]["data"]
     state["7252408"]["detail"] = {"autoLockTime": 5}
-    state["entries"][config_entry.entry_id]["key_records"] = [
+    state["entries"][entry.entry_id]["key_records"] = [
         _wifi_lock().model_dump(mode="json", by_alias=True)
     ]
-    monkeypatch.setattr(
-        TTLockApi, "get_locks", AsyncMock(side_effect=TimeoutError("cloud down"))
-    )
-    monkeypatch.setattr(
-        TTLockApi, "get_lock", AsyncMock(side_effect=TimeoutError("cloud down"))
-    )
-    await _setup_entry(hass, config_entry)
+    await _setup_entry(hass, entry)
 
-    assert config_entry.state is ConfigEntryState.LOADED
-    coordinator = hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS][0]
+    assert entry.state is ConfigEntryState.LOADED
+    coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
     assert coordinator.data.auto_lock_seconds == 5
-    assert Features.wifi in coordinator.data.features
+    assert list(hass.data[DOMAIN][TT_WIFI_PROXY]._by_id) == [7252408]  # noqa: SLF001

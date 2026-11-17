@@ -7,7 +7,7 @@ A Home Assistant custom integration (HACS) for TTLock smart locks. Domain: `ttlo
 - **Never commit or push without being asked** — except when running the `/implement` skill (see `docs/agents/implement.md`).
 - **Never restructure `custom_components/ttlock/` into subpackages** (no `helpers/`, `utils/`, etc.). It is flat on purpose.
 - **Never reintroduce pydantic v1 patterns** in `models.py` (`Config` class, `.dict()`, unparameterized `Optional`).
-- **Never trade the webhook push path for faster polling**, and never speed up polling just to refresh what BLE already gives for free. See `docs/architecture.md`.
+- **Never trade the webhook push path for faster polling**, and never speed up polling just to refresh what BLE already gives for free. See `docs/architecture.md`. Cloud-off mode drops the webhook on purpose and is not that trade. See `docs/adr/0005-cloud-off-mode.md`.
 - **Never suppress a `ty` diagnostic or a pytest warning without first checking it isn't a real bug.** See `docs/testing.md`.
 
 ## Feedback loop
@@ -36,9 +36,9 @@ Even narrower while editing one file: `uv run ruff check --fix <file>`, `uv run 
 
 ## Where to look next
 
-- **`docs/architecture.md`**: the transports (cloud REST, local BLE), transport order, state propagation (polling / webhook / local reads), full file map. Read before editing anything under `custom_components/ttlock/`.
+- **`docs/architecture.md`**: the three transports (cloud REST, local BLE, WiFi-local), transport order and cloud off, state propagation (polling / webhook / local reads), full file map. Read before editing anything under `custom_components/ttlock/`.
 - **`docs/testing.md`** — strict pytest and `ty` detail; read before suppressing a warning.
-- **`CONTEXT.md`**: domain glossary (Connectable, Discovery, Transport, and more). Use these exact terms.
+- **`CONTEXT.md`**: domain glossary (Connectable, Discovery, Transport, WiFi-local, Pass-through, Takeover, Cloud off, and more). Use these exact terms.
 - **`docs/adr/`** — architectural decisions. Read the ADR touching your area before changing its mechanism.
 - **`docs/ttlock-cloud-api/`** — mirrored TTLock cloud API reference (EU region).
 - **`docs/agents/`** — agent workflow skills: `implement.md` (PR workflow), `domain.md` (glossary + ADR etiquette), `issue-tracker.md` (`gh` CLI), `triage-labels.md`.

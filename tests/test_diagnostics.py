@@ -146,7 +146,9 @@ async def test_diagnostics_includes_raw_connectivity_fields_and_gateway_status(
     assert lock["has_gateway"] == 0
     assert lock["feature_value"] == "000000"
     # Transport diagnostics: defaults when nothing is overridden or connected.
-    assert lock["transport_order"] == ["ble", "cloud"]
+    assert lock["cloud_enabled"] is True
+    assert lock["transport_order"] == ["ble", "wifi_local", "cloud"]
+    assert lock["wifi_local_drivable"] is False
 
     gateways = diagnostics["gateways"]
     assert gateways[0]["name"] == "Test Gateway"

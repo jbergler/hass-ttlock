@@ -31,22 +31,30 @@ from homeassistant.helpers.selector import (
 from .const import (
     CONF_BLE_CONTROL,
     CONF_BLUETOOTH_ENABLED,
+    CONF_CLOUD_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_REGION,
     CONF_SLOW_POLL_INTERVAL,
     CONF_TRANSPORT_ORDER,
     CONF_WEBHOOK_URL,
+    CONF_WIFI_LOCAL_ENABLED,
     DEFAULT_BLE_CONTROL,
     DEFAULT_BLUETOOTH_ENABLED,
+    DEFAULT_CLOUD_ENABLED,
     DEFAULT_POLL_INTERVAL_MINUTES,
     DEFAULT_REGION,
     DEFAULT_SLOW_POLL_INTERVAL_HOURS,
     DEFAULT_TRANSPORT_ORDER,
+    DEFAULT_WIFI_LOCAL_ENABLED,
     DOMAIN,
     REGIONS,
+    TT_STORE,
+    transport_order,
 )
+from .models import LockSummary
+from .store import LockStateStore
 
-# Every ordering of the transports, keyed by a hyphen-joined string
+# The six orderings of the three transports, keyed by a hyphen-joined string
 # (a valid translation key; transport names never contain a hyphen). Stored as
 # a list in the options; a dropdown avoids depending on a multi-select
 # preserving the order the user picked.
@@ -178,7 +186,7 @@ class TTLockAuthFlowHandler(
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        """Get the options flow for polling and transports."""
+        """Get the options flow for polling, transports and the cloud."""
         return TTLockOptionsFlow()
 
 
@@ -187,14 +195,15 @@ class TTLockOptionsFlow(OptionsFlow):
 
     All global to the account entry: the fast poll interval that re-verifies
     lock state, the slow interval for cloud detail (see coordinator.py),
-    Bluetooth reads and control, and the transport order. Changing any of them
-    reloads the entry so new coordinators pick the values up.
+    Bluetooth reads and control, the WiFi-local listener, the transport order
+    and whether the cloud is used at all. Changing any of them reloads the
+    entry so new coordinators pick the values up.
     """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the polling and transport options."""
+        """Manage the polling, transport and cloud options."""
         errors: dict[str, str] = {}
         if user_input is not None:
             errors = await self._async_validate(user_input)
@@ -212,11 +221,7 @@ class TTLockOptionsFlow(OptionsFlow):
 
         options = {
             **self.config_entry.options,
-            CONF_TRANSPORT_ORDER: "-".join(
-                self.config_entry.options.get(
-                    CONF_TRANSPORT_ORDER, DEFAULT_TRANSPORT_ORDER
-                )
-            ),
+            CONF_TRANSPORT_ORDER: "-".join(transport_order(self.config_entry.options)),
             **(user_input or {}),
         }
         webhook_id = self.config_entry.data.get(CONF_WEBHOOK_ID)
@@ -274,6 +279,12 @@ class TTLockOptionsFlow(OptionsFlow):
                         default=options.get(CONF_BLE_CONTROL, DEFAULT_BLE_CONTROL),
                     ): BooleanSelector(),
                     vol.Required(
+                        CONF_WIFI_LOCAL_ENABLED,
+                        default=options.get(
+                            CONF_WIFI_LOCAL_ENABLED, DEFAULT_WIFI_LOCAL_ENABLED
+                        ),
+                    ): BooleanSelector(),
+                    vol.Required(
                         CONF_TRANSPORT_ORDER,
                         default=options[CONF_TRANSPORT_ORDER],
                     ): SelectSelector(
@@ -283,6 +294,10 @@ class TTLockOptionsFlow(OptionsFlow):
                             translation_key="transport_order",
                         )
                     ),
+                    vol.Required(
+                        CONF_CLOUD_ENABLED,
+                        default=options.get(CONF_CLOUD_ENABLED, DEFAULT_CLOUD_ENABLED),
+                    ): BooleanSelector(),
                 }
             ),
             description_placeholders={"webhook_url": webhook_url},
@@ -291,8 +306,24 @@ class TTLockOptionsFlow(OptionsFlow):
 
     async def _async_validate(self, user_input: dict[str, Any]) -> dict[str, str]:
         """Refuse combinations that would leave the locks unreachable."""
-        if user_input[CONF_BLE_CONTROL] and not user_input[CONF_BLUETOOTH_ENABLED]:
+        ble_control = user_input[CONF_BLE_CONTROL]
+        if ble_control and not user_input[CONF_BLUETOOTH_ENABLED]:
             return {CONF_BLE_CONTROL: "ble_control_needs_bluetooth"}
+        if user_input[CONF_CLOUD_ENABLED]:
+            return {}
+        if not (ble_control or user_input[CONF_WIFI_LOCAL_ENABLED]):
+            return {CONF_CLOUD_ENABLED: "cloud_off_needs_local"}
+        store = self.hass.data.get(DOMAIN, {}).get(TT_STORE) or LockStateStore(
+            self.hass
+        )
+        records = (await store.async_get_entry(self.config_entry.entry_id)).get(
+            "key_records", []
+        )
+        if records and not any(
+            LockSummary.model_validate(record).access_level.can_admin
+            for record in records
+        ):
+            return {CONF_CLOUD_ENABLED: "cloud_off_needs_admin"}
         return {}
 
 

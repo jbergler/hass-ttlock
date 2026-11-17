@@ -76,6 +76,21 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     return enable_custom_integrations
 
 
+# The wifi_proxy listener would otherwise bind a real TCP socket whenever an
+# entry enables it; stub the bind as a success so no socket is opened and
+# nothing lingers. Lock registration (register_lock) is untouched, so tests can
+# still exercise wifi_local availability with a fake session. wifi_proxy's own
+# tests drive the connection handler directly with in-memory streams.
+@pytest.fixture(autouse=True)
+def stub_wifi_proxy_bind():
+    """Keep the wifi_proxy listener socket-free in tests."""
+    with patch(
+        "custom_components.ttlock.wifi_proxy.WifiProxy.async_start",
+        new=AsyncMock(return_value=True),
+    ) as start:
+        yield start
+
+
 # persistent_notification doesn't exist during tests, patch it so we don't get stuck
 @pytest.fixture(name="skip_notifications", autouse=True)
 def skip_notifications_fixture():

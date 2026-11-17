@@ -149,7 +149,7 @@ class TTLockApi:
         """The authenticated account's TTLock user id.
 
         oauth2/getAccessToken returns it beside the tokens; the BLE handshake
-        embeds it in CHECK_USER_TIME. Falls back to
+        embeds it in CHECK_USER_TIME and CHECK_ADMIN. Falls back to
         `cached_uid` when the token carries none; 0 when neither does, in which
         case the lock decides whether 0 is accepted.
         """

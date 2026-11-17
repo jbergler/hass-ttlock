@@ -7,6 +7,8 @@ refresh, which __init__.py runs in the background after platforms are set up
 refresh confirms presence, not decided up front.
 """
 
+from custom_components.ttlock.binary_sensor import LockCloudOnline
+from custom_components.ttlock.coordinator import LockUpdateCoordinator
 from homeassistant.const import STATE_OFF, STATE_UNKNOWN
 
 
@@ -62,3 +64,18 @@ async def test_passage_mode_entity_created_immediately(
     await component_setup()
 
     assert hass.states.get("binary_sensor.front_door_passage_mode") is not None
+
+
+async def test_cloud_online_is_off_while_the_cloud_is_disabled(
+    coordinator, monkeypatch
+):
+    monkeypatch.setattr(
+        LockUpdateCoordinator, "gateway_online", property(lambda self: True)
+    )
+    sensor = LockCloudOnline(coordinator)
+    assert sensor.is_on is True
+
+    coordinator._cloud_enabled_option = False  # noqa: SLF001 - the option itself
+    sensor._update_from_coordinator()  # noqa: SLF001
+
+    assert sensor.is_on is False

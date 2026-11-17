@@ -361,6 +361,23 @@ class TestSetup:
         )
 
 
+class TestDisable:
+    async def test_cloud_off_keeps_the_cloudhook(
+        self, hass: HomeAssistant, handler: WebhookHandler, mock_cloud
+    ):
+        """Deleting it would change its URL and silently break push on re-enable."""
+        mock_cloud.async_active_subscription.return_value = True
+        hass.config_entries.async_update_entry(
+            handler.entry, data={**handler.entry.data, CONF_WEBHOOK_ID: "wh-1"}
+        )
+
+        with patch("custom_components.ttlock.webhook.webhook_unregister") as unregister:
+            await handler.async_disable()
+
+        unregister.assert_called_once_with(hass, "wh-1")
+        mock_cloud.async_delete_cloudhook.assert_not_called()
+
+
 class TestRegisterWebhook:
     async def test_does_not_log_the_webhook_url(
         self, hass: HomeAssistant, handler: WebhookHandler, caplog

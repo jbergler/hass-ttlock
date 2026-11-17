@@ -5,12 +5,23 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import callback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .const import CONF_WIFI_LOCAL_ENABLED, DEFAULT_WIFI_LOCAL_ENABLED
 from .coordinator import NOT_CONNECTABLE_REASON, LockUpdateCoordinator
-from .models import AccessLevel
+from .models import AccessLevel, Features
+
+
+def wifi_local_configured(
+    entry: ConfigEntry, coordinator: LockUpdateCoordinator
+) -> bool:
+    """Whether the WiFi proxy is on and the lock is a WiFi lock it can serve."""
+    return Features.wifi in coordinator.data.features and bool(
+        entry.options.get(CONF_WIFI_LOCAL_ENABLED, DEFAULT_WIFI_LOCAL_ENABLED)
+    )
 
 
 class BaseLockEntity(CoordinatorEntity[LockUpdateCoordinator], ABC):

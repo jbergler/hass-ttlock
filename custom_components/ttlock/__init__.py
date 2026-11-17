@@ -26,14 +26,20 @@ from homeassistant.helpers.device_registry import DeviceEntry
 from .api import RequestFailed, TTLockApi
 from .capture import LockTrafficCapture
 from .const import (
+    CONF_CLOUD_ENABLED,
     CONF_REGION,
+    CONF_WIFI_LOCAL_ENABLED,
+    DEFAULT_CLOUD_ENABLED,
     DEFAULT_REGION,
+    DEFAULT_WIFI_LOCAL_ENABLED,
     DOMAIN,
     TT_API,
     TT_CAPTURE,
     TT_GATEWAYS,
     TT_LOCKS,
     TT_STORE,
+    TT_WIFI_PROXY,
+    WIFI_PROXY_PORT,
 )
 from .coordinator import (
     GatewaysUpdateCoordinator,
@@ -41,10 +47,11 @@ from .coordinator import (
     async_store_enumeration,
     cloud_unreachable_issue_id,
 )
-from .models import LockSummary
+from .models import Features, LockSummary
 from .services import Services
 from .store import LockStateStore
 from .webhook import WebhookHandler
+from .wifi_proxy import WifiProxy
 
 PLATFORMS: list[Platform] = [
     Platform.LOCK,
@@ -158,8 +165,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     cache = await store.async_get_entry(entry.entry_id)
     client.cached_uid = cache.get("uid", 0)
+    cloud_enabled = entry.options.get(CONF_CLOUD_ENABLED, DEFAULT_CLOUD_ENABLED)
 
-    summaries = await _async_discover(hass, entry, client, store, cache)
+    summaries = await _async_discover(hass, entry, client, store, cache, cloud_enabled)
 
     locks = [
         LockUpdateCoordinator(hass, entry, client, summary, capture, store)
@@ -172,16 +180,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         *(coordinator.async_restore_lock_cache() for coordinator in locks)
     )
 
+    # With the cloud off the inbound webhook is severed too (see the
+    # WebhookHandler.setup/async_disable branch below), so there is nothing for
+    # the per-lock webhook listener to receive - skip wiring it up.
     for coordinator in locks:
-        entry.async_on_unload(coordinator.async_start_webhook_tracking())
+        if cloud_enabled:
+            entry.async_on_unload(coordinator.async_start_webhook_tracking())
         entry.async_on_unload(coordinator.async_start_ble_tracking())
         entry.async_on_unload(coordinator.async_start_local_refresh())
 
+    # One wifi_proxy listener per HA instance, shared by the entries that opt
+    # in: each registers its WiFi locks (MAC + credentials) so a connecting
+    # lock can be matched and driven.
+    if entry.options.get(CONF_WIFI_LOCAL_ENABLED, DEFAULT_WIFI_LOCAL_ENABLED):
+        await _async_register_wifi_proxy(hass, entry, locks)
+
     # Gateways only matter to the cloud, so they never hold setup up: a failed
     # first refresh leaves the cached list in place, marked unavailable.
-    gateway_coordinator = GatewaysUpdateCoordinator(hass, entry, client, store)
-    gateway_coordinator.async_restore(cache.get("gateways", []))
-    await gateway_coordinator.async_refresh()
+    gateway_coordinator: GatewaysUpdateCoordinator | None = None
+    if cloud_enabled:
+        gateway_coordinator = GatewaysUpdateCoordinator(hass, entry, client, store)
+        gateway_coordinator.async_restore(cache.get("gateways", []))
+        await gateway_coordinator.async_refresh()
 
     # Only published once discovery succeeded, so an entry waiting in
     # SETUP_RETRY doesn't leave half-initialized runtime data behind for
@@ -197,12 +217,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _OPTIONS_KEY: dict(entry.options),
     }
 
-    await WebhookHandler(
+    webhook_handler = WebhookHandler(
         hass,
         entry,
         capture,
         implementation.client_id,  # ty: ignore[unresolved-attribute] - implementation is a TTLockAuthImplementation
-    ).setup()
+    )
+    if cloud_enabled:
+        await webhook_handler.setup()
+    else:
+        # Cloud off: unregister the inbound webhook too, so the TTLock cloud
+        # can't reach HA either. Re-enabling reloads the entry and setup()
+        # above registers it again. Best-effort, like setup()'s own
+        # _register_webhook_safely - it must never fail entry setup (which
+        # would strand the lock's local transports too).
+        try:
+            await webhook_handler.async_disable()
+        except Exception:
+            # Severing inbound is best-effort - it must never fail entry setup.
+            _LOGGER.exception("Failed to disable the inbound webhook (cloud off)")
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -235,14 +268,19 @@ async def _async_discover(
     client: TTLockApi,
     store: LockStateStore,
     cache: dict,
+    cloud_enabled: bool,
 ) -> list[LockSummary]:
     """The entry's locks: from key/list, or from the cache when that fails.
 
-    A failure with a cache still loads the entry (raising a repair, and
-    starting reauth when the credentials were refused); without one, a
-    transient failure retries setup and refused credentials start reauth.
+    With the cloud off the cache is used without asking the cloud; only an
+    entry that has never enumerated makes this one call. A failure with a
+    cache still loads the entry (raising a repair, and starting reauth when the
+    credentials were refused); without one, a transient failure retries setup
+    and refused credentials start reauth.
     """
     cached = [LockSummary.model_validate(r) for r in cache.get("key_records", [])]
+    if cached and not cloud_enabled:
+        return cached
     # Also the call that refreshes the OAuth token if needed.
     try:
         summaries = await client.get_locks()
@@ -271,6 +309,80 @@ async def _async_discover(
         return cached
     await async_store_enumeration(hass, store, entry.entry_id, summaries, client.uid)
     return summaries or cached
+
+
+def _mac_bytes(mac: str) -> bytes | None:
+    """Turn a lock's AA:BB:.. MAC string into 6 raw bytes, or None if malformed."""
+    try:
+        raw = bytes.fromhex(mac.replace(":", "").replace("-", ""))
+    except ValueError:
+        return None
+    return raw if len(raw) == 6 else None
+
+
+async def _async_register_wifi_proxy(
+    hass: HomeAssistant, entry: ConfigEntry, locks: list[LockUpdateCoordinator]
+) -> None:
+    """Register this entry's WiFi locks with the shared proxy and start it."""
+    wifi_locks = [
+        (coordinator, mac)
+        for coordinator in locks
+        if Features.wifi in coordinator.data.features
+        and (mac := _mac_bytes(coordinator.data.mac)) is not None
+    ]
+    if not wifi_locks:
+        return
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    proxy: WifiProxy | None = domain_data.get(TT_WIFI_PROXY)
+    if proxy is None:
+        proxy = WifiProxy()
+        domain_data[TT_WIFI_PROXY] = proxy
+
+    registrations: list[tuple[int, object]] = []
+    for coordinator, mac in wifi_locks:
+        handle = proxy.register_lock(
+            coordinator.lock_id,
+            mac,
+            (lambda c=coordinator: c.cloud_enabled),
+            coordinator.wifi_credentials,
+            coordinator.async_wifi_local_changed,
+            coordinator.async_wifi_local_event,
+        )
+        registrations.append((coordinator.lock_id, handle))
+    entry.async_on_unload(lambda: _async_release_wifi_proxy(hass, registrations))
+
+    if await proxy.async_start():
+        ir.async_delete_issue(hass, DOMAIN, "wifi_proxy_bind_failed")
+    else:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            "wifi_proxy_bind_failed",
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="wifi_proxy_bind_failed",
+            translation_placeholders={"port": str(WIFI_PROXY_PORT)},
+        )
+
+
+async def _async_release_wifi_proxy(
+    hass: HomeAssistant, registrations: list[tuple[int, object]]
+) -> None:
+    """Drop an entry's locks from the shared proxy; stop it once none are left.
+
+    Decided by the proxy's own registrations, not by which entries are loaded,
+    so a sibling entry mid-setup keeps the locks it already registered.
+    """
+    domain_data = hass.data.get(DOMAIN, {})
+    proxy: WifiProxy | None = domain_data.get(TT_WIFI_PROXY)
+    if proxy is None:
+        return
+    for lock_id, handle in registrations:
+        proxy.unregister_lock(lock_id, handle)
+    if not proxy.has_registrations:
+        del domain_data[TT_WIFI_PROXY]
+        ir.async_delete_issue(hass, DOMAIN, "wifi_proxy_bind_failed")
+        await proxy.async_stop()
 
 
 async def _reload_on_options_update(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -325,8 +437,8 @@ async def async_remove_config_entry_device(
         return True
 
     known_macs = {coordinator.data.mac for coordinator in domain_data[TT_LOCKS]}
-    gateways = domain_data[TT_GATEWAYS].data or {}
-    known_macs.update(gateway.mac for gateway in gateways.values())
+    if (gateways := domain_data[TT_GATEWAYS]) is not None:
+        known_macs.update(gateway.mac for gateway in (gateways.data or {}).values())
 
     return not any((DOMAIN, mac) in device_entry.identifiers for mac in known_macs)
 

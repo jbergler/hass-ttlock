@@ -4,8 +4,8 @@ Coordinator state (coordinator.py) is otherwise entirely in-memory and
 recreated fresh on every restart. This holds what has to outlive that:
 
 - per lock: the local credentials and the last lock/detail and passage-mode
-  config, so a lock stays drivable over Bluetooth while the TTLock cloud is
-  unreachable or gone; and whether its door sensor has been
+  config, so a lock stays drivable over Bluetooth or WiFi-local while the
+  TTLock cloud is unreachable or gone; and whether its door sensor has been
   confirmed absent, since TTLock's API can't distinguish "no sensor paired"
   from a transient failure (see LockUpdateCoordinator's door-sensor handling);
 - per config entry: the account's key/list records, uid and gateway list, so

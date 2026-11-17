@@ -1,12 +1,17 @@
 """Constants for the TTLock integration."""
 
+from collections.abc import Mapping
 import logging
+from typing import Any
 
 DOMAIN = "ttlock"
 TT_API = "api"
 TT_LOCKS = "locks"
 TT_GATEWAYS = "gateways"
 TT_CAPTURE = "capture"
+# The single wifi_proxy listener, shared by every loaded entry. Underscore so
+# __init__.py's unload bookkeeping doesn't count it as a loaded config entry.
+TT_WIFI_PROXY = "_wifi_proxy"
 # The one LockStateStore shared by every loaded entry (see store.py).
 TT_STORE = "_lock_state_store"
 
@@ -56,13 +61,57 @@ DEFAULT_BLUETOOTH_ENABLED = True
 CONF_BLE_CONTROL = "ble_control"
 DEFAULT_BLE_CONTROL = False
 
-# The transports a lock can be driven over, and the order in which to try the
-# ones that are available (first success wins). See coordinator.lock/unlock.
+# The three transports a lock can be driven over, and the order in which to try
+# the ones that are available (first success wins). See coordinator.lock/unlock
+# and wifi_proxy.py.
 TRANSPORT_BLE = "ble"
+TRANSPORT_WIFI_LOCAL = "wifi_local"
 TRANSPORT_CLOUD = "cloud"
 
 CONF_TRANSPORT_ORDER = "transport_order"
-DEFAULT_TRANSPORT_ORDER = [TRANSPORT_BLE, TRANSPORT_CLOUD]
+DEFAULT_TRANSPORT_ORDER = [TRANSPORT_BLE, TRANSPORT_WIFI_LOCAL, TRANSPORT_CLOUD]
+
+
+def transport_order(options: Mapping[str, Any]) -> list[str]:
+    """The saved transport order, with any transport it lacks put back.
+
+    A missing transport goes straight after the one before it in
+    `DEFAULT_TRANSPORT_ORDER` (first if none), so an order saved before
+    WiFi-local existed (`ble`, `cloud`) becomes `ble`, `wifi_local`, `cloud`
+    and the user's first choice is kept.
+    """
+    saved = options.get(CONF_TRANSPORT_ORDER) or DEFAULT_TRANSPORT_ORDER
+    order = [t for t in dict.fromkeys(saved) if t in DEFAULT_TRANSPORT_ORDER]
+    for index, missing in enumerate(DEFAULT_TRANSPORT_ORDER):
+        if missing in order:
+            continue
+        earlier = [t for t in DEFAULT_TRANSPORT_ORDER[:index] if t in order]
+        order.insert(order.index(earlier[-1]) + 1 if earlier else 0, missing)
+    return order
+
+
+# Whether the cloud transport may be used, and whether the in-HA wifi_proxy
+# passes a connected lock through to the real cloud (True) or takes it over
+# locally (False). On by default so nothing changes until a user opts out.
+CONF_CLOUD_ENABLED = "cloud_enabled"
+DEFAULT_CLOUD_ENABLED = True
+
+# Accept WiFi locks redirected to Home Assistant (wifi_proxy.py). Off by default
+# so nothing listens unless asked; the listener runs while at least one loaded
+# entry turns this on, and only that entry's WiFi locks are registered with it.
+CONF_WIFI_LOCAL_ENABLED = "wifi_local_enabled"
+DEFAULT_WIFI_LOCAL_ENABLED = False
+
+# The in-HA wifi_proxy listener (wifi_proxy.py). One per HA instance; the lock
+# is pointed at it by a network redirect (see docs/adr/0004-wifi-local-proxy.md).
+# A bind failure raises a repair issue and leaves the other transports alone.
+WIFI_PROXY_BIND = "0.0.0.0"  # the lock reaches HA over the LAN
+WIFI_PROXY_PORT = 4999
+# Upstream TTLock WiFi-lock cloud used for pass-through: the hostname the lock
+# itself dials, resolved via DNS at connect time. A deployment that needs a
+# different upstream overrides DNS for this name.
+WIFI_CLOUD_HOST = "wifilock.ttlock.com"
+WIFI_CLOUD_PORT = 4999
 
 SIGNAL_NEW_DATA = f"{DOMAIN}.data_received"
 
