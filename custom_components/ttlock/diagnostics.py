@@ -58,7 +58,9 @@ async def async_get_config_entry_diagnostics(
                 _lock_diagnostics(coordinator)
                 for coordinator in hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS]
             ],
-            "gateways": hass.data[DOMAIN][config_entry.entry_id][TT_GATEWAYS].as_dict(),
+            "gateways": gateways.as_dict()
+            if (gateways := hass.data[DOMAIN][config_entry.entry_id][TT_GATEWAYS])
+            else [],
         },
         TO_REDACT,
     )

@@ -7,12 +7,79 @@ refresh, which __init__.py runs in the background after platforms are set up
 confirms presence, not decided up front.
 """
 
-from custom_components.ttlock.const import CONF_BLUETOOTH_ENABLED, DOMAIN, TT_LOCKS
+from unittest.mock import AsyncMock, patch
+
+from custom_components.ttlock.const import (
+    CONF_BLUETOOTH_ENABLED,
+    CONF_WIFI_LOCAL_ENABLED,
+    DOMAIN,
+    TRANSPORT_BLE,
+    TRANSPORT_CLOUD,
+    TT_LOCKS,
+)
+from custom_components.ttlock.coordinator import LockUpdateCoordinator
 from custom_components.ttlock.models import GatewayLink, LockSummary
-from custom_components.ttlock.sensor import LockBleSignal
+from custom_components.ttlock.sensor import LockBleSignal, LockConnection
 from homeassistant.helpers import entity_registry as er
 
 from .const import MOCK_LOCK_MAC
+
+
+def _registered(hass, coordinator, suffix: str) -> bool:
+    return (
+        er.async_get(hass).async_get_entity_id(
+            "sensor", DOMAIN, f"{coordinator.unique_id}-{suffix}"
+        )
+        is not None
+    )
+
+
+async def test_wifi_local_link_sensor_needs_the_wifi_proxy(
+    hass, component_setup, mock_api_responses
+):
+    mock_api_responses("default")
+    coordinator = await component_setup()
+    assert not _registered(hass, coordinator, "lockwifilocallink")
+
+
+async def _wifi_local_entry(hass, new_mocked_entry, *, wifi_lock: bool, **options):
+    lock = LockSummary(
+        lockId=7252408,
+        lockAlias="Front Door",
+        lockMac=MOCK_LOCK_MAC,
+        featureValue=f"{2**56:X}" if wifi_lock else "F44354CD5F3",
+        userType="110301",
+    )
+    entry = new_mocked_entry(options={CONF_WIFI_LOCAL_ENABLED: True, **options})
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.ttlock.api.TTLockApi.get_locks",
+        AsyncMock(return_value=[lock]),
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done(wait_background_tasks=True)
+    return hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
+
+
+async def test_wifi_local_link_sensor_with_the_wifi_proxy_on(
+    hass, multi_account_credential, new_mocked_entry, mock_api_responses
+):
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+    coordinator = await _wifi_local_entry(hass, new_mocked_entry, wifi_lock=True)
+    assert _registered(hass, coordinator, "lockwifilocallink")
+
+
+async def test_no_wifi_local_entities_for_a_lock_without_wifi(
+    hass, multi_account_credential, new_mocked_entry, mock_api_responses
+):
+    """The WiFi proxy option alone does nothing for a Bluetooth-only lock."""
+    mock_api_responses("default")
+    await multi_account_credential(hass)
+    coordinator = await _wifi_local_entry(
+        hass, new_mocked_entry, wifi_lock=False, cloud_enabled=False
+    )
+    assert not _registered(hass, coordinator, "lockwifilocallink")
 
 
 async def test_sensor_battery_entity_appears_once_presence_confirmed(
@@ -220,3 +287,31 @@ async def test_bluetooth_signal_entity_reports_locally_heard_rssi(
 async def test_bluetooth_signal_entity_has_no_attributes_when_never_heard(coordinator):
     """A lock we've never heard exposes no source/last_seen to report."""
     assert LockBleSignal(coordinator).extra_state_attributes is None
+
+
+async def test_connection_shows_bluetooth_when_it_reads_the_lock_without_control(
+    coordinator, monkeypatch
+):
+    """The value is the transport that reaches the lock, not the control path."""
+    monkeypatch.setattr(
+        LockUpdateCoordinator, "ble_reachable", property(lambda self: True)
+    )
+    sensor = LockConnection(coordinator)
+
+    assert coordinator.ble_control_enabled is False
+    assert sensor.native_value == TRANSPORT_BLE
+    attrs = sensor.extra_state_attributes
+    assert attrs is not None
+    assert attrs["preferred_control_transport"] == TRANSPORT_CLOUD
+
+
+async def test_connection_never_shows_a_disabled_cloud(coordinator):
+    coordinator._cloud_enabled_option = False  # noqa: SLF001 - the option itself
+    sensor = LockConnection(coordinator)
+
+    assert coordinator.cloud_connectable is True
+    assert sensor.native_value is None
+    attrs = sensor.extra_state_attributes
+    assert attrs is not None
+    assert attrs["available_transports"] == []
+    assert attrs["preferred_control_transport"] is None

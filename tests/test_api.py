@@ -150,7 +150,7 @@ class TestGetAndPost:
     async def test_region_defaults_to_eu(
         self, mock_oauth_session, mocker: AiohttpClientMocker
     ):
-        """Omitting region preserves the historic EU host."""
+        """Omitting region selects the EU host."""
         session = mocker.create_session(None)
         eu_api = TTLockApi(session, mock_oauth_session)
         mocker.get(f"{BASE}lock/detail", json={"errcode": 0, "lockId": 1})
@@ -159,6 +159,31 @@ class TestGetAndPost:
 
         assert str(mocker.mock_calls[0][1]).startswith(BASE)
         await session.close()
+
+    @pytest.mark.parametrize("method", ["get", "post"])
+    async def test_every_request_is_bounded(self, mock_oauth_session, method):
+        """An unresponsive cloud fails the call instead of hanging it."""
+        websession = MagicMock()
+        setattr(websession, method, AsyncMock(side_effect=TimeoutError()))
+        api = TTLockApi(websession, mock_oauth_session)
+
+        with pytest.raises(TimeoutError):
+            await getattr(api, method)("lock/detail", lockId=1)
+
+        assert getattr(websession, method).call_args.kwargs["timeout"].total == 15
+
+
+class TestUid:
+    def test_uid_comes_from_the_token(self, ttlock_api, mock_oauth_session):
+        mock_oauth_session.token = {"uid": 7}
+        ttlock_api.cached_uid = 9
+        assert ttlock_api.uid == 7
+
+    def test_uid_falls_back_to_the_cached_one(self, ttlock_api, mock_oauth_session):
+        mock_oauth_session.token = {}
+        assert ttlock_api.uid == 0
+        ttlock_api.cached_uid = 9
+        assert ttlock_api.uid == 9
 
 
 class TestPerLockLogging:
@@ -217,6 +242,27 @@ class TestPerLockLogging:
         assert any(
             record.name == "custom_components.ttlock.api" for record in caplog.records
         )
+
+    async def test_live_debug_log_redacts_lock_secrets(
+        self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker, caplog
+    ):
+        """The live log, like the capture, never shows lock/detail's secrets."""
+        secrets = {
+            "aesKeyStr": "aes-secret-value",
+            "noKeyPwd": "nokey-secret-value",
+            "adminPwd": "admin-secret-value",
+            "lockKey": "lockkey-secret-value",
+            "lockData": "lockdata-secret-value",
+        }
+        mocker.get(f"{BASE}lock/detail", json={"errcode": 0, **secrets})
+        caplog.set_level(logging.DEBUG, logger="custom_components.ttlock.device.42")
+
+        await ttlock_api.get("lock/detail", lockId=42)
+
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert "Received response" in logged
+        for value in secrets.values():
+            assert value not in logged
 
 
 class TestDebugCapture:
