@@ -22,7 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .coordinator import async_add_when_sensor_present, lock_coordinators
-from .entity import BaseLockEntity
+from .entity import BaseLockEntity, LockDiagnosticEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +46,7 @@ async def async_setup_entry(
                 LockTrigger(coordinator),
                 *([LockGateway(coordinator)] if coordinator.has_gateway else []),
                 *([LockBleSignal(coordinator)] if coordinator.ble_enabled else []),
+                LockConnection(coordinator),
             )
         ]
     )
@@ -199,4 +200,33 @@ class LockBleSignal(BaseLockEntity, SensorEntity):
             "source": ble.source,
             "connectable": ble.connectable,
             "last_seen": ble.last_seen.isoformat() if ble.last_seen else None,
+        }
+
+
+class LockConnection(LockDiagnosticEntity, SensorEntity):
+    """How the lock is currently reaching the integration.
+
+    Value is the preferred transport that can reach the lock right now (BLE or
+    cloud), by the configured transport order, or unknown if
+    nothing can. Attributes explain whether a command would avoid the cloud and
+    which transport last drove the bolt.
+    """
+
+    def _update_from_coordinator(self) -> None:
+        """Fetch state from the device."""
+        self._attr_name = f"{self.coordinator.data.name} Connection"
+        self._attr_native_value = self.coordinator.active_transport
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """The full connectivity picture at a glance."""
+        coordinator = self.coordinator
+        return {
+            "cloud_free": coordinator.control_cloud_free,
+            "preferred_control_transport": coordinator.preferred_control_transport,
+            "last_transport": coordinator.last_transport,
+            "available_transports": coordinator.available_transports,
+            "transport_order": coordinator.transport_order,
+            "cloud_online": coordinator.cloud_online,
+            "ble_reachable": coordinator.ble_reachable,
         }

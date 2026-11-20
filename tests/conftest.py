@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass, field
 import sys
 from time import time
 import types
@@ -23,7 +24,13 @@ import pytest
 from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.ttlock.api import TTLockApi
-from custom_components.ttlock.ble_protocol import FrameAssembler
+from custom_components.ttlock.ble_protocol import (
+    Command,
+    Frame,
+    FrameAssembler,
+    LockVersion,
+    parse_aes_key,
+)
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import DOMAIN, TT_LOCKS
 from custom_components.ttlock.coordinator import LockUpdateCoordinator
@@ -52,8 +59,10 @@ from .const import (
     LOCK_STATE_UNKNOWN,
     LOCK_STATE_UNLOCKED,
     LOCK_STATE_UNLOCKED_DOOR_CLOSED,
+    MOCK_LOCK_AES_KEY,
     MOCK_LOCK_MAC,
     MOCK_LOCK_NAME,
+    MOCK_LOCK_VERSION,
     PASSAGE_MODE_6_TO_6_7_DAYS,
     SENSOR_DETAILS,
     TTLOCK_SERVICE_UUID,
@@ -559,3 +568,64 @@ def mock_gatt(
         "bleak_retry_connector.establish_connection", establish_connection
     )
     return recorder
+
+
+@pytest.fixture
+def lock_version() -> LockVersion:
+    return LockVersion.from_cloud(MOCK_LOCK_VERSION)
+
+
+@pytest.fixture
+def aes_key() -> bytes:
+    return parse_aes_key(MOCK_LOCK_AES_KEY)
+
+
+@dataclass
+class SpeakingLock:
+    """A GattRecorder that answers commands the way a lock would.
+
+    `answer` scripts the reply for one opcode (or every opcode, with
+    `to=None`); without `data` the reply echoes the command with success, as a
+    lock's reply does. What the lock was asked lands in `asked`.
+    """
+
+    gatt: GattRecorder
+    version: LockVersion
+    asked: list[Frame] = field(default_factory=list)
+    _replies: dict[int | None, tuple[int, bytes | None, bytes | None, int]] = field(
+        default_factory=dict
+    )
+
+    def answer(
+        self,
+        command: int = Command.RESPONSE,
+        data: bytes | None = None,
+        key: bytes | None = None,
+        chunk: int = 20,
+        *,
+        to: int | None = None,
+    ) -> None:
+        self._replies[to] = (command, data, key, chunk)
+
+    def stay_silent(self) -> None:
+        self._replies.clear()
+
+    def respond(self, raw: bytes) -> list[bytes]:
+        frame = Frame.decode(raw)
+        self.asked.append(frame)
+        reply = self._replies.get(frame.command, self._replies.get(None))
+        if reply is None:
+            return []
+        command, data, key, chunk = reply
+        if data is None:
+            data = bytes([frame.command, 0x01])
+        wire = Frame(self.version, command, data).encode(aes_key=key)
+        return [wire[i : i + chunk] for i in range(0, len(wire), chunk)]
+
+
+@pytest.fixture
+def speaking_lock(mock_gatt: GattRecorder, lock_version: LockVersion) -> SpeakingLock:
+    lock = SpeakingLock(mock_gatt, lock_version)
+    lock.answer()
+    mock_gatt.responder = lock.respond
+    return lock

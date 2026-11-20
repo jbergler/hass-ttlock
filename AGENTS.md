@@ -36,9 +36,9 @@ Even narrower while editing one file: `uv run ruff check --fix <file>`, `uv run 
 
 ## Where to look next
 
-- **`docs/architecture.md`** — transports (cloud REST, local BLE), state propagation (polling / webhook / BLE merge), full file map. Read before editing anything under `custom_components/ttlock/`.
+- **`docs/architecture.md`**: the transports (cloud REST, local BLE), transport order, state propagation (polling / webhook / local reads), full file map. Read before editing anything under `custom_components/ttlock/`.
 - **`docs/testing.md`** — strict pytest and `ty` detail; read before suppressing a warning.
-- **`CONTEXT.md`** — domain glossary (Connectable, Discovery, Debug capture, Developer application, Webhook group). Use these exact terms.
+- **`CONTEXT.md`**: domain glossary (Connectable, Discovery, Transport, and more). Use these exact terms.
 - **`docs/adr/`** — architectural decisions. Read the ADR touching your area before changing its mechanism.
 - **`docs/ttlock-cloud-api/`** — mirrored TTLock cloud API reference (EU region).
 - **`docs/agents/`** — agent workflow skills: `implement.md` (PR workflow), `domain.md` (glossary + ADR etiquette), `issue-tracker.md` (`gh` CLI), `triage-labels.md`.

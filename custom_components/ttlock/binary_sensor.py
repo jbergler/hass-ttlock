@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -22,7 +23,7 @@ from .coordinator import (
     gateway_coordinator,
     lock_coordinators,
 )
-from .entity import BaseLockEntity
+from .entity import BaseLockEntity, LockDiagnosticEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,7 +37,17 @@ async def async_setup_entry(
 
     coordinators = list(lock_coordinators(hass, entry))
 
-    async_add_entities([PassageMode(coordinator) for coordinator in coordinators])
+    async_add_entities(
+        [
+            entity
+            for coordinator in coordinators
+            for entity in (
+                PassageMode(coordinator),
+                LockCloudOnline(coordinator),
+                *([LockBleReachable(coordinator)] if coordinator.ble_enabled else []),
+            )
+        ]
+    )
 
     for lock_coordinator in coordinators:
         async_add_when_sensor_present(
@@ -135,3 +146,33 @@ class GatewaySensor(CoordinatorEntity[GatewaysUpdateCoordinator], BinarySensorEn
         gateway = self.coordinator.data.get(self.gateway_id)
         if gateway is not None:
             self._attr_name = f"{gateway.name} Status"
+
+
+class _ConnectivityBinary(LockDiagnosticEntity, BinarySensorEntity):
+    """Base for the connectivity binary sensors."""
+
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+
+
+class LockBleReachable(_ConnectivityBinary):
+    """Whether HA's own Bluetooth can currently reach the lock."""
+
+    def _update_from_coordinator(self) -> None:
+        """Fetch state from the device."""
+        self._attr_name = f"{self.coordinator.data.name} Bluetooth Reachable"
+        self._attr_is_on = self.coordinator.ble_reachable
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """The locally-heard RSSI, when the lock is in range."""
+        ble = self.coordinator.ble
+        return {"rssi": ble.rssi if ble.in_range else None}
+
+
+class LockCloudOnline(_ConnectivityBinary):
+    """Whether the TTLock cloud can currently reach the lock."""
+
+    def _update_from_coordinator(self) -> None:
+        """Fetch state from the device."""
+        self._attr_name = f"{self.coordinator.data.name} Cloud Online"
+        self._attr_is_on = self.coordinator.cloud_online

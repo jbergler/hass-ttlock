@@ -7,6 +7,8 @@ TT_API = "api"
 TT_LOCKS = "locks"
 TT_GATEWAYS = "gateways"
 TT_CAPTURE = "capture"
+# The one LockStateStore shared by every loaded entry (see store.py).
+TT_STORE = "_lock_state_store"
 
 CONF_WEBHOOK_URL = "webhook_url"
 CONF_WEBHOOK_STATUS = "webhook_status"
@@ -15,8 +17,7 @@ CONF_WEBHOOK_STATUS = "webhook_status"
 # differs - the /v3/ API paths, /oauth2/token endpoint and the
 # clientId/accessToken/date auth scheme are identical (see issue #319).
 # Region is chosen in the config flow and stored in entry.data[CONF_REGION];
-# entries created before region support have no such key and are treated as
-# "eu" (DEFAULT_REGION), preserving the historic hardcoded-EU behaviour.
+# an entry without the key is treated as "eu" (DEFAULT_REGION).
 CONF_REGION = "region"
 DEFAULT_REGION = "eu"
 # Option labels live in translations (selector.region.options) - keep this
@@ -37,8 +38,8 @@ REGIONS: dict[str, dict[str, str]] = {
 # tier refreshes rarely-changing detail (battery, name, autolock/sound config,
 # passage-mode config, gateway link) only once per slow interval. Webhooks
 # (webhook.py) carry real-time changes, so the poll is mostly reconciliation -
-# these defaults are deliberately gentler than the historic 15-minute loop to
-# keep multi-lock accounts under TTLock's free-tier API-call budget (#320).
+# these defaults are deliberately gentle to keep multi-lock accounts under
+# TTLock's free-tier API-call budget (#320).
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_SLOW_POLL_INTERVAL = "slow_poll_interval"
 DEFAULT_POLL_INTERVAL_MINUTES = 30
@@ -48,6 +49,20 @@ DEFAULT_SLOW_POLL_INTERVAL_HOURS = 6
 # off leaves the lock reachable over the cloud only.
 CONF_BLUETOOTH_ENABLED = "bluetooth_enabled"
 DEFAULT_BLUETOOTH_ENABLED = True
+
+# Drive the bolt over Bluetooth. Off by default: it needs
+# the lock in connectable range, so it is opt-in. Requires
+# CONF_BLUETOOTH_ENABLED; with the radio off this has no effect.
+CONF_BLE_CONTROL = "ble_control"
+DEFAULT_BLE_CONTROL = False
+
+# The transports a lock can be driven over, and the order in which to try the
+# ones that are available (first success wins). See coordinator.lock/unlock.
+TRANSPORT_BLE = "ble"
+TRANSPORT_CLOUD = "cloud"
+
+CONF_TRANSPORT_ORDER = "transport_order"
+DEFAULT_TRANSPORT_ORDER = [TRANSPORT_BLE, TRANSPORT_CLOUD]
 
 SIGNAL_NEW_DATA = f"{DOMAIN}.data_received"
 

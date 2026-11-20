@@ -3,7 +3,7 @@
 import asyncio
 from datetime import timedelta
 from types import MappingProxyType
-from unittest.mock import AsyncMock, Mock, PropertyMock
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import dateparser
 import pytest
@@ -13,10 +13,11 @@ from pytest_homeassistant.common import (
 )
 
 from custom_components.ttlock.api import RequestFailed, TTLockApi
-from custom_components.ttlock.ble import BleData
+from custom_components.ttlock.ble import BleData, BleError
 from custom_components.ttlock.ble_protocol import LockStatus
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
+    CONF_BLE_CONTROL,
     CONF_BLUETOOTH_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
@@ -35,14 +36,17 @@ from custom_components.ttlock.coordinator import (
     door_state_known,
 )
 from custom_components.ttlock.models import (
+    Features,
     Gateway,
     GatewayLink,
+    Lock,
     LockState as WireLockState,
     LockSummary,
     PassageModeConfig,
     WebhookEvent,
 )
 from custom_components.ttlock.store import LockStateStore
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -52,6 +56,8 @@ from .const import (
     LOCK_STATE_LOCKED,
     LOCK_STATE_UNKNOWN,
     LOCK_STATE_UNLOCKED,
+    MOCK_LOCK_AES_KEY,
+    MOCK_LOCK_VERSION,
     PASSAGE_MODE_6_TO_6_7_DAYS,
     PASSAGE_MODE_ALL_DAY_WEEKDAYS,
     WEBHOOK_LOCK_10AM_UTC,
@@ -636,7 +642,9 @@ class TestLockUpdateCoordinator:
         async def test_an_online_gateway_grants_grace_without_ble(
             self, hass, verified, cloud_state, api
         ):
-            gw_coord = GatewaysUpdateCoordinator(hass, verified.config_entry, api)
+            gw_coord = GatewaysUpdateCoordinator(
+                hass, verified.config_entry, api, LockStateStore(hass)
+            )
             gw_coord.last_update_success = True
             gw_coord.data = {
                 1: Gateway(
@@ -1899,12 +1907,37 @@ class TestLockUpdateCoordinator:
             assert coordinator.data.locked is False
 
     class TestAsyncUpdateDataErrors:
-        async def test_wraps_api_errors_in_update_failed(
-            self, coordinator: LockUpdateCoordinator, monkeypatch
+        async def test_a_slow_tier_failure_never_fails_the_poll(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
         ):
+            """Detail is not availability: a lock whose state reads stays usable."""
+            mock_api_responses("default")
+            get_lock = AsyncMock(side_effect=RequestFailed("boom"))
+            monkeypatch.setattr(coordinator.api, "get_lock", get_lock)
             monkeypatch.setattr(
                 coordinator.api,
-                "get_lock",
+                "get_lock_passage_mode_config",
+                AsyncMock(side_effect=TimeoutError()),
+            )
+            monkeypatch.setattr(
+                coordinator.api, "get_locks", AsyncMock(side_effect=TimeoutError())
+            )
+
+            await coordinator.async_refresh()
+            await coordinator.async_refresh()
+
+            assert coordinator.last_update_success is True
+            assert coordinator.data.locked is False  # the fast tier still landed
+            get_lock.assert_awaited_once()  # stamped on the failed attempt
+
+        async def test_a_failed_state_read_still_fails_once_verified(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            monkeypatch.setattr(
+                coordinator.api,
+                "get_lock_state",
                 AsyncMock(side_effect=RequestFailed("boom")),
             )
 
@@ -1939,8 +1972,10 @@ class TestLockUpdateCoordinator:
             coordinator.data.locked = False
             monkeypatch.setattr(coordinator.api, "lock", AsyncMock(return_value=False))
 
-            await coordinator.lock()
+            with pytest.raises(HomeAssistantError) as excinfo:
+                await coordinator.lock()
 
+            assert excinfo.value.translation_key == "lock_failed"
             assert coordinator.data.locked is False
             assert coordinator.data.action_pending is False
 
@@ -1967,8 +2002,10 @@ class TestLockUpdateCoordinator:
                 coordinator.api, "unlock", AsyncMock(return_value=False)
             )
 
-            await coordinator.unlock()
+            with pytest.raises(HomeAssistantError) as excinfo:
+                await coordinator.unlock()
 
+            assert excinfo.value.translation_key == "unlock_failed"
             assert coordinator.data.locked is True
             assert coordinator.data.action_pending is False
 
@@ -2014,10 +2051,14 @@ class TestLockUpdateCoordinator:
             coordinator._process_webhook_data(
                 WebhookEvent.model_validate(WEBHOOK_UNLOCK_10AM_UTC)
             )
-            await coordinator.set_auto_lock(False)
-            await asyncio.sleep(1.5)
+            pending = coordinator._auto_lock_task
+            assert pending is not None
 
-            assert coordinator.data.locked is False
+            await coordinator.set_auto_lock(False)
+            await asyncio.sleep(0)
+
+            assert coordinator._auto_lock_task is None
+            assert pending.cancelled()
 
         async def test_failure_leaves_state_unchanged(
             self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
@@ -2078,8 +2119,227 @@ class TestLockUpdateCoordinator:
 class TestGatewaysUpdateCoordinator:
     async def test_wraps_api_errors_in_update_failed(self, hass, api):
         config_entry = MockConfigEntry(domain=DOMAIN)
-        gateways_coordinator = GatewaysUpdateCoordinator(hass, config_entry, api)
+        gateways_coordinator = GatewaysUpdateCoordinator(
+            hass, config_entry, api, LockStateStore(hass)
+        )
         api.get_gateways = AsyncMock(side_effect=RequestFailed("boom"))
 
         with pytest.raises(UpdateFailed):
             await gateways_coordinator._async_update_data()
+
+
+class TestBleFirstControl:
+    """lock()/unlock() drive the bolt over Bluetooth first, cloud as fallback.
+
+    The routing (option gate, reachability, credential check, fallback) is what
+    these cover; the wire protocol itself is tested in test_ble_protocol.py and
+    the session in test_ble.py, so async_control is patched out here.
+    """
+
+    def _coordinator(self, hass, api, monkeypatch, *, control=True, reachable=True):
+        # The api fixture has no OAuth session; uid would read from the token.
+        monkeypatch.setattr(TTLockApi, "uid", 7, raising=False)
+        options = {CONF_BLUETOOTH_ENABLED: True, CONF_BLE_CONTROL: control}
+        entry = MockConfigEntry(domain=DOMAIN, options=options)
+        entry.add_to_hass(hass)
+        summary = LockSummary(
+            lockId=7252408,
+            lockAlias="Test Lock",
+            lockMac="00:00:00:00:00:00",
+            hasGateway=1,
+            userType="110301",
+        )
+        coord = LockUpdateCoordinator(
+            hass, entry, api, summary, LockTrafficCapture(), LockStateStore(hass)
+        )
+        # Credentials as a slow-tier detail fetch would have left them.
+        coord._ble_version = MOCK_LOCK_VERSION
+        coord._ble_key = MOCK_LOCK_AES_KEY
+        coord._ble_unlock_key = "2345"
+        coord._ble_lock_flag_pos = 0
+        if reachable:
+            coord.ble = BleData(rssi=-55, connectable=True)
+        return coord
+
+    async def test_unlock_prefers_bluetooth(
+        self, hass, api, mock_bluetooth, monkeypatch
+    ):
+        coord = self._coordinator(hass, api, monkeypatch)
+        coord.data.locked = True
+        cloud = AsyncMock(return_value=True)
+        monkeypatch.setattr(coord.api, "unlock", cloud)
+        with patch(
+            "custom_components.ttlock.coordinator.async_control",
+            new=AsyncMock(return_value=None),
+        ) as ble_control:
+            await coord.unlock()
+
+        ble_control.assert_awaited_once()
+        assert ble_control.await_args is not None
+        assert ble_control.await_args.kwargs["unlock"] is True
+        cloud.assert_not_called()
+        assert coord.data.locked is False
+
+    async def test_lock_prefers_bluetooth(self, hass, api, mock_bluetooth, monkeypatch):
+        coord = self._coordinator(hass, api, monkeypatch)
+        coord.data.locked = False
+        cloud = AsyncMock(return_value=True)
+        monkeypatch.setattr(coord.api, "lock", cloud)
+        with patch(
+            "custom_components.ttlock.coordinator.async_control",
+            new=AsyncMock(return_value=None),
+        ) as ble_control:
+            await coord.lock()
+
+        assert ble_control.await_args is not None
+        assert ble_control.await_args.kwargs["unlock"] is False
+        cloud.assert_not_called()
+        assert coord.data.locked is True
+
+    async def test_a_bluetooth_failure_falls_back_to_the_cloud(
+        self, hass, api, mock_bluetooth, monkeypatch
+    ):
+        coord = self._coordinator(hass, api, monkeypatch)
+        coord.data.locked = True
+        cloud = AsyncMock(return_value=True)
+        monkeypatch.setattr(coord.api, "unlock", cloud)
+        with patch(
+            "custom_components.ttlock.coordinator.async_control",
+            new=AsyncMock(side_effect=BleError("out of range mid-command")),
+        ):
+            await coord.unlock()
+
+        cloud.assert_awaited_once()
+        assert coord.data.locked is False
+
+    async def test_option_off_uses_the_cloud(
+        self, hass, api, mock_bluetooth, monkeypatch
+    ):
+        coord = self._coordinator(hass, api, monkeypatch, control=False)
+        coord.data.locked = True
+        cloud = AsyncMock(return_value=True)
+        monkeypatch.setattr(coord.api, "unlock", cloud)
+        with patch(
+            "custom_components.ttlock.coordinator.async_control",
+            new=AsyncMock(return_value=None),
+        ) as ble_control:
+            await coord.unlock()
+
+        ble_control.assert_not_called()
+        cloud.assert_awaited_once()
+        assert coord.data.locked is False
+
+    async def test_out_of_range_uses_the_cloud(
+        self, hass, api, mock_bluetooth, monkeypatch
+    ):
+        coord = self._coordinator(hass, api, monkeypatch, reachable=False)
+        coord.data.locked = True
+        cloud = AsyncMock(return_value=True)
+        monkeypatch.setattr(coord.api, "unlock", cloud)
+        with patch(
+            "custom_components.ttlock.coordinator.async_control",
+            new=AsyncMock(return_value=None),
+        ) as ble_control:
+            await coord.unlock()
+
+        ble_control.assert_not_called()
+        cloud.assert_awaited_once()
+
+
+class TestBleCredentialCaching:
+    """BLE credentials persist across restarts so control survives a cloud outage.
+
+    lock/detail is the only cloud source of these; caching them means a lock in
+    Bluetooth range is driveable straight after a restart, and while the cloud
+    is unreachable entirely.
+    """
+
+    async def test_persists_after_a_detail_fetch(self, coordinator):
+        coordinator._ble_version = MOCK_LOCK_VERSION
+        coordinator._ble_key = MOCK_LOCK_AES_KEY
+        coordinator._ble_unlock_key = "2345"
+        coordinator._ble_lock_flag_pos = 3
+
+        await coordinator._persist_ble_credentials()
+
+        stored = await coordinator._store.async_get(coordinator.lock_id)
+        assert stored["ble_key"] == MOCK_LOCK_AES_KEY
+        assert stored["ble_version"] == MOCK_LOCK_VERSION
+        assert stored["ble_unlock_key"] == "2345"
+        assert stored["ble_lock_flag_pos"] == 3
+
+    async def test_restores_cached_credentials(self, coordinator):
+        await coordinator._store.async_update(
+            coordinator.lock_id,
+            ble_version=MOCK_LOCK_VERSION,
+            ble_key=MOCK_LOCK_AES_KEY,
+            ble_unlock_key="2345",
+            ble_lock_flag_pos=4,
+        )
+        coordinator._ble_key = None  # as it would be before any cloud fetch
+
+        await coordinator.async_restore_lock_cache()
+
+        assert coordinator._ble_key == MOCK_LOCK_AES_KEY
+        assert coordinator._ble_version == MOCK_LOCK_VERSION
+        assert coordinator._ble_unlock_key == "2345"
+        assert coordinator._ble_lock_flag_pos == 4
+
+    async def test_restore_does_not_clobber_live_credentials(self, coordinator):
+        coordinator._ble_key = "live-key"
+        await coordinator._store.async_update(coordinator.lock_id, ble_key="stale-key")
+
+        await coordinator.async_restore_lock_cache()
+
+        assert coordinator._ble_key == "live-key"
+
+    async def test_restore_is_a_noop_with_nothing_cached(self, coordinator):
+        coordinator._ble_key = None
+
+        await coordinator.async_restore_lock_cache()
+
+        assert coordinator._ble_key is None
+
+    async def test_an_incomplete_detail_never_replaces_a_complete_set(
+        self, coordinator, mock_api_responses, monkeypatch
+    ):
+        """The last complete credentials may be the only way left to drive it."""
+        mock_api_responses("default")
+        coordinator._ble_version = MOCK_LOCK_VERSION
+        coordinator._ble_key = MOCK_LOCK_AES_KEY
+        coordinator._ble_unlock_key = "2345"
+        partial = Lock.model_validate({**BASIC_LOCK_DETAILS, "lockKey": None})
+        monkeypatch.setattr(
+            coordinator.api, "get_lock", AsyncMock(return_value=partial)
+        )
+
+        await coordinator.async_refresh()
+
+        assert coordinator._ble_unlock_key == "2345"
+        assert coordinator.data.model == partial.model  # the rest still applies
+
+    async def test_detail_and_passage_survive_a_restart(
+        self, hass, coordinator, mock_api_responses, api
+    ):
+        mock_api_responses("default")
+        await coordinator.async_refresh()
+
+        restarted = LockUpdateCoordinator(
+            hass,
+            coordinator.config_entry,
+            api,
+            coordinator.summary,
+            LockTrafficCapture(),
+            coordinator._store,
+        )
+        await restarted.async_restore_lock_cache()
+
+        assert restarted._ble_key == MOCK_LOCK_AES_KEY
+        assert restarted.data.model == BASIC_LOCK_DETAILS["modelNum"]
+        assert restarted.data.firmware_version == BASIC_LOCK_DETAILS["firmwareRevision"]
+        assert restarted.data.auto_lock_seconds == 60
+        assert restarted.data.lock_sound is False
+        assert restarted.data.features == Features.from_feature_value("F44354CD5F3")
+        assert (
+            restarted.data.passage_mode_config == coordinator.data.passage_mode_config
+        )

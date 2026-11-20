@@ -9,8 +9,15 @@ from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.ttlock.api import TTLockApi
 from custom_components.ttlock.capture import LockTrafficCapture
-from custom_components.ttlock.const import DOMAIN, TO_REDACT, TT_GATEWAYS, TT_LOCKS
-from custom_components.ttlock.coordinator import LockUpdateCoordinator
+from custom_components.ttlock.const import (
+    DOMAIN,
+    TO_REDACT,
+    TT_GATEWAYS,
+    TT_LOCKS,
+)
+from custom_components.ttlock.coordinator import (
+    LockUpdateCoordinator,
+)
 from custom_components.ttlock.diagnostics import (
     async_get_config_entry_diagnostics,
     async_get_device_diagnostics,
@@ -138,6 +145,8 @@ async def test_diagnostics_includes_raw_connectivity_fields_and_gateway_status(
     assert lock["connectable"] is False
     assert lock["has_gateway"] == 0
     assert lock["feature_value"] == "000000"
+    # Transport diagnostics: defaults when nothing is overridden or connected.
+    assert lock["transport_order"] == ["ble", "cloud"]
 
     gateways = diagnostics["gateways"]
     assert gateways[0]["name"] == "Test Gateway"
@@ -238,7 +247,9 @@ async def _refresh_captured_lock(hass: HomeAssistant) -> tuple[dict, dict]:
 
         hass.data.setdefault(DOMAIN, {})[config_entry.entry_id] = {
             TT_LOCKS: [coordinator],
-            TT_GATEWAYS: SimpleNamespace(as_dict=list),
+            TT_GATEWAYS: SimpleNamespace(
+                as_dict=list, last_update_success=True, data={}
+            ),
         }
 
         device_registry = dr.async_get(hass)
@@ -291,18 +302,14 @@ async def test_debug_capture_appears_redacted_in_diagnostics(
     assert not any(record.name == device_logger_name for record in caplog.records)
 
 
-async def test_debug_capture_redaction_does_not_affect_live_log_output(
+async def test_live_log_and_debug_capture_are_both_redacted(
     hass: HomeAssistant, caplog
 ):
-    """Redaction is a diagnostics-surface concern only, not a change to live logging.
+    """With the device logger at DEBUG, the live record is redacted too.
 
     Companion to test_debug_capture_appears_redacted_in_diagnostics above, which
-    proves capture doesn't depend on the device logger's level by keeping it above
-    DEBUG (so nothing live is even emitted). This test does the opposite: it raises
-    the device logger to DEBUG so a live record *is* emitted, then asserts both
-    sides of the contrast - the live log record carries the sensitive field
-    unredacted, while the same field is redacted in that lock's captured
-    diagnostics output.
+    keeps the device logger above DEBUG. Here a live record *is* emitted, and
+    neither it nor the captured diagnostics output carries the sensitive field.
     """
     device_logger_name = DEBUG_CAPTURE_DEVICE_LOGGER_NAME
     caplog.set_level(logging.DEBUG, logger=device_logger_name)
@@ -318,7 +325,8 @@ async def test_debug_capture_redaction_does_not_affect_live_log_output(
         if record.name == device_logger_name
     ]
     assert any("Received response" in message for message in live_messages)
-    assert any(sensitive_value in message for message in live_messages)
+    assert not any(sensitive_value in message for message in live_messages)
+    assert any("**REDACTED**" in message for message in live_messages)
 
     capture_result = diagnostics["locks"][0]["debug_capture"]
     captured_messages = [record["message"] for record in capture_result["records"]]

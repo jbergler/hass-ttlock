@@ -1,5 +1,7 @@
 """Config flow for TTLock."""
 
+from collections.abc import Mapping
+import itertools
 import logging
 import secrets
 from typing import Any
@@ -8,6 +10,7 @@ import probatio as vol
 
 from homeassistant.components import webhook
 from homeassistant.config_entries import (
+    SOURCE_REAUTH,
     ConfigEntry,
     ConfigFlowResult,
     OptionsFlow,
@@ -26,18 +29,31 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_BLE_CONTROL,
     CONF_BLUETOOTH_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_REGION,
     CONF_SLOW_POLL_INTERVAL,
+    CONF_TRANSPORT_ORDER,
     CONF_WEBHOOK_URL,
+    DEFAULT_BLE_CONTROL,
     DEFAULT_BLUETOOTH_ENABLED,
     DEFAULT_POLL_INTERVAL_MINUTES,
     DEFAULT_REGION,
     DEFAULT_SLOW_POLL_INTERVAL_HOURS,
+    DEFAULT_TRANSPORT_ORDER,
     DOMAIN,
     REGIONS,
 )
+
+# Every ordering of the transports, keyed by a hyphen-joined string
+# (a valid translation key; transport names never contain a hyphen). Stored as
+# a list in the options; a dropdown avoids depending on a multi-select
+# preserving the order the user picked.
+TRANSPORT_ORDER_OPTIONS: dict[str, list[str]] = {
+    "-".join(order): list(order)
+    for order in itertools.permutations(DEFAULT_TRANSPORT_ORDER)
+}
 
 
 class TTLockAuthFlowHandler(
@@ -104,6 +120,14 @@ class TTLockAuthFlowHandler(
         canonical URL here means the user doesn't paste a soon-to-be-replaced
         guess into the TTLock console.
         """
+        if self.source == SOURCE_REAUTH:
+            entry = self._get_reauth_entry()
+            uid = entry.data["token"].get("uid")
+            if uid is not None and data["token"].get("uid") != uid:
+                return self.async_abort(reason="wrong_account")
+            return self.async_update_reload_and_abort(
+                entry, data_updates={"token": data["token"]}
+            )
         data[CONF_REGION] = self._region
         auth_impl = self.flow_impl.domain
         data[CONF_WEBHOOK_ID] = (
@@ -111,6 +135,23 @@ class TTLockAuthFlowHandler(
         )
         self._oauth_data = data
         return await self.async_step_webhook()
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Start a fresh login when TTLock refuses the stored credentials."""
+        self._region = entry_data.get(CONF_REGION, DEFAULT_REGION)
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask before logging in again, then reuse the entry's credentials."""
+        if user_input is None:
+            return self.async_show_form(step_id="reauth_confirm")
+        return await self.async_step_pick_implementation(
+            {"implementation": self._get_reauth_entry().data["auth_implementation"]}
+        )
 
     async def async_step_webhook(
         self, user_input: dict[str, Any] | None = None
@@ -137,30 +178,47 @@ class TTLockAuthFlowHandler(
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        """Get the options flow for polling cadence and Bluetooth."""
+        """Get the options flow for polling and transports."""
         return TTLockOptionsFlow()
 
 
 class TTLockOptionsFlow(OptionsFlow):
     """Let users tune how the integration reaches their locks.
 
-    Three knobs, all global to the account entry: the fast poll interval
-    that re-verifies lock state, the slow interval that governs how often
-    detail/passage/gateway data is re-fetched (see coordinator.py), and
-    whether locks may be read over Bluetooth at all. Defaults are gentle
-    because webhooks carry real-time changes; users whose webhooks are
-    unreliable can dial the fast interval back down. Changing any of them
+    All global to the account entry: the fast poll interval that re-verifies
+    lock state, the slow interval for cloud detail (see coordinator.py),
+    Bluetooth reads and control, and the transport order. Changing any of them
     reloads the entry so new coordinators pick the values up.
     """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the polling and Bluetooth options."""
+        """Manage the polling and transport options."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
+            errors = await self._async_validate(user_input)
+            if not errors:
+                # The dropdown yields an option key; store the ordered list the
+                # coordinator reads.
+                return self.async_create_entry(
+                    data={
+                        **user_input,
+                        CONF_TRANSPORT_ORDER: TRANSPORT_ORDER_OPTIONS[
+                            user_input[CONF_TRANSPORT_ORDER]
+                        ],
+                    }
+                )
 
-        options = self.config_entry.options
+        options = {
+            **self.config_entry.options,
+            CONF_TRANSPORT_ORDER: "-".join(
+                self.config_entry.options.get(
+                    CONF_TRANSPORT_ORDER, DEFAULT_TRANSPORT_ORDER
+                )
+            ),
+            **(user_input or {}),
+        }
         webhook_id = self.config_entry.data.get(CONF_WEBHOOK_ID)
         webhook_url = self.config_entry.data.get(CONF_WEBHOOK_URL) or (
             _safe_webhook_url(self.hass, webhook_id) if webhook_id else ""
@@ -211,10 +269,31 @@ class TTLockOptionsFlow(OptionsFlow):
                             CONF_BLUETOOTH_ENABLED, DEFAULT_BLUETOOTH_ENABLED
                         ),
                     ): BooleanSelector(),
+                    vol.Required(
+                        CONF_BLE_CONTROL,
+                        default=options.get(CONF_BLE_CONTROL, DEFAULT_BLE_CONTROL),
+                    ): BooleanSelector(),
+                    vol.Required(
+                        CONF_TRANSPORT_ORDER,
+                        default=options[CONF_TRANSPORT_ORDER],
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=list(TRANSPORT_ORDER_OPTIONS),
+                            mode=SelectSelectorMode.DROPDOWN,
+                            translation_key="transport_order",
+                        )
+                    ),
                 }
             ),
             description_placeholders={"webhook_url": webhook_url},
+            errors=errors,
         )
+
+    async def _async_validate(self, user_input: dict[str, Any]) -> dict[str, str]:
+        """Refuse combinations that would leave the locks unreachable."""
+        if user_input[CONF_BLE_CONTROL] and not user_input[CONF_BLUETOOTH_ENABLED]:
+            return {CONF_BLE_CONTROL: "ble_control_needs_bluetooth"}
+        return {}
 
 
 def _sibling_webhook_id(hass, auth_implementation: str) -> str | None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from homeassistant.const import EntityCategory
 from homeassistant.core import callback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -65,3 +66,23 @@ class BaseLockEntity(CoordinatorEntity[LockUpdateCoordinator], ABC):
             # via admin REST paths.
             attrs["remote_unlock_enabled"] = self.coordinator.ekey_remote_unlock
         return attrs
+
+
+class LockDiagnosticEntity(BaseLockEntity):
+    """A diagnostic that keeps reporting while the lock is unreachable.
+
+    Connectivity diagnostics must show "down" exactly when nothing reaches the
+    lock, so they skip the base entity's availability and ekey attributes.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def available(self) -> bool:
+        """Always available."""
+        return True
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """No ekey or availability attributes."""
+        return None

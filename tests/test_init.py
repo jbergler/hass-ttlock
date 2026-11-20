@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 from time import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiohttp import ClientConnectorError, ClientResponseError, ConnectionTimeoutError
 import pytest
@@ -12,10 +12,14 @@ from pytest_homeassistant.common import (
 )
 from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
-from custom_components.ttlock import async_remove_config_entry_device
-from custom_components.ttlock.api import RequestFailed
+from custom_components.ttlock import (
+    async_remove_config_entry_device,
+    coordinator as coord_mod,
+)
+from custom_components.ttlock.api import RequestFailed, TTLockApi
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
+    CONF_BLE_CONTROL,
     CONF_BLUETOOTH_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
@@ -23,9 +27,16 @@ from custom_components.ttlock.const import (
     DOMAIN,
     SIGNAL_NEW_DATA,
     TT_CAPTURE,
+    TT_GATEWAYS,
     TT_LOCKS,
 )
-from custom_components.ttlock.models import Gateway, LockSummary, WebhookEvent
+from custom_components.ttlock.models import (
+    Features,
+    Gateway,
+    LockSummary,
+    WebhookEvent,
+)
+from custom_components.ttlock.store import LockStateStore
 from custom_components.ttlock.webhook import WebhookHandler
 from homeassistant.components.application_credentials import (
     ClientCredential,
@@ -34,13 +45,19 @@ from homeassistant.components.application_credentials import (
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_WEBHOOK_ID, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.network import NoURLAvailableError
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 
-from .const import WEBHOOK_LOCK_10AM_UTC
+from .const import (
+    MOCK_LOCK_AES_KEY,
+    MOCK_LOCK_MAC,
+    MOCK_LOCK_VERSION,
+    WEBHOOK_LOCK_10AM_UTC,
+)
 
 TOKEN_URL = "https://euapi.ttlock.com/oauth2/token"
 
@@ -59,6 +76,16 @@ async def test_setup_unload_and_reload_entry(hass, component_setup, mock_api_res
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert entry.state == ConfigEntryState.NOT_LOADED
+
+
+def _wifi_lock(lock_id: int = 7252408, mac: str = MOCK_LOCK_MAC) -> LockSummary:
+    return LockSummary(
+        lockId=lock_id,
+        lockAlias="WiFi Lock",
+        lockMac=mac,
+        featureValue=f"{2**56:X}",
+        userType="110301",
+    )
 
 
 async def test_reload_releases_the_webhook_listener(
@@ -639,8 +666,8 @@ async def test_setup_recovers_once_cloud_is_reachable(
 async def test_auth_errcode_from_get_locks_is_a_setup_error(
     hass, config_entry, mock_api_responses, errcode
 ):
-    """Invalid/revoked credentials won't fix themselves on retry. There's no
-    reauth flow to hand them to, so these stay a hard setup error.
+    """Invalid/revoked credentials won't fix themselves on retry: without a
+    cache to start from they are a setup error, handed to reauth.
     """
     mock_api_responses("default")
     with patch(
@@ -703,3 +730,322 @@ async def test_rejected_token_refresh_is_a_setup_error(
     await _setup_entry(hass, entry)
 
     assert entry.state is ConfigEntryState.SETUP_ERROR
+
+
+# --- setup without the cloud: the cached entry ----------------------------------
+
+
+def _cached_summary() -> LockSummary:
+    return LockSummary(
+        lockId=7252408,
+        lockAlias="Front Door",
+        lockMac=MOCK_LOCK_MAC,
+        featureValue="F44354CD5F3",
+        hasGateway=1,
+        userType="110301",
+    )
+
+
+def _seed_cache(hass_storage, entry_id: str, **entry_extra) -> None:
+    """A store as a previous run with the cloud reachable would have left it."""
+    hass_storage["ttlock_lock_state"] = {
+        "version": 1,
+        "key": "ttlock_lock_state",
+        "data": {
+            "7252408": {
+                "ble_version": MOCK_LOCK_VERSION,
+                "ble_key": MOCK_LOCK_AES_KEY,
+                "ble_unlock_key": "2345",
+                "ble_lock_flag_pos": 3,
+                "detail": {"modelNum": "SN9206_PV53", "autoLockTime": 60},
+            },
+            "entries": {
+                entry_id: {
+                    "key_records": [
+                        _cached_summary().model_dump(mode="json", by_alias=True)
+                    ],
+                    "uid": 777,
+                    **entry_extra,
+                }
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ClientConnectorError(MagicMock(), OSError("Network is unreachable")),
+        ClientResponseError(MagicMock(), (), status=503),
+        ValueError("Expecting value: line 1 column 1"),
+        RequestFailed("API returned: internal server error", errcode=90000),
+    ],
+    ids=["connector", "http_503", "bad_json", "errcode_90000"],
+)
+async def test_cloud_failure_with_a_cache_still_loads_the_entry(
+    hass, hass_storage, config_entry, mock_api_responses, error
+):
+    """A key/list that fails for any cloud reason starts the entry from the cache."""
+    mock_api_responses("default")
+    _seed_cache(hass_storage, config_entry.entry_id)
+    with patch("custom_components.ttlock.api.TTLockApi.get_locks", side_effect=error):
+        await _setup_entry(hass, config_entry)
+
+    assert config_entry.state is ConfigEntryState.LOADED
+    coordinator = hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS][0]
+    assert coordinator.lock_id == 7252408
+    assert ir.async_get(hass).async_get_issue(
+        DOMAIN, f"cloud_unreachable_{config_entry.entry_id}"
+    )
+    assert not hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RequestFailed("API returned: token invalid", errcode=10004),
+        ConfigEntryAuthFailed("refresh token rejected"),
+    ],
+    ids=["errcode_10004", "oauth_reauth"],
+)
+async def test_refused_credentials_with_a_cache_load_and_start_reauth(
+    hass, hass_storage, config_entry, mock_api_responses, error
+):
+    """Refused credentials need the user, but the locks must keep working."""
+    mock_api_responses("default")
+    _seed_cache(hass_storage, config_entry.entry_id)
+    with patch("custom_components.ttlock.api.TTLockApi.get_locks", side_effect=error):
+        await _setup_entry(hass, config_entry)
+
+    assert config_entry.state is ConfigEntryState.LOADED
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert [flow["context"]["source"] for flow in flows] == ["reauth"]
+
+
+async def test_refused_credentials_without_a_cache_start_reauth(
+    hass, config_entry, mock_api_responses
+):
+    mock_api_responses("default")
+    with patch(
+        "custom_components.ttlock.api.TTLockApi.get_locks",
+        side_effect=RequestFailed("API returned: token invalid", errcode=10004),
+    ):
+        await _setup_entry(hass, config_entry)
+
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert [flow["context"]["source"] for flow in flows] == ["reauth"]
+
+
+async def test_cloud_down_entry_drives_the_lock_over_bluetooth(
+    hass,
+    hass_storage,
+    config_entry,
+    mock_bluetooth,
+    ble_advertisement,
+    monkeypatch,
+):
+    """The whole point: with the cloud gone the cached lock still unlocks."""
+    unreachable = AsyncMock(
+        side_effect=ClientConnectorError(MagicMock(), OSError("unreachable"))
+    )
+    monkeypatch.setattr(TTLockApi, "get", unreachable)
+    monkeypatch.setattr(TTLockApi, "post", unreachable)
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=dict(config_entry.data), options={CONF_BLE_CONTROL: True}
+    )
+    _seed_cache(hass_storage, entry.entry_id)
+    mock_bluetooth.seed = ble_advertisement()
+    control = AsyncMock()
+    monkeypatch.setattr(coord_mod, "async_control", control)
+
+    await _setup_entry(hass, entry)
+    assert entry.state is ConfigEntryState.LOADED
+    coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
+    assert coordinator.data.model == "SN9206_PV53"
+    assert coordinator.data.auto_lock_seconds == 60
+
+    unreachable.reset_mock()
+    await hass.services.async_call(
+        "lock",
+        "unlock",
+        {
+            "entity_id": next(
+                entity.entity_id
+                for entity in coordinator.entities
+                if entity.entity_id.startswith("lock.")
+            )
+        },
+        blocking=True,
+    )
+
+    control.assert_awaited_once()
+    assert control.await_args is not None
+    assert control.await_args.args[6:8] == (777, 3)  # cached uid and lockFlagPos
+    unreachable.assert_not_awaited()
+    assert coordinator.data.locked is False
+
+
+async def test_successful_enumeration_is_cached_with_the_uid(
+    hass, hass_storage, config_entry, mock_api_responses
+):
+    mock_api_responses("default")
+    config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        config_entry,
+        data={
+            **config_entry.data,
+            "token": {**config_entry.data["token"], "uid": 777},
+        },
+    )
+    await _setup_entry(hass, config_entry)
+
+    cached = await hass.data[DOMAIN]["_lock_state_store"].async_get_entry(
+        config_entry.entry_id
+    )
+    assert cached["uid"] == 777
+    assert [record["lockId"] for record in cached["key_records"]] == [7252408]
+
+
+async def test_empty_enumeration_keeps_the_cache(
+    hass, hass_storage, config_entry, mock_api_responses
+):
+    """An empty key/list must not erase the only way to start offline."""
+    mock_api_responses("default")
+    _seed_cache(hass_storage, config_entry.entry_id)
+    with patch("custom_components.ttlock.api.TTLockApi.get_locks", return_value=[]):
+        await _setup_entry(hass, config_entry)
+
+    assert len(hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS]) == 1
+    cached = await hass.data[DOMAIN]["_lock_state_store"].async_get_entry(
+        config_entry.entry_id
+    )
+    assert len(cached["key_records"]) == 1
+
+
+async def test_slow_tier_enumeration_clears_the_repair_and_reloads_on_change(
+    hass, hass_storage, config_entry, mock_api_responses, monkeypatch
+):
+    mock_api_responses("default")
+    _seed_cache(hass_storage, config_entry.entry_id)
+    with patch(
+        "custom_components.ttlock.api.TTLockApi.get_locks",
+        side_effect=ClientConnectorError(MagicMock(), OSError("unreachable")),
+    ):
+        await _setup_entry(hass, config_entry)
+    coordinator = hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS][0]
+    hass.data[DOMAIN]["_ekey_cache"].clear()  # the slow tier is due again
+    second = _cached_summary().model_copy(update={"id": 2, "mac": "00:00:00:00:00:02"})
+    monkeypatch.setattr(
+        TTLockApi, "get_locks", AsyncMock(return_value=[_cached_summary(), second])
+    )
+
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        await coordinator.async_refresh()
+
+    assert not ir.async_get(hass).async_get_issue(
+        DOMAIN, f"cloud_unreachable_{config_entry.entry_id}"
+    )
+    reload.assert_called_once_with(config_entry.entry_id)
+
+
+async def test_gateway_failure_never_blocks_setup(
+    hass, hass_storage, config_entry, mock_api_responses, monkeypatch
+):
+    """A failed gateway refresh leaves the cached gateways, unavailable."""
+    mock_api_responses("default")
+    gateway = Gateway(
+        gatewayId=1, gatewayName="Hall", gatewayMac="11:22:33:44:55:66", isOnline=True
+    )
+    _seed_cache(
+        hass_storage,
+        config_entry.entry_id,
+        gateways=[gateway.model_dump(mode="json", by_alias=True)],
+    )
+    monkeypatch.setattr(
+        TTLockApi, "get_gateways", AsyncMock(side_effect=TimeoutError())
+    )
+
+    await _setup_entry(hass, config_entry)
+
+    assert config_entry.state is ConfigEntryState.LOADED
+    gateways = hass.data[DOMAIN][config_entry.entry_id][TT_GATEWAYS]
+    assert gateways.last_update_success is False
+    assert gateways.data == {1: gateway}
+
+
+async def test_removing_the_entry_purges_its_cached_secrets(
+    hass, hass_storage, config_entry, mock_api_responses
+):
+    mock_api_responses("default")
+    _seed_cache(hass_storage, config_entry.entry_id)
+    await _setup_entry(hass, config_entry)
+
+    assert await hass.config_entries.async_remove(config_entry.entry_id)
+
+    store = LockStateStore(hass)
+    assert await store.async_get(7252408) == {}
+    assert await store.async_get_entry(config_entry.entry_id) == {}
+
+
+async def test_removing_an_entry_running_on_its_cache_clears_its_repair(
+    hass, hass_storage, config_entry, mock_api_responses
+):
+    mock_api_responses("default")
+    _seed_cache(hass_storage, config_entry.entry_id)
+    with patch(
+        "custom_components.ttlock.api.TTLockApi.get_locks", side_effect=TimeoutError()
+    ):
+        await _setup_entry(hass, config_entry)
+    issue_id = f"cloud_unreachable_{config_entry.entry_id}"
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
+
+    assert await hass.config_entries.async_remove(config_entry.entry_id)
+
+    assert not ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
+
+
+async def test_setup_restores_cached_credentials_before_any_detail(
+    hass, hass_storage, config_entry, mock_api_responses, monkeypatch
+):
+    mock_api_responses("default")
+    _seed_cache(hass_storage, config_entry.entry_id)
+    monkeypatch.setattr(
+        TTLockApi, "get_lock", AsyncMock(side_effect=RuntimeError("cloud down"))
+    )
+
+    await _setup_entry(hass, config_entry)
+
+    coordinator = hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS][0]
+    credentials = coordinator._ble_control_credentials()  # noqa: SLF001
+    assert credentials is not None
+    assert credentials[2:] == ("2345", 777, 3)
+
+
+async def test_a_partial_cached_detail_keeps_the_key_records_features(
+    hass, hass_storage, config_entry, mock_api_responses, monkeypatch
+):
+    """A partial detail cache must not wipe the lock's features.
+
+    Restoring a cache that holds just autoLockTime on restart must leave the
+    key record's features (WiFi), model and firmware alone.
+    """
+    mock_api_responses("default")
+    _seed_cache(hass_storage, config_entry.entry_id)
+    state = hass_storage["ttlock_lock_state"]["data"]
+    state["7252408"]["detail"] = {"autoLockTime": 5}
+    state["entries"][config_entry.entry_id]["key_records"] = [
+        _wifi_lock().model_dump(mode="json", by_alias=True)
+    ]
+    monkeypatch.setattr(
+        TTLockApi, "get_locks", AsyncMock(side_effect=TimeoutError("cloud down"))
+    )
+    monkeypatch.setattr(
+        TTLockApi, "get_lock", AsyncMock(side_effect=TimeoutError("cloud down"))
+    )
+    await _setup_entry(hass, config_entry)
+
+    assert config_entry.state is ConfigEntryState.LOADED
+    coordinator = hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS][0]
+    assert coordinator.data.auto_lock_seconds == 5
+    assert Features.wifi in coordinator.data.features

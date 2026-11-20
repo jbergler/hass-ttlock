@@ -36,7 +36,7 @@ import time
 from typing import Any, cast
 from urllib.parse import urljoin
 
-from aiohttp import ClientResponse, ClientSession
+from aiohttp import ClientResponse, ClientSession, ClientTimeout
 
 from homeassistant.components.application_credentials import AuthImplementation
 from homeassistant.exceptions import HomeAssistantError
@@ -68,6 +68,10 @@ _LOGGER = logging.getLogger(__name__)
 # reliably handle concurrent commands; don't remove this to "parallelize"
 # lock operations.
 GW_LOCK = asyncio.Lock()
+
+# Bounds every request, so an unresponsive cloud fails a call instead of
+# holding setup, a poll or a service action indefinitely.
+REQUEST_TIMEOUT = ClientTimeout(total=15)
 
 
 class RequestFailed(HomeAssistantError):
@@ -130,6 +134,8 @@ class TTLockApi:
         self._oauth_session = oauth_session
         self._capture = capture
         self._base = REGIONS[region]["api_base"]
+        # The uid last seen in a token, persisted per entry; see `uid`.
+        self.cached_uid = 0
 
     async def async_get_access_token(self) -> str:
         """Return a valid access token."""
@@ -137,6 +143,17 @@ class TTLockApi:
             await self._oauth_session.async_ensure_token_valid()
 
         return self._oauth_session.token["access_token"]
+
+    @property
+    def uid(self) -> int:
+        """The authenticated account's TTLock user id.
+
+        oauth2/getAccessToken returns it beside the tokens; the BLE handshake
+        embeds it in CHECK_USER_TIME. Falls back to
+        `cached_uid` when the token carries none; 0 when neither does, in which
+        case the lock decides whether 0 is accepted.
+        """
+        return int(self._oauth_session.token.get("uid", 0) or 0) or self.cached_uid
 
     async def _add_auth(self, **kwargs) -> dict:
         kwargs["clientId"] = self._oauth_session.implementation.client_id  # ty: ignore[unresolved-attribute] - implementation is a TTLockAuthImplementation
@@ -217,11 +234,12 @@ class TTLockApi:
             url,
             params=await self._add_auth(**kwargs),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=REQUEST_TIMEOUT,
         )
         return await self._parse_resp(resp, log_id, logger, lock_id)
 
     async def post(self, path: str, **kwargs: Any) -> Mapping[str, Any]:
-        """Make GET request to the API with kwargs as query params."""
+        """Make POST request to the API with kwargs as form data."""
         log_id = token_hex(2)
         lock_id = kwargs.get("lockId")
         logger = self._logger_for(kwargs)
@@ -239,6 +257,7 @@ class TTLockApi:
             url,
             params=await self._add_auth(),
             data=kwargs,
+            timeout=REQUEST_TIMEOUT,
         )
         return await self._parse_resp(resp, log_id, logger, lock_id)
 
