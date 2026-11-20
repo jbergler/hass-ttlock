@@ -9,8 +9,27 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .coordinator import lock_coordinators
-from .entity import BaseLockEntity
+from .coordinator import LockUpdateCoordinator, lock_coordinators
+from .entity import BaseLockEntity, local_admin_configured
+from .models import Features
+
+
+def _switches_for(
+    coordinator: LockUpdateCoordinator, *, local_admin: bool
+) -> list[SwitchEntity]:
+    """The admin switches a given lock should expose.
+
+    Tamper alert and passage auto-unlock have no cloud setter, so they need a
+    local transport and the lock to report the feature.
+    """
+    entities: list[SwitchEntity] = [AutoLock(coordinator), LockSound(coordinator)]
+    if local_admin:
+        features = coordinator.data.features
+        if Features.tamper_alert in features:
+            entities.append(TamperAlert(coordinator))
+        if Features.passage_mode in features:
+            entities.append(PassageAutoUnlock(coordinator))
+    return entities
 
 
 async def async_setup_entry(
@@ -31,9 +50,9 @@ async def async_setup_entry(
             entity
             for coordinator in lock_coordinators(hass, entry)
             if coordinator.access_level.can_admin
-            for entity in (
-                AutoLock(coordinator),
-                LockSound(coordinator),
+            for entity in _switches_for(
+                coordinator,
+                local_admin=local_admin_configured(entry, coordinator),
             )
         ]
     )
@@ -54,7 +73,9 @@ class AutoLock(BaseLockEntity, SwitchEntity):
     def _update_from_coordinator(self) -> None:
         """Fetch state from the device."""
         self._attr_name = f"{self.coordinator.data.name} Auto Lock"
-        self._attr_is_on = (self.coordinator.data.auto_lock_seconds or 0) > 0
+        seconds = self.coordinator.data.auto_lock_seconds
+        # None (never read) is unknown, not off.
+        self._attr_is_on = None if seconds is None else seconds > 0
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the entity on."""
@@ -82,3 +103,52 @@ class LockSound(BaseLockEntity, SwitchEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
         await self.coordinator.set_lock_sound(False)
+
+
+class TamperAlert(BaseLockEntity, SwitchEntity):
+    """The lock's tamper alarm.
+
+    State comes from the cloud detail (`tamperAlert`), or from the lock while
+    the cloud can't supply it. The cloud has no setter, so a change goes over a
+    local transport.
+    """
+
+    _attr_device_class = SwitchDeviceClass.SWITCH
+
+    def _update_from_coordinator(self) -> None:
+        """Fetch state from the device."""
+        self._attr_name = f"{self.coordinator.data.name} Tamper Alert"
+        self._attr_is_on = self.coordinator.data.tamper_alert
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the entity on."""
+        await self.coordinator.set_tamper_alert(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the entity off."""
+        await self.coordinator.set_tamper_alert(False)
+
+
+class PassageAutoUnlock(BaseLockEntity, SwitchEntity):
+    """Passage-mode auto-unlock.
+
+    When on, the lock unlocks at the start of a passage-mode window. State comes
+    from the cloud detail (`passageModeAutoUnlock`), or from the lock while the
+    cloud can't supply it. The cloud has no setter, so a change goes over a
+    local transport.
+    """
+
+    _attr_device_class = SwitchDeviceClass.SWITCH
+
+    def _update_from_coordinator(self) -> None:
+        """Fetch state from the device."""
+        self._attr_name = f"{self.coordinator.data.name} Passage Auto Unlock"
+        self._attr_is_on = self.coordinator.data.passage_auto_unlock
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the entity on."""
+        await self.coordinator.set_passage_auto_unlock(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the entity off."""
+        await self.coordinator.set_passage_auto_unlock(False)

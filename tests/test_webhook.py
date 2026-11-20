@@ -283,8 +283,13 @@ class TestDebugCapture:
         captured = [r["message"] for r in capture.diagnostics_for(7252408)["records"]]
         webhook_lines = [m for m in captured if "Got webhook data" in m]
         assert webhook_lines
-        assert all(message.count("**REDACTED**") == 3 for message in webhook_lines)
-        for secret in ("135790", "Front Door User", "owner@example.com"):
+        assert all(message.count("**REDACTED**") == 4 for message in webhook_lines)
+        for secret in (
+            "135790",
+            "Front Door User",
+            "owner@example.com",
+            WEBHOOK_UNLOCK_10AM_UTC["lockMac"],
+        ):
             assert not any(secret in message for message in captured)
 
     async def test_webhook_data_without_lock_id_is_not_captured(
@@ -359,6 +364,23 @@ class TestSetup:
             severity=ANY,
             translation_key="webhook_registration_failed",
         )
+
+
+class TestDisable:
+    async def test_cloud_off_keeps_the_cloudhook(
+        self, hass: HomeAssistant, handler: WebhookHandler, mock_cloud
+    ):
+        """Deleting it would change its URL and silently break push on re-enable."""
+        mock_cloud.async_active_subscription.return_value = True
+        hass.config_entries.async_update_entry(
+            handler.entry, data={**handler.entry.data, CONF_WEBHOOK_ID: "wh-1"}
+        )
+
+        with patch("custom_components.ttlock.webhook.webhook_unregister") as unregister:
+            await handler.async_disable()
+
+        unregister.assert_called_once_with(hass, "wh-1")
+        mock_cloud.async_delete_cloudhook.assert_not_called()
 
 
 class TestRegisterWebhook:

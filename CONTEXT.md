@@ -1,19 +1,19 @@
 # hass-ttlock
 
-A Home Assistant integration bridging TTLock's cloud API into HA entities and services.
+A Home Assistant integration bridging TTLock locks into HA entities and services, over TTLock's cloud API, Bluetooth and WiFi-local.
 
 ## Language
 
 **Connectable**:
-Whether anything can currently reach a lock: TTLock's cloud (via a paired gateway or the lock's own WiFi radio) or Home Assistant's own Bluetooth radio (the lock is advertising in range, or a recent local read succeeded). The cloud half is decided once when the lock is discovered; the Bluetooth half changes while running, and polling starts and stops to match.
+Whether anything can currently reach a lock. Three things can: TTLock's cloud (with the cloud on, via a paired gateway or the lock's own WiFi radio), Home Assistant's own Bluetooth radio, or a WiFi-local **Takeover** session. Bluetooth counts when the lock is advertising in range, or a recent local read succeeded. A takeover session counts when it is ready, or when a recent takeover client is reconnecting. The cloud half is decided once when the lock is discovered. The Bluetooth and WiFi-local halves change while running, and polling starts and stops to match.
 _Avoid_: reachable, online (online/offline is used for gateways specifically, a separate concept)
 
 **Discovery**:
-The one-time enumeration of every lock in a TTLock account, performed at integration startup. Determines each lock's initial Connectable verdict.
+The one-time enumeration of every lock in a TTLock account, performed at integration startup. It reads `v3/key/list`, or the cached records when the cloud is off or key/list fails. Determines each lock's initial Connectable verdict.
 
 **Ekey**:
 TTLock's wire-level record for one account's access to one lock. Every account-to-lock relationship (owner of their own lock, recipient of a shared key) is represented as a single ekey. Discovery enumerates ekeys via `v3/key/list`, which is why Shared locks appear alongside owned ones.
-_Avoid_: key (ambiguous with physical keys / API keys), credential
+_Avoid_: key (ambiguous with physical keys / API keys), credential (see **Credential**)
 
 **Shared lock**:
 A lock this account can see because someone else's administrator sent it an ekey. Discovery returns it the same way as an owned lock, but its Access level is `authorized` or `member` - not `owner` - so some actions are restricted.
@@ -34,3 +34,31 @@ _Avoid_: account, app (ambiguous with the HA integration/entry itself)
 **Webhook group**:
 The set of config entries that share one developer application's `client_id`, and therefore share exactly one registered webhook. Registration is refcounted across the group — registered on the first member's setup, unregistered on the last member's unload — with no member acting as a privileged "owner." See `docs/adr/0002-shared-webhook-per-developer-application.md`.
 _Avoid_: webhook owner
+
+**Credential**:
+A passcode, IC card or fingerprint that opens a lock (`CredentialNames`, `clear_credentials`, the Credentials sensor). In code, "credentials" also names a lock's keys from `lock/detail` (`WifiCredentials`). User-facing text calls those keys.
+_Avoid_: using it for an Ekey
+
+**Transport**:
+One way of reaching a lock: `ble` (Bluetooth), `wifi_local` (**WiFi-local**) or `cloud` (TTLock REST). Lock and unlock try the available transports in the user's `transport_order` and stop at the first success. Admin ops and state reads try `ble` and `wifi_local` in `transport_order` too. Admin ops leave the cloud to the caller as a fallback. State reads try the cloud last.
+_Avoid_: channel, path
+
+**WiFi-local**:
+The transport that drives a WiFi lock over its own cloud connection, once the user's network redirects that connection to Home Assistant's listener (`wifi_proxy.py`, tcp/4999). Opt-in per entry (`wifi_local_enabled`). Each connected lock is in **Pass-through** or **Takeover**. When HA holds the lock's key, a connection must prove the key before HA admits it (ADR 0004). The UI calls the listener the WiFi proxy.
+_Avoid_: LAN mode, local Wi-Fi API
+
+**Pass-through**:
+A WiFi-local session while the cloud is on. HA relays the lock to the real TTLock cloud and only observes. The lock's reply to the cloud's first command is the key proof. A pass-through session proves that the redirect works. It cannot read or command the lock, so lock and unlock still go over the cloud. It falls back to **Takeover** when the cloud host cannot be reached or resolves to HA itself.
+_Avoid_: relay mode, bridge mode
+
+**Takeover**:
+A WiFi-local session in which HA plays the cloud and drives the lock itself. This happens while the cloud is off, or after a pass-through fallback. The key proof is the lock's `f7 01` reply to HA's `F7`. The lock is offline to the TTLock cloud while taken over. Only a takeover session counts towards Connectable.
+_Avoid_: local mode
+
+**Cloud off**:
+An entry with `cloud_enabled` off. HA makes no TTLock REST calls, except one key/list for an entry with no cached lock list. It unregisters the webhook but keeps any cloudhook, and takes WiFi-local locks over. See `docs/adr/0005-cloud-off-mode.md`.
+_Avoid_: offline mode, no-cloud mode
+
+**Outcome unknown**:
+HA sent a local admin op that is not safe to repeat, and lost its answer (`LocalOutcomeUnknown`, translation key `local_outcome_unknown`). The lock may or may not have applied it, so HA never retries it over another transport or the cloud.
+_Avoid_: timeout, failed

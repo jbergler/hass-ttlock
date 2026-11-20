@@ -10,7 +10,9 @@ from custom_components.ttlock.models import (
     EpochMs,
     Features,
     Fingerprint,
+    Gateway,
     Lock,
+    LockDetail,
     LockSummary,
     OnOff,
     PassageModeConfig,
@@ -85,6 +87,7 @@ class TestFeatures:
                     Features.lock_remotely,
                     Features.unlock_via_gateway,
                     Features.passage_mode,
+                    Features.tamper_alert,
                     Features.wifi,
                     Features.door_sensor,
                 ),
@@ -95,6 +98,7 @@ class TestFeatures:
                     Features.lock_remotely,
                     Features.unlock_via_gateway,
                     Features.passage_mode,
+                    Features.tamper_alert,
                 ),
             ),
         ],
@@ -235,6 +239,27 @@ class TestLock:
             }
         )
         assert lock.lockSound == expected
+
+    def test_ble_control_credentials_parse(self):
+        # The fields BLE control needs beyond aesKeyStr: the obfuscated per-key
+        # secret (lockKey) and the key flag generation (lockFlagPos). adminPwd is
+        # parsed into the noKeyPwd attribute.
+        lock = Lock.model_validate(
+            {
+                **MINIMAL_LOCK,
+                "lockKey": "obfuscated-lock-key",
+                "lockFlagPos": 5,
+                "adminPwd": "obfuscated-admin-pwd",
+            }
+        )
+        assert lock.lockKey == "obfuscated-lock-key"
+        assert lock.lockFlagPos == 5
+        assert lock.noKeyPwd == "obfuscated-admin-pwd"
+
+    def test_lock_flag_pos_defaults_to_zero(self):
+        lock = Lock.model_validate({**MINIMAL_LOCK})
+        assert lock.lockFlagPos == 0
+        assert lock.lockKey is None
 
 
 class TestCard:
@@ -440,3 +465,31 @@ class TestLockSummaryAccess:
         assert self._summary(keyStatus="110405").is_frozen is True
         assert self._summary(keyStatus="110401").is_frozen is False
         assert self._summary().is_frozen is False
+
+
+def test_cached_records_round_trip():
+    """What store.py keeps must parse back to the same models."""
+    summary = LockSummary(
+        lockId=1, lockMac="aa:bb:cc:dd:ee:ff", hasGateway=1, lockVersion={"x": 1}
+    )
+    assert (
+        LockSummary.model_validate(summary.model_dump(mode="json", by_alias=True))
+        == summary
+    )
+    passage = PassageModeConfig(passageMode=OnOff.on, weekDays=[1, 7])
+    assert (
+        PassageModeConfig.model_validate(passage.model_dump(mode="json", by_alias=True))
+        == passage
+    )
+    gateway = Gateway(gatewayId=1, gatewayName="g", gatewayMac="m", isOnline=False)
+    assert (
+        Gateway.model_validate(gateway.model_dump(mode="json", by_alias=True))
+        == gateway
+    )
+    lock = Lock.model_validate({**MINIMAL_LOCK, "lockSound": 1, "modelNum": "M1"})
+    detail = LockDetail.model_validate(
+        lock.model_dump(
+            mode="json", by_alias=True, include=set(LockDetail.model_fields)
+        )
+    )
+    assert (detail.lockSound, detail.model) == (OnOff.on, "M1")

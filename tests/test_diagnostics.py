@@ -1,5 +1,6 @@
 """Test ttlock diagnostics."""
 
+import json
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -9,8 +10,18 @@ from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.ttlock.api import TTLockApi
 from custom_components.ttlock.capture import LockTrafficCapture
-from custom_components.ttlock.const import DOMAIN, TO_REDACT, TT_GATEWAYS, TT_LOCKS
-from custom_components.ttlock.coordinator import LockUpdateCoordinator
+from custom_components.ttlock.const import (
+    DOMAIN,
+    TO_REDACT,
+    TT_CAPTURE,
+    TT_GATEWAYS,
+    TT_LOCKS,
+)
+from custom_components.ttlock.coordinator import (
+    CredentialInfo,
+    CredentialNames,
+    LockUpdateCoordinator,
+)
 from custom_components.ttlock.diagnostics import (
     async_get_config_entry_diagnostics,
     async_get_device_diagnostics,
@@ -19,7 +30,7 @@ from custom_components.ttlock.models import Gateway, LockSummary
 from custom_components.ttlock.store import LockStateStore
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import BASIC_LOCK_DETAILS, LOCK_STATE_UNLOCKED, PASSAGE_MODE_6_TO_6_7_DAYS
 
@@ -138,6 +149,10 @@ async def test_diagnostics_includes_raw_connectivity_fields_and_gateway_status(
     assert lock["connectable"] is False
     assert lock["has_gateway"] == 0
     assert lock["feature_value"] == "000000"
+    # Transport diagnostics: defaults when nothing is overridden or connected.
+    assert lock["cloud_enabled"] is True
+    assert lock["transport_order"] == ["ble", "wifi_local", "cloud"]
+    assert lock["wifi_local_drivable"] is False
 
     gateways = diagnostics["gateways"]
     assert gateways[0]["name"] == "Test Gateway"
@@ -238,7 +253,9 @@ async def _refresh_captured_lock(hass: HomeAssistant) -> tuple[dict, dict]:
 
         hass.data.setdefault(DOMAIN, {})[config_entry.entry_id] = {
             TT_LOCKS: [coordinator],
-            TT_GATEWAYS: SimpleNamespace(as_dict=list),
+            TT_GATEWAYS: SimpleNamespace(
+                as_dict=list, last_update_success=True, data={}
+            ),
         }
 
         device_registry = dr.async_get(hass)
@@ -291,18 +308,14 @@ async def test_debug_capture_appears_redacted_in_diagnostics(
     assert not any(record.name == device_logger_name for record in caplog.records)
 
 
-async def test_debug_capture_redaction_does_not_affect_live_log_output(
+async def test_live_log_and_debug_capture_are_both_redacted(
     hass: HomeAssistant, caplog
 ):
-    """Redaction is a diagnostics-surface concern only, not a change to live logging.
+    """With the device logger at DEBUG, the live record is redacted too.
 
     Companion to test_debug_capture_appears_redacted_in_diagnostics above, which
-    proves capture doesn't depend on the device logger's level by keeping it above
-    DEBUG (so nothing live is even emitted). This test does the opposite: it raises
-    the device logger to DEBUG so a live record *is* emitted, then asserts both
-    sides of the contrast - the live log record carries the sensitive field
-    unredacted, while the same field is redacted in that lock's captured
-    diagnostics output.
+    keeps the device logger above DEBUG. Here a live record *is* emitted, and
+    neither it nor the captured diagnostics output carries the sensitive field.
     """
     device_logger_name = DEBUG_CAPTURE_DEVICE_LOGGER_NAME
     caplog.set_level(logging.DEBUG, logger=device_logger_name)
@@ -318,7 +331,8 @@ async def test_debug_capture_redaction_does_not_affect_live_log_output(
         if record.name == device_logger_name
     ]
     assert any("Received response" in message for message in live_messages)
-    assert any(sensitive_value in message for message in live_messages)
+    assert not any(sensitive_value in message for message in live_messages)
+    assert any("**REDACTED**" in message for message in live_messages)
 
     capture_result = diagnostics["locks"][0]["debug_capture"]
     captured_messages = [record["message"] for record in capture_result["records"]]
@@ -350,3 +364,93 @@ def test_to_redact_covers_lock_data():
 
     assert redacted["list"][0]["lockData"] == "**REDACTED**"
     assert redacted["list"][0]["lockAlias"] == "Front Door"
+
+
+def test_to_redact_covers_credential_secrets():
+    """Passcode/card/fingerprint identifiers and names must never survive redaction.
+
+    The coordinator lists these on the slow tier, so their response bodies
+    reach the per-lock capture buffer - keyboardPwd (the digits),
+    cardNumber and fingerprintNumber must all be caught by TO_REDACT.
+    """
+    payload = {
+        "list": [
+            {
+                "keyboardPwd": "1234",
+                "keyboardPwdName": "Cleaner",
+                "cardNumber": "999888",
+                "fingerprintNumber": "44668054142981",
+            }
+        ]
+    }
+
+    redacted = async_redact_data(payload, TO_REDACT)
+
+    assert redacted["list"][0]["keyboardPwd"] == "**REDACTED**"
+    assert redacted["list"][0]["cardNumber"] == "**REDACTED**"
+    assert redacted["list"][0]["fingerprintNumber"] == "**REDACTED**"
+    assert redacted["list"][0]["keyboardPwdName"] == "**REDACTED**"
+
+
+async def test_names_people_and_addresses_never_reach_diagnostics(
+    hass: HomeAssistant, component_setup, mock_api_responses
+):
+    """Credential names, people and the lock's address are redacted everywhere."""
+    mock_api_responses("default")
+    coordinator = await component_setup()
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    registry = er.async_get(hass)
+    credentials_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{coordinator.unique_id}-lockcredentials"
+    )
+    assert credentials_id is not None
+    registry.async_update_entity(credentials_id, disabled_by=None)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = hass.data[DOMAIN][entry.entry_id][TT_LOCKS][0]
+
+    coordinator.credential_names = CredentialNames(
+        passcodes={1: CredentialInfo(name="SEED-PASSCODE-NAME", type="PERMANENT")},
+        cards={2: CredentialInfo(name="SEED-CARD-NAME", type="PERMANENT")},
+        fingerprints={
+            3: CredentialInfo(name="SEED-FINGERPRINT-NAME", type="PERMANENT")
+        },
+    )
+    coordinator.data.last_user = "SEED-OPERATOR"
+    hass.data[DOMAIN][entry.entry_id][TT_CAPTURE].capture(
+        coordinator.lock_id,
+        "DEBUG",
+        "list: %s",
+        {
+            "list": [
+                {
+                    "keyboardPwdName": "SEED-CLOUD-PASSCODE",
+                    "cardName": "SEED-CLOUD-CARD",
+                    "fingerprintName": "SEED-CLOUD-FINGERPRINT",
+                    "senderUsername": "SEED-SENDER",
+                    "username": "SEED-USERNAME",
+                    "email": "SEED-EMAIL",
+                    "lockMac": "SEED-LOCK-MAC",
+                }
+            ]
+        },
+    )
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+    assert hass.states.get(credentials_id) is not None
+    mac = coordinator.data.mac
+    device = dr.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, mac), entry.entry_id
+    )
+    assert device is not None
+
+    dumps = [
+        json.dumps(await async_get_config_entry_diagnostics(hass, entry), default=str),
+        json.dumps(
+            await async_get_device_diagnostics(hass, entry, device), default=str
+        ),
+    ]
+
+    for dump in dumps:
+        assert "SEED-" not in dump
+        assert mac not in dump

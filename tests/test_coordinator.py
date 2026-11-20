@@ -1,9 +1,10 @@
 """Test ttlock setup process."""
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
+import logging
 from types import MappingProxyType
-from unittest.mock import AsyncMock, Mock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, Mock, PropertyMock, patch
 
 import dateparser
 import pytest
@@ -12,37 +13,50 @@ from pytest_homeassistant.common import (
     async_fire_time_changed,
 )
 
+from custom_components.ttlock import coordinator as coord_mod
 from custom_components.ttlock.api import RequestFailed, TTLockApi
-from custom_components.ttlock.ble import BleData
+from custom_components.ttlock.ble import BleData, BleError
 from custom_components.ttlock.ble_protocol import LockStatus
 from custom_components.ttlock.capture import LockTrafficCapture
 from custom_components.ttlock.const import (
+    CONF_BLE_CONTROL,
     CONF_BLUETOOTH_ENABLED,
     CONF_POLL_INTERVAL,
     CONF_SLOW_POLL_INTERVAL,
     DOMAIN,
+    TRANSPORT_BLE,
+    TRANSPORT_WIFI_LOCAL,
     TT_GATEWAYS,
+    TT_STORE,
+    TT_WIFI_PROXY,
 )
 from custom_components.ttlock.coordinator import (
     LOCAL_REFRESH_INTERVAL,
     RETRY_INTERVAL,
     REVERIFY_GRACE,
+    CredentialInfo,
+    CredentialNames,
     GatewaysUpdateCoordinator,
     LockState,
     LockUpdateCoordinator,
+    NoLocalAdminTransport,
     SensorData,
     async_add_when_sensor_present,
     door_state_known,
 )
 from custom_components.ttlock.models import (
+    AccessLevel,
+    Features,
     Gateway,
     GatewayLink,
+    Lock,
     LockState as WireLockState,
     LockSummary,
     PassageModeConfig,
     WebhookEvent,
 )
 from custom_components.ttlock.store import LockStateStore
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -52,6 +66,8 @@ from .const import (
     LOCK_STATE_LOCKED,
     LOCK_STATE_UNKNOWN,
     LOCK_STATE_UNLOCKED,
+    MOCK_LOCK_AES_KEY,
+    MOCK_LOCK_VERSION,
     PASSAGE_MODE_6_TO_6_7_DAYS,
     PASSAGE_MODE_ALL_DAY_WEEKDAYS,
     WEBHOOK_LOCK_10AM_UTC,
@@ -59,6 +75,8 @@ from .const import (
     WEBHOOK_SENSOR_OPEN,
     WEBHOOK_UNLOCK_10AM_UTC,
 )
+from .test_lock_commands import LogLock
+from .test_services import _cloud_off, _lock, _log_locally
 
 
 @pytest.fixture(params=[{"auto_lock_seconds": 30}])
@@ -636,7 +654,9 @@ class TestLockUpdateCoordinator:
         async def test_an_online_gateway_grants_grace_without_ble(
             self, hass, verified, cloud_state, api
         ):
-            gw_coord = GatewaysUpdateCoordinator(hass, verified.config_entry, api)
+            gw_coord = GatewaysUpdateCoordinator(
+                hass, verified.config_entry, api, LockStateStore(hass)
+            )
             gw_coord.last_update_success = True
             gw_coord.data = {
                 1: Gateway(
@@ -1132,6 +1152,96 @@ class TestLockUpdateCoordinator:
             assert wifi_coordinator.connectable is True
             assert called is False
             assert wifi_coordinator.data.gateways == []
+
+    class TestUnifiViaDevice:
+        """The lock links under the UniFi device that tracks its WiFi client.
+
+        A true single-device merge is impossible in HA (there is no cross-entry
+        device merge), so via_device (resolved to via_device_id) is the link.
+        """
+
+        def _make_wifi(self, coordinator: LockUpdateCoordinator) -> str:
+            """Give the lock a WiFi feature + known MAC; return its WiFi MAC."""
+            coordinator.data.mac = "16:72:4C:CC:01:C4"
+            coordinator.data.features = Features.wifi
+            return "16:72:4C:CC:01:C5"  # BLE MAC + 1, the tuple UniFi tracks
+
+        async def test_via_device_set_when_unifi_device_exists(
+            self, hass, coordinator: LockUpdateCoordinator
+        ):
+            wifi_mac = self._make_wifi(coordinator)
+            assert coordinator.config_entry is not None
+            other_entry = MockConfigEntry(domain="unifi")
+            other_entry.add_to_hass(hass)
+            unifi = dr.async_get(hass).async_get_or_create(
+                config_entry_id=other_entry.entry_id,
+                connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(wifi_mac))},
+                name="UniFi client",
+            )
+
+            assert coordinator.device_info["via_device_id"] == unifi.id
+
+        async def test_via_device_omitted_when_no_unifi_device(
+            self, coordinator: LockUpdateCoordinator
+        ):
+            self._make_wifi(coordinator)
+
+            assert "via_device_id" not in coordinator.device_info
+
+        async def test_via_device_ignores_our_own_device(
+            self, hass, coordinator: LockUpdateCoordinator
+        ):
+            """The ttlock device declares the same NETWORK_MAC, so a lookup can
+            return it; it must be excluded by identifier, not self-linked."""
+            wifi_mac = self._make_wifi(coordinator)
+            assert coordinator.config_entry is not None
+            dr.async_get(hass).async_get_or_create(
+                config_entry_id=coordinator.config_entry.entry_id,
+                identifiers={(DOMAIN, coordinator.data.mac)},
+                connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(wifi_mac))},
+                name="The lock itself",
+            )
+
+            assert "via_device_id" not in coordinator.device_info
+
+        async def test_registry_keeps_two_devices_and_links_via_device(
+            self, hass, coordinator: LockUpdateCoordinator
+        ):
+            """What installed HA does: both devices declare the same WiFi MAC, so
+            they stay SEPARATE (no cross-entry merge) and the lock links to the
+            UniFi device through via_device_id."""
+            wifi_mac = self._make_wifi(coordinator)
+            assert coordinator.config_entry is not None
+            registry = dr.async_get(hass)
+
+            unifi_entry = MockConfigEntry(domain="unifi")
+            unifi_entry.add_to_hass(hass)
+            unifi = registry.async_get_or_create(
+                config_entry_id=unifi_entry.entry_id,
+                connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(wifi_mac))},
+                name="UniFi client",
+            )
+
+            # Register the lock device exactly as the integration does.
+            lock_device = registry.async_get_or_create(
+                config_entry_id=coordinator.config_entry.entry_id,
+                **coordinator.device_info,
+            )
+
+            assert lock_device.id != unifi.id  # NOT merged into one device
+            assert lock_device.via_device_id == unifi.id  # linked instead
+
+            # The steady state on every poll/restart: BOTH devices are already
+            # registered (the lock also declares the WiFi MAC). The link must
+            # still resolve - a single connection lookup could return the lock
+            # itself - and survive a re-register.
+            assert coordinator.device_info.get("via_device_id") == unifi.id
+            again = registry.async_get_or_create(
+                config_entry_id=coordinator.config_entry.entry_id,
+                **coordinator.device_info,
+            )
+            assert again.id == lock_device.id
+            assert again.via_device_id == unifi.id
 
     class TestPollingCadence:
         """Lock state is re-verified every poll; slow-changing detail,
@@ -1899,12 +2009,37 @@ class TestLockUpdateCoordinator:
             assert coordinator.data.locked is False
 
     class TestAsyncUpdateDataErrors:
-        async def test_wraps_api_errors_in_update_failed(
-            self, coordinator: LockUpdateCoordinator, monkeypatch
+        async def test_a_slow_tier_failure_never_fails_the_poll(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
         ):
+            """Detail is not availability: a lock whose state reads stays usable."""
+            mock_api_responses("default")
+            get_lock = AsyncMock(side_effect=RequestFailed("boom"))
+            monkeypatch.setattr(coordinator.api, "get_lock", get_lock)
             monkeypatch.setattr(
                 coordinator.api,
-                "get_lock",
+                "get_lock_passage_mode_config",
+                AsyncMock(side_effect=TimeoutError()),
+            )
+            monkeypatch.setattr(
+                coordinator.api, "get_locks", AsyncMock(side_effect=TimeoutError())
+            )
+
+            await coordinator.async_refresh()
+            await coordinator.async_refresh()
+
+            assert coordinator.last_update_success is True
+            assert coordinator.data.locked is False  # the fast tier still landed
+            get_lock.assert_awaited_once()  # stamped on the failed attempt
+
+        async def test_a_failed_state_read_still_fails_once_verified(
+            self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+            monkeypatch.setattr(
+                coordinator.api,
+                "get_lock_state",
                 AsyncMock(side_effect=RequestFailed("boom")),
             )
 
@@ -1939,8 +2074,10 @@ class TestLockUpdateCoordinator:
             coordinator.data.locked = False
             monkeypatch.setattr(coordinator.api, "lock", AsyncMock(return_value=False))
 
-            await coordinator.lock()
+            with pytest.raises(HomeAssistantError) as excinfo:
+                await coordinator.lock()
 
+            assert excinfo.value.translation_key == "lock_failed"
             assert coordinator.data.locked is False
             assert coordinator.data.action_pending is False
 
@@ -1967,8 +2104,10 @@ class TestLockUpdateCoordinator:
                 coordinator.api, "unlock", AsyncMock(return_value=False)
             )
 
-            await coordinator.unlock()
+            with pytest.raises(HomeAssistantError) as excinfo:
+                await coordinator.unlock()
 
+            assert excinfo.value.translation_key == "unlock_failed"
             assert coordinator.data.locked is True
             assert coordinator.data.action_pending is False
 
@@ -2014,10 +2153,14 @@ class TestLockUpdateCoordinator:
             coordinator._process_webhook_data(
                 WebhookEvent.model_validate(WEBHOOK_UNLOCK_10AM_UTC)
             )
-            await coordinator.set_auto_lock(False)
-            await asyncio.sleep(1.5)
+            pending = coordinator._auto_lock_task
+            assert pending is not None
 
-            assert coordinator.data.locked is False
+            await coordinator.set_auto_lock(False)
+            await asyncio.sleep(0)
+
+            assert coordinator._auto_lock_task is None
+            assert pending.cancelled()
 
         async def test_failure_leaves_state_unchanged(
             self, coordinator: LockUpdateCoordinator, mock_api_responses, monkeypatch
@@ -2078,8 +2221,1021 @@ class TestLockUpdateCoordinator:
 class TestGatewaysUpdateCoordinator:
     async def test_wraps_api_errors_in_update_failed(self, hass, api):
         config_entry = MockConfigEntry(domain=DOMAIN)
-        gateways_coordinator = GatewaysUpdateCoordinator(hass, config_entry, api)
+        gateways_coordinator = GatewaysUpdateCoordinator(
+            hass, config_entry, api, LockStateStore(hass)
+        )
         api.get_gateways = AsyncMock(side_effect=RequestFailed("boom"))
 
         with pytest.raises(UpdateFailed):
             await gateways_coordinator._async_update_data()
+
+
+class TestBleFirstControl:
+    """lock()/unlock() drive the bolt over Bluetooth first, cloud as fallback.
+
+    The routing (option gate, reachability, credential check, fallback) is what
+    these cover; the wire protocol itself is tested in test_ble_protocol.py and
+    the session in test_ble.py, so async_control is patched out here.
+    """
+
+    def _coordinator(self, hass, api, monkeypatch, *, control=True, reachable=True):
+        # The api fixture has no OAuth session; uid would read from the token.
+        monkeypatch.setattr(TTLockApi, "uid", 7, raising=False)
+        options = {CONF_BLUETOOTH_ENABLED: True, CONF_BLE_CONTROL: control}
+        entry = MockConfigEntry(domain=DOMAIN, options=options)
+        entry.add_to_hass(hass)
+        summary = LockSummary(
+            lockId=7252408,
+            lockAlias="Test Lock",
+            lockMac="00:00:00:00:00:00",
+            hasGateway=1,
+            userType="110301",
+        )
+        coord = LockUpdateCoordinator(
+            hass, entry, api, summary, LockTrafficCapture(), LockStateStore(hass)
+        )
+        # Credentials as a slow-tier detail fetch would have left them.
+        coord._ble_version = MOCK_LOCK_VERSION
+        coord._ble_key = MOCK_LOCK_AES_KEY
+        coord._ble_unlock_key = "2345"
+        coord._ble_lock_flag_pos = 0
+        if reachable:
+            coord.ble = BleData(rssi=-55, connectable=True)
+        return coord
+
+    async def test_unlock_prefers_bluetooth(
+        self, hass, api, mock_bluetooth, monkeypatch
+    ):
+        coord = self._coordinator(hass, api, monkeypatch)
+        coord.data.locked = True
+        cloud = AsyncMock(return_value=True)
+        monkeypatch.setattr(coord.api, "unlock", cloud)
+        with patch(
+            "custom_components.ttlock.coordinator.async_control",
+            new=AsyncMock(return_value=None),
+        ) as ble_control:
+            await coord.unlock()
+
+        ble_control.assert_awaited_once()
+        assert ble_control.await_args is not None
+        assert ble_control.await_args.kwargs["unlock"] is True
+        cloud.assert_not_called()
+        assert coord.data.locked is False
+
+    async def test_lock_prefers_bluetooth(self, hass, api, mock_bluetooth, monkeypatch):
+        coord = self._coordinator(hass, api, monkeypatch)
+        coord.data.locked = False
+        cloud = AsyncMock(return_value=True)
+        monkeypatch.setattr(coord.api, "lock", cloud)
+        with patch(
+            "custom_components.ttlock.coordinator.async_control",
+            new=AsyncMock(return_value=None),
+        ) as ble_control:
+            await coord.lock()
+
+        assert ble_control.await_args is not None
+        assert ble_control.await_args.kwargs["unlock"] is False
+        cloud.assert_not_called()
+        assert coord.data.locked is True
+
+    async def test_a_bluetooth_failure_falls_back_to_the_cloud(
+        self, hass, api, mock_bluetooth, monkeypatch
+    ):
+        coord = self._coordinator(hass, api, monkeypatch)
+        coord.data.locked = True
+        cloud = AsyncMock(return_value=True)
+        monkeypatch.setattr(coord.api, "unlock", cloud)
+        with patch(
+            "custom_components.ttlock.coordinator.async_control",
+            new=AsyncMock(side_effect=BleError("out of range mid-command")),
+        ):
+            await coord.unlock()
+
+        cloud.assert_awaited_once()
+        assert coord.data.locked is False
+
+    async def test_option_off_uses_the_cloud(
+        self, hass, api, mock_bluetooth, monkeypatch
+    ):
+        coord = self._coordinator(hass, api, monkeypatch, control=False)
+        coord.data.locked = True
+        cloud = AsyncMock(return_value=True)
+        monkeypatch.setattr(coord.api, "unlock", cloud)
+        with patch(
+            "custom_components.ttlock.coordinator.async_control",
+            new=AsyncMock(return_value=None),
+        ) as ble_control:
+            await coord.unlock()
+
+        ble_control.assert_not_called()
+        cloud.assert_awaited_once()
+        assert coord.data.locked is False
+
+    async def test_out_of_range_uses_the_cloud(
+        self, hass, api, mock_bluetooth, monkeypatch
+    ):
+        coord = self._coordinator(hass, api, monkeypatch, reachable=False)
+        coord.data.locked = True
+        cloud = AsyncMock(return_value=True)
+        monkeypatch.setattr(coord.api, "unlock", cloud)
+        with patch(
+            "custom_components.ttlock.coordinator.async_control",
+            new=AsyncMock(return_value=None),
+        ) as ble_control:
+            await coord.unlock()
+
+        ble_control.assert_not_called()
+        cloud.assert_awaited_once()
+
+
+class TestConnectable:
+    async def test_cloud_off_takes_the_cloud_route_away(self, coordinator):
+        assert coordinator.connectable is True  # gatewayed, cloud on
+        coordinator._cloud_enabled_option = False
+        assert coordinator.connectable is False
+
+    async def test_a_wifi_local_session_makes_a_lock_connectable(
+        self, coordinator, monkeypatch
+    ):
+        coordinator._cloud_enabled_option = False
+        monkeypatch.setattr(
+            LockUpdateCoordinator, "wifi_local_drivable", property(lambda self: True)
+        )
+        assert coordinator.connectable is True
+
+    async def test_a_wifi_link_change_starts_and_stops_the_poll(
+        self, hass, coordinator, monkeypatch
+    ):
+        coordinator._cloud_enabled_option = False
+        coordinator.update_interval = None
+        drivable = {"now": True}
+        monkeypatch.setattr(
+            LockUpdateCoordinator,
+            "wifi_local_drivable",
+            property(lambda self: drivable["now"]),
+        )
+        refresh = AsyncMock()
+        monkeypatch.setattr(coordinator, "async_request_refresh", refresh)
+
+        coordinator.async_wifi_local_changed()
+        await hass.async_block_till_done()
+        assert coordinator.update_interval == timedelta(minutes=30)
+        refresh.assert_awaited_once()
+
+        drivable["now"] = False
+        coordinator.async_wifi_local_changed()
+        assert coordinator.update_interval is None
+
+
+class TestCloudOffGates:
+    @pytest.mark.parametrize(
+        ("setter", "cloud_call", "value"),
+        [
+            ("set_lock_sound", "set_lock_sound", True),
+            ("set_auto_lock_seconds", "set_auto_lock", 30),
+        ],
+    )
+    async def test_settings_never_fall_back_to_the_cloud_when_off(
+        self, coordinator, monkeypatch, setter, cloud_call, value
+    ):
+        coordinator._cloud_enabled_option = False
+        cloud = AsyncMock(return_value=True)
+        monkeypatch.setattr(coordinator.api, cloud_call, cloud)
+
+        with pytest.raises(NoLocalAdminTransport):
+            await getattr(coordinator, setter)(value)
+
+        cloud.assert_not_awaited()
+
+    async def test_a_wifi_read_without_a_bolt_falls_through(
+        self, coordinator, mock_api_responses, monkeypatch
+    ):
+        """A takeover answer that carries no bolt must not blank the state."""
+        mock_api_responses("default")
+        monkeypatch.setattr(
+            coordinator, "async_read_state_ble", AsyncMock(return_value=None)
+        )
+        monkeypatch.setattr(
+            coordinator,
+            "async_read_state_wifi_local",
+            AsyncMock(return_value=(None, 50)),
+        )
+
+        await coordinator.async_refresh()
+
+        assert coordinator.data.locked is False  # the cloud answered
+
+
+class TestBleCredentialCaching:
+    """BLE credentials persist across restarts so control survives a cloud outage.
+
+    lock/detail is the only cloud source of these; caching them means a lock in
+    Bluetooth range is driveable straight after a restart, and while the cloud
+    is unreachable entirely.
+    """
+
+    async def test_persists_after_a_detail_fetch(self, coordinator):
+        coordinator._ble_version = MOCK_LOCK_VERSION
+        coordinator._ble_key = MOCK_LOCK_AES_KEY
+        coordinator._ble_unlock_key = "2345"
+        coordinator._ble_lock_flag_pos = 3
+
+        await coordinator._persist_ble_credentials()
+
+        stored = await coordinator._store.async_get(coordinator.lock_id)
+        assert stored["ble_key"] == MOCK_LOCK_AES_KEY
+        assert stored["ble_version"] == MOCK_LOCK_VERSION
+        assert stored["ble_unlock_key"] == "2345"
+        assert stored["ble_lock_flag_pos"] == 3
+
+    async def test_restores_cached_credentials(self, coordinator):
+        await coordinator._store.async_update(
+            coordinator.lock_id,
+            ble_version=MOCK_LOCK_VERSION,
+            ble_key=MOCK_LOCK_AES_KEY,
+            ble_unlock_key="2345",
+            ble_lock_flag_pos=4,
+        )
+        coordinator._ble_key = None  # as it would be before any cloud fetch
+
+        await coordinator.async_restore_lock_cache()
+
+        assert coordinator._ble_key == MOCK_LOCK_AES_KEY
+        assert coordinator._ble_version == MOCK_LOCK_VERSION
+        assert coordinator._ble_unlock_key == "2345"
+        assert coordinator._ble_lock_flag_pos == 4
+
+    async def test_restore_does_not_clobber_live_credentials(self, coordinator):
+        coordinator._ble_key = "live-key"
+        await coordinator._store.async_update(coordinator.lock_id, ble_key="stale-key")
+
+        await coordinator.async_restore_lock_cache()
+
+        assert coordinator._ble_key == "live-key"
+
+    async def test_restore_is_a_noop_with_nothing_cached(self, coordinator):
+        coordinator._ble_key = None
+
+        await coordinator.async_restore_lock_cache()
+
+        assert coordinator._ble_key is None
+
+    async def test_an_incomplete_detail_never_replaces_a_complete_set(
+        self, coordinator, mock_api_responses, monkeypatch
+    ):
+        """The last complete credentials may be the only way left to drive it."""
+        mock_api_responses("default")
+        coordinator._ble_version = MOCK_LOCK_VERSION
+        coordinator._ble_key = MOCK_LOCK_AES_KEY
+        coordinator._ble_unlock_key = "2345"
+        coordinator._ble_admin_pwd = "4242"
+        partial = Lock.model_validate({**BASIC_LOCK_DETAILS, "lockKey": None})
+        monkeypatch.setattr(
+            coordinator.api, "get_lock", AsyncMock(return_value=partial)
+        )
+
+        await coordinator.async_refresh()
+
+        assert coordinator._ble_unlock_key == "2345"
+        assert coordinator._ble_admin_pwd == "4242"
+        assert coordinator.data.model == partial.model  # the rest still applies
+
+    async def test_detail_and_passage_survive_a_restart(
+        self, hass, coordinator, mock_api_responses, api
+    ):
+        mock_api_responses("default")
+        await coordinator.async_refresh()
+
+        restarted = LockUpdateCoordinator(
+            hass,
+            coordinator.config_entry,
+            api,
+            coordinator.summary,
+            LockTrafficCapture(),
+            coordinator._store,
+        )
+        await restarted.async_restore_lock_cache()
+
+        assert restarted._ble_key == MOCK_LOCK_AES_KEY
+        assert restarted._ble_admin_pwd == BASIC_LOCK_DETAILS["adminPwd"]
+        assert restarted.data.model == BASIC_LOCK_DETAILS["modelNum"]
+        assert restarted.data.firmware_version == BASIC_LOCK_DETAILS["firmwareRevision"]
+        assert restarted.data.auto_lock_seconds == 60
+        assert restarted.data.lock_sound is False
+        assert restarted.data.tamper_alert is True
+        assert restarted.data.features == Features.from_feature_value("F44354CD5F3")
+        assert restarted._timezone_raw_offset == BASIC_LOCK_DETAILS["timezoneRawOffset"]
+        assert (
+            restarted.data.passage_mode_config == coordinator.data.passage_mode_config
+        )
+
+
+class _FakeTakeoverProxy:
+    """A wifi_proxy stand-in with one ready takeover session.
+
+    Mirrors the slice of WifiProxy the coordinator's read/poll path touches, so
+    takeover reads can be exercised without a real listener or socket.
+    """
+
+    def __init__(
+        self,
+        status: tuple[bool | None, int | None] | None,
+        *,
+        reconnecting: bool = False,
+    ) -> None:
+        self._status = status
+        self.reconnecting = reconnecting
+
+    def is_takeover_ready(self, lock_id: int) -> bool:
+        return self._status is not None
+
+    def is_reconnecting_client(self, lock_id: int) -> bool:
+        # A lock with a status is a ready client; one without is only worth
+        # waiting on when the test says it is mid-reconnect.
+        return self.reconnecting or self._status is not None
+
+    def session_mode(self, lock_id: int) -> str | None:
+        return "takeover"
+
+    async def async_status(self, lock_id: int) -> tuple[bool | None, int | None] | None:
+        return self._status
+
+
+class TestTakeoverReads:
+    """cloud_enabled=False: state comes from wifi_local, never the cloud."""
+
+    def _install_proxy(self, hass, proxy) -> None:
+        hass.data.setdefault(DOMAIN, {})[TT_WIFI_PROXY] = proxy
+
+    async def test_takeover_reads_state_from_wifi_local_not_cloud(
+        self,
+        hass,
+        coordinator: LockUpdateCoordinator,
+        mock_api_responses,
+        monkeypatch,
+    ):
+        mock_api_responses("default")
+        coordinator._cloud_enabled_option = False
+        # No radio read lands, so the fast tier would otherwise reach the cloud.
+        monkeypatch.setattr(
+            coordinator, "async_read_state_ble", AsyncMock(return_value=None)
+        )
+        # The cloud real-time state read must NOT be used in takeover.
+        cloud_state = AsyncMock(
+            side_effect=AssertionError("cloud state read used in takeover")
+        )
+        monkeypatch.setattr(
+            "custom_components.ttlock.api.TTLockApi.get_lock_state", cloud_state
+        )
+        # A ready takeover session reports LOCKED, battery 0x4D (77).
+        self._install_proxy(hass, _FakeTakeoverProxy((True, 77)))
+
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success is True
+        assert coordinator.data.locked is True
+        assert coordinator.data.battery_level == 77  # wifi battery wins
+        cloud_state.assert_not_called()
+
+    async def test_takeover_reads_through_a_reconnect_blip(
+        self,
+        hass,
+        coordinator: LockUpdateCoordinator,
+        mock_api_responses,
+        monkeypatch,
+    ):
+        """A reconnecting client (no ready session yet) is still read, not skipped.
+
+        is_takeover_ready is False mid-blip, but is_reconnecting_client is True, so
+        the read path calls async_status (which waits for the session) instead of
+        falling straight through to the cloud.
+        """
+        mock_api_responses("default")
+        coordinator._cloud_enabled_option = False
+        monkeypatch.setattr(
+            coordinator, "async_read_state_ble", AsyncMock(return_value=None)
+        )
+        cloud_state = AsyncMock(
+            side_effect=AssertionError("cloud state read used in takeover")
+        )
+        monkeypatch.setattr(
+            "custom_components.ttlock.api.TTLockApi.get_lock_state", cloud_state
+        )
+
+        class _BlipProxy(_FakeTakeoverProxy):
+            # No ready session right now, but a recent client whose async_status
+            # waits out the blip and returns a reading.
+            def is_takeover_ready(self, lock_id: int) -> bool:
+                return False
+
+            def is_reconnecting_client(self, lock_id: int) -> bool:
+                return True
+
+        self._install_proxy(hass, _BlipProxy((True, 77)))
+
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success is True
+        assert coordinator.data.locked is True
+        assert coordinator.data.battery_level == 77  # read came from wifi_local
+        cloud_state.assert_not_called()
+
+    async def test_takeover_without_a_session_degrades_to_unknown(
+        self,
+        hass,
+        coordinator: LockUpdateCoordinator,
+        mock_api_responses,
+        monkeypatch,
+    ):
+        """A reconnecting client not yet answering, cloud off: unknown, not a failure."""
+        mock_api_responses("default")
+        coordinator._cloud_enabled_option = False
+        monkeypatch.setattr(
+            coordinator, "async_read_state_ble", AsyncMock(return_value=None)
+        )
+        cloud_state = AsyncMock(
+            side_effect=AssertionError("cloud state read used in takeover")
+        )
+        monkeypatch.setattr(
+            "custom_components.ttlock.api.TTLockApi.get_lock_state", cloud_state
+        )
+        self._install_proxy(hass, _FakeTakeoverProxy(None, reconnecting=True))
+
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success is True  # setup not hard-failed
+        assert coordinator.data.locked is None  # unknown
+        cloud_state.assert_not_called()
+
+    async def test_cloud_off_makes_no_cloud_calls(
+        self,
+        coordinator: LockUpdateCoordinator,
+        mock_api_responses,
+        monkeypatch,
+    ):
+        """With the cloud off the poll reads locally and asks the cloud nothing."""
+        mock_api_responses("default")
+        coordinator._cloud_enabled_option = False
+        self._install_proxy(coordinator.hass, _FakeTakeoverProxy(status=(True, 77)))
+        calls = AsyncMock(side_effect=AssertionError("cloud called"))
+        for name in (
+            "get_locks",
+            "get_lock",
+            "get_sensor",
+            "get_lock_state",
+            "get_lock_passage_mode_config",
+            "get_gateways_for_lock",
+            "list_passcodes",
+            "list_cards",
+            "list_fingerprints",
+        ):
+            monkeypatch.setattr(f"custom_components.ttlock.api.TTLockApi.{name}", calls)
+        coordinator.data.features = Features.door_sensor
+
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success is True
+        assert coordinator.data.locked is True
+        calls.assert_not_awaited()
+        stored = await coordinator._store.async_get(coordinator.lock_id)
+        assert "door_sensor_count_failed_req" not in stored
+
+    async def test_cloud_off_failed_local_reads_go_unavailable_after_grace(
+        self,
+        coordinator: LockUpdateCoordinator,
+        monkeypatch,
+    ):
+        """A verified lock whose local reads stop is not shown stale as fresh."""
+        coordinator._cloud_enabled_option = False
+        proxy = _FakeTakeoverProxy(status=(True, 77), reconnecting=True)
+        self._install_proxy(coordinator.hass, proxy)
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is True
+
+        proxy._status = None
+        for _ in range(REVERIFY_GRACE):
+            await coordinator.async_refresh()
+            assert coordinator.last_update_success is True
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success is False
+
+
+class TestLocalCardNames:
+    """A locally-added card carries its given name, but never its number.
+
+    The BLE/WiFi 0x05 add returns no id and carries no name, so the coordinator
+    keeps the name display-only under a synthetic negative id (as passcodes do).
+    The card number is a secret and must not reach the name cache or state.
+    """
+
+    @staticmethod
+    def _coordinator(hass, api) -> LockUpdateCoordinator:
+        config_entry = MockConfigEntry(domain=DOMAIN)
+        config_entry.add_to_hass(hass)
+        summary = LockSummary(
+            lockId=1,
+            lockAlias="Cards",
+            lockMac="00:00:00:00:00:00",
+            hasGateway=0,
+            userType="110301",
+        )
+        coordinator = LockUpdateCoordinator(
+            hass,
+            config_entry,
+            api,
+            summary,
+            LockTrafficCapture(),
+            LockStateStore(hass),
+        )
+        coordinator._run_local_admin_op = AsyncMock()
+        coordinator._persist_credential_names = AsyncMock()
+        coordinator.async_update_listeners = Mock()
+        return coordinator
+
+    async def test_add_records_name_under_synthetic_id_without_the_number(
+        self, hass, api
+    ):
+        coordinator = self._coordinator(hass, api)
+
+        await coordinator.add_card_local("1234567890", name="Front door fob")
+
+        cards = coordinator.credential_names.cards
+        assert len(cards) == 1
+        cid, info = next(iter(cards.items()))
+        assert cid < 0  # synthetic negative id
+        assert info.name == "Front door fob"
+        # The card number appears nowhere in the stored credential state.
+        assert "1234567890" not in repr(cards)
+
+    async def test_add_without_name_records_nothing(self, hass, api):
+        coordinator = self._coordinator(hass, api)
+        await coordinator.add_card_local("1234567890")
+        assert coordinator.credential_names.cards == {}
+
+    async def test_clear_drops_local_names_keeps_cloud_names(self, hass, api):
+        coordinator = self._coordinator(hass, api)
+        coordinator.credential_names = CredentialNames(
+            cards={
+                5: CredentialInfo(name="Cloud card"),  # positive = cloud-sourced
+                -1: CredentialInfo(name="Local fob"),  # negative = locally added
+            }
+        )
+
+        await coordinator.clear_cards_local()
+
+        assert set(coordinator.credential_names.cards) == {5}
+
+
+class TestLocalPasscodeExtras:
+    """COUNT/CIRCLE adds record a display name + type; MODIFY records nothing.
+
+    As with cards, a local 0x03 write returns no id and carries no name, so the
+    name is kept display-only under a synthetic negative id and the digits never
+    reach the cache or state. MODIFY cannot locate the old entry (no code stored),
+    so it leaves the cache untouched.
+    """
+
+    @staticmethod
+    def _coordinator(hass, api) -> LockUpdateCoordinator:
+        config_entry = MockConfigEntry(domain=DOMAIN)
+        config_entry.add_to_hass(hass)
+        summary = LockSummary(
+            lockId=1,
+            lockAlias="Codes",
+            lockMac="00:00:00:00:00:00",
+            hasGateway=0,
+            userType="110301",
+        )
+        coordinator = LockUpdateCoordinator(
+            hass,
+            config_entry,
+            api,
+            summary,
+            LockTrafficCapture(),
+            LockStateStore(hass),
+        )
+        coordinator._run_local_admin_op = AsyncMock()
+        coordinator._persist_credential_names = AsyncMock()
+        coordinator.async_update_listeners = Mock()
+        return coordinator
+
+    async def test_cyclic_add_records_name_and_type_without_digits(self, hass, api):
+        coordinator = self._coordinator(hass, api)
+
+        await coordinator.add_cyclic_passcode_local(
+            "1234", name="Cleaner", start=datetime(2026, 1, 2, 14, 30), cycle_type=48
+        )
+
+        passcodes = coordinator.credential_names.passcodes
+        assert len(passcodes) == 1
+        cid, info = next(iter(passcodes.items()))
+        assert cid < 0
+        assert info.name == "Cleaner"
+        assert info.type == "CYCLIC"
+        assert "1234" not in repr(passcodes)
+
+    async def test_onetime_add_records_count_type(self, hass, api):
+        coordinator = self._coordinator(hass, api)
+
+        await coordinator.add_onetime_passcode_local(
+            "1234",
+            name="Guest",
+            start=datetime(2026, 1, 2, 3, 4),
+            end=datetime(2026, 12, 31, 23, 59),
+        )
+
+        info = next(iter(coordinator.credential_names.passcodes.values()))
+        assert info.type == "COUNT"
+
+    async def test_modify_records_no_name(self, hass, api):
+        coordinator = self._coordinator(hass, api)
+
+        await coordinator.modify_passcode_local("1234", "5678", pwd_type=1)
+
+        assert coordinator.credential_names.passcodes == {}
+
+
+class TestLocalFingerprintNames:
+    """A locally-enrolled fingerprint carries its name, but never its number.
+
+    Enrolment returns the number to the caller, but the coordinator keeps only the
+    name, under a synthetic negative id (as cards/passcodes do). The number is a
+    secret and must not reach the name cache or state.
+    """
+
+    @staticmethod
+    def _coordinator(hass, api) -> LockUpdateCoordinator:
+        config_entry = MockConfigEntry(domain=DOMAIN)
+        config_entry.add_to_hass(hass)
+        summary = LockSummary(
+            lockId=1,
+            lockAlias="Fingerprints",
+            lockMac="00:00:00:00:00:00",
+            hasGateway=0,
+            userType="110301",
+        )
+        coordinator = LockUpdateCoordinator(
+            hass,
+            config_entry,
+            api,
+            summary,
+            LockTrafficCapture(),
+            LockStateStore(hass),
+        )
+        coordinator._run_local_admin_op = AsyncMock()
+        coordinator._persist_credential_names = AsyncMock()
+        coordinator.async_update_listeners = Mock()
+        return coordinator
+
+    async def test_record_name_under_synthetic_id(self, hass, api):
+        coordinator = self._coordinator(hass, api)
+
+        await coordinator._record_local_name("fingerprints", "Right thumb")
+
+        fingerprints = coordinator.credential_names.fingerprints
+        assert len(fingerprints) == 1
+        fid, info = next(iter(fingerprints.items()))
+        assert fid < 0  # synthetic negative id
+        assert info.name == "Right thumb"
+
+    async def test_clear_drops_local_names_keeps_cloud_names(self, hass, api):
+        coordinator = self._coordinator(hass, api)
+        coordinator.credential_names = CredentialNames(
+            fingerprints={
+                5: CredentialInfo(name="Cloud print"),  # positive = cloud-sourced
+                -1: CredentialInfo(name="Local print"),  # negative = locally enrolled
+            }
+        )
+
+        await coordinator.clear_fingerprints_local()
+
+        assert set(coordinator.credential_names.fingerprints) == {5}
+
+
+class TestLocalSwitchAndPassage:
+    """The 0x68 switch and 0x66 passage ops route through _run_local_admin_op."""
+
+    @staticmethod
+    def _coordinator(hass, api) -> LockUpdateCoordinator:
+        config_entry = MockConfigEntry(domain=DOMAIN)
+        config_entry.add_to_hass(hass)
+        summary = LockSummary(
+            lockId=1,
+            lockAlias="Switches",
+            lockMac="00:00:00:00:00:00",
+            hasGateway=0,
+            userType="110301",
+        )
+        return LockUpdateCoordinator(
+            hass,
+            config_entry,
+            api,
+            summary,
+            LockTrafficCapture(),
+            LockStateStore(hass),
+        )
+
+    async def test_set_tamper_alert_routes_and_updates_state(self, hass, api):
+        coordinator = self._coordinator(hass, api)
+        run = AsyncMock()
+        update = Mock()
+        coordinator._run_local_admin_op = run
+        coordinator.async_update_listeners = update
+
+        await coordinator.set_tamper_alert(True)
+
+        run.assert_awaited_once()
+        call = run.await_args
+        assert call is not None
+        assert call.args[0] == "set tamper alert"
+        assert coordinator.data.tamper_alert is True
+        update.assert_called_once()
+
+    async def test_set_passage_auto_unlock_routes_and_updates_state(self, hass, api):
+        coordinator = self._coordinator(hass, api)
+        run = AsyncMock()
+        coordinator._run_local_admin_op = run
+        coordinator.async_update_listeners = Mock()
+
+        await coordinator.set_passage_auto_unlock(False)
+
+        run.assert_awaited_once()
+        assert coordinator.data.passage_auto_unlock is False
+
+    async def test_set_passage_mode_local_routes(self, hass, api):
+        coordinator = self._coordinator(hass, api)
+        run = AsyncMock()
+        coordinator._run_local_admin_op = run
+        coordinator.async_update_listeners = Mock()
+
+        await coordinator.set_passage_mode_local(
+            week_days=[1, 2],
+            start_minute=60,
+            end_minute=120,
+            all_day=False,
+            auto_unlock=True,
+        )
+
+        run.assert_awaited_once()
+        call = run.await_args
+        assert call is not None
+        assert call.args[0] == "set passage mode"
+        # auto_unlock given, so the cached switch state is updated too.
+        assert coordinator.data.passage_auto_unlock is True
+        # The cached passage config is kept in step for the binary sensor.
+        config = coordinator.data.passage_mode_config
+        assert config is not None
+        assert bool(config.enabled) is True
+        assert config.week_days == [1, 2]
+        assert config.start_minute == 60
+
+    async def test_clear_passage_mode_local_routes(self, hass, api):
+        coordinator = self._coordinator(hass, api)
+        run = AsyncMock()
+        coordinator._run_local_admin_op = run
+        coordinator.async_update_listeners = Mock()
+        coordinator.data.passage_mode_config = PassageModeConfig.model_validate(
+            {"passageMode": 1}
+        )
+
+        await coordinator.clear_passage_mode_local()
+
+        call = run.await_args
+        assert call is not None
+        assert call.args[0] == "clear passage mode"
+        config = coordinator.data.passage_mode_config
+        assert config is not None
+        assert bool(config.enabled) is False
+
+
+class TestLogReadInBackground:
+    """Cloud off: the local refresh fills the log cache over WiFi-local."""
+
+    @staticmethod
+    async def _wifi_lock(
+        component_setup, mock_api_responses, monkeypatch, lock: LogLock
+    ) -> tuple[LockUpdateCoordinator, MagicMock]:
+        coordinator, _ = await _lock(component_setup, mock_api_responses)
+        _cloud_off(monkeypatch)
+        _log_locally(coordinator, monkeypatch, lock)
+        proxy = coordinator.hass.data[DOMAIN][TT_WIFI_PROXY]
+        proxy.is_takeover_ready.return_value = True
+        coordinator.async_read_lock_status = AsyncMock(return_value=None)
+        return coordinator, proxy
+
+    @staticmethod
+    async def _cached_ids(coordinator) -> list[int]:
+        store = coordinator.hass.data[DOMAIN][TT_STORE]
+        stored = (await store.async_get(coordinator.lock_id))["operate_log"]
+        return [entry["record_id"] for entry in stored["records"]]
+
+    async def test_refreshes_fill_the_cache_then_keep_it_current(
+        self, component_setup, mock_api_responses, monkeypatch
+    ):
+        lock = LogLock(250)
+        coordinator, _ = await self._wifi_lock(
+            component_setup, mock_api_responses, monkeypatch, lock
+        )
+
+        for read in (100, 200, 250):
+            await coordinator._async_local_refresh(dt_util.utcnow())
+            assert await self._cached_ids(coordinator) == lock.ids[:read]
+        log = coordinator._operate_log
+        assert log is not None
+        assert log.complete
+
+        lock.calls.clear()
+        await coordinator._async_local_refresh(dt_util.utcnow())
+        assert lock.calls == [249, 250]  # nothing new: two commands
+
+        lock.ids.append(0x20000000)
+        await coordinator._async_local_refresh(dt_util.utcnow())
+        assert await self._cached_ids(coordinator) == lock.ids
+
+    async def test_no_background_read_with_the_cloud_on(
+        self, component_setup, mock_api_responses, monkeypatch
+    ):
+        lock = LogLock(5)
+        coordinator, _ = await self._wifi_lock(
+            component_setup, mock_api_responses, monkeypatch, lock
+        )
+        monkeypatch.setattr(
+            LockUpdateCoordinator, "cloud_enabled", property(lambda self: True)
+        )
+
+        await coordinator._async_background_log_read()
+
+        assert lock.calls == []
+
+    async def test_no_background_read_for_a_member_key(
+        self, component_setup, mock_api_responses, monkeypatch
+    ):
+        lock = LogLock(5)
+        coordinator, _ = await self._wifi_lock(
+            component_setup, mock_api_responses, monkeypatch, lock
+        )
+        monkeypatch.setattr(
+            LockUpdateCoordinator,
+            "access_level",
+            property(lambda self: AccessLevel.MEMBER),
+        )
+
+        await coordinator._async_local_refresh(dt_util.utcnow())
+
+        assert lock.calls == []
+
+    async def test_no_background_read_without_a_ready_wifi_session(
+        self, component_setup, mock_api_responses, monkeypatch
+    ):
+        """Bluetooth alone is never dialled for the log: it costs the battery."""
+        lock = LogLock(5)
+        coordinator, proxy = await self._wifi_lock(
+            component_setup, mock_api_responses, monkeypatch, lock
+        )
+        proxy.is_takeover_ready.return_value = False
+        ble = MagicMock(side_effect=AssertionError("Bluetooth was dialled"))
+        monkeypatch.setattr(coord_mod, "async_admin_session", ble)
+        monkeypatch.setattr(
+            LockUpdateCoordinator, "ble_control_enabled", property(lambda self: True)
+        )
+        monkeypatch.setattr(
+            LockUpdateCoordinator, "ble_reachable", property(lambda self: True)
+        )
+
+        await coordinator._async_local_refresh(dt_util.utcnow())
+
+        assert lock.calls == []
+        ble.assert_not_called()
+
+    async def test_a_background_read_skips_bluetooth_first_in_the_order(
+        self, component_setup, mock_api_responses, monkeypatch
+    ):
+        lock = LogLock(5)
+        coordinator, _ = await self._wifi_lock(
+            component_setup, mock_api_responses, monkeypatch, lock
+        )
+        ble = MagicMock(side_effect=AssertionError("Bluetooth was dialled"))
+        monkeypatch.setattr(coord_mod, "async_admin_session", ble)
+        monkeypatch.setattr(
+            LockUpdateCoordinator, "ble_control_enabled", property(lambda self: True)
+        )
+        monkeypatch.setattr(
+            LockUpdateCoordinator, "ble_reachable", property(lambda self: True)
+        )
+        coordinator._transport_order = [TRANSPORT_BLE, TRANSPORT_WIFI_LOCAL]
+
+        await coordinator._async_local_refresh(dt_util.utcnow())
+
+        ble.assert_not_called()
+        assert await self._cached_ids(coordinator) == lock.ids
+
+    async def test_a_lock_event_reads_the_log_once(
+        self, hass, component_setup, mock_api_responses, monkeypatch
+    ):
+        lock = LogLock(5)
+        coordinator, _ = await self._wifi_lock(
+            component_setup, mock_api_responses, monkeypatch, lock
+        )
+        await coordinator._async_background_log_read()
+        coordinator.async_request_refresh = AsyncMock()
+        coordinator._log_event_read.cooldown = 0.05
+        lock.ids.append(0x20000000)
+        lock.calls.clear()
+
+        for _ in range(3):
+            coordinator.async_wifi_local_event()
+        await asyncio.sleep(0.2)
+        await hass.async_block_till_done()
+
+        assert lock.calls == [4, 5, 6]
+        assert await self._cached_ids(coordinator) == lock.ids
+
+    async def test_an_event_during_a_log_read_reads_again_after_it(
+        self, hass, component_setup, mock_api_responses, monkeypatch
+    ):
+        lock = LogLock(5, delay=0.02)
+        coordinator, _ = await self._wifi_lock(
+            component_setup, mock_api_responses, monkeypatch, lock
+        )
+        coordinator.async_request_refresh = AsyncMock()
+        coordinator._log_event_read.cooldown = 0.05
+        read = hass.async_create_task(coordinator._async_background_log_read())
+        while len(lock.calls) < 3:
+            await asyncio.sleep(0.005)
+
+        coordinator.async_wifi_local_event()
+        coordinator.async_wifi_local_event()
+        await read
+        lock.ids.append(0x20000000)  # written after the read passed the end
+        lock.calls.clear()
+        await asyncio.sleep(0.3)
+        await hass.async_block_till_done()
+
+        assert lock.calls == [4, 5, 6]  # one more read
+        assert await self._cached_ids(coordinator) == lock.ids
+
+    async def test_a_waiting_read_goes_before_the_next_page_of_a_background_read(
+        self, hass, component_setup, mock_api_responses, monkeypatch
+    ):
+        lock = LogLock(20, delay=0.05)
+        coordinator, _ = await self._wifi_lock(
+            component_setup, mock_api_responses, monkeypatch, lock
+        )
+        read = hass.async_create_task(coordinator._async_background_log_read())
+        while len(lock.calls) < 3:
+            await asyncio.sleep(0.01)
+        before = len(lock.calls)
+        pages: list[int] = []
+
+        async def read_lock_config(_session):
+            pages.append(len(lock.calls))
+            return "config"
+
+        assert (
+            await coordinator.async_run_local_admin_op(
+                "read lock config", read_lock_config, idempotent=True, read_only=True
+            )
+            == "config"
+        )
+        assert pages == [before]  # the page in flight, and no other
+        await read
+        # The background read resumed: each page once, one again, then the end.
+        assert len(lock.calls) == 20 + 1 + 1
+        assert await self._cached_ids(coordinator) == lock.ids
+
+    async def test_a_background_read_interrupts_no_user_read(
+        self, hass, component_setup, mock_api_responses, monkeypatch
+    ):
+        lock = LogLock(10, delay=0.02)
+        coordinator, _ = await self._wifi_lock(
+            component_setup, mock_api_responses, monkeypatch, lock
+        )
+        user = hass.async_create_task(coordinator.async_read_operate_log())
+        while not lock.calls:
+            await asyncio.sleep(0.005)
+
+        await coordinator._async_background_log_read()
+
+        assert (await user).complete
+        # The user read ran unbroken: pages 0-9 and the end, then the
+        # background read's last page again and the end.
+        assert lock.calls == [*range(11), 9, 10]
+
+    async def test_a_failed_background_read_keeps_the_cache(
+        self, component_setup, mock_api_responses, monkeypatch, caplog
+    ):
+        lock = LogLock(5)
+        coordinator, proxy = await self._wifi_lock(
+            component_setup, mock_api_responses, monkeypatch, lock
+        )
+        await coordinator._async_local_refresh(dt_util.utcnow())
+        proxy.async_admin_op.side_effect = OSError()
+        caplog.clear()
+
+        await coordinator._async_local_refresh(dt_util.utcnow())
+
+        proxy.async_admin_op.assert_awaited()
+        assert await self._cached_ids(coordinator) == lock.ids
+        assert coordinator.last_update_success
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

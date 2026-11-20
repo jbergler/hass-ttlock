@@ -109,34 +109,47 @@ class LockMacModel(BaseModel):
         return mac.upper()
 
 
-class Lock(LockMacModel):
+class LockDetail(BaseModel):
+    """The non-secret lock/detail fields kept across restarts (see store.py)."""
+
+    featureValue: str | None = None
+    # Milliseconds east of UTC; None when not reported (0 is UTC, not unknown).
+    timezoneRawOffset: int | None = None
+    model: str | None = Field(None, alias="modelNum")
+    hardwareRevision: str | None = None
+    firmwareRevision: str | None = None
+    autoLockTime: int | None = Field(None, alias="autoLockTime")
+    lockSound: OnOff = OnOff.unknown
+    tamperAlert: OnOff = OnOff.unknown
+    passageModeAutoUnlock: OnOff = OnOff.unknown
+
+
+class Lock(LockMacModel, LockDetail):
     """Lock details."""
 
     id: int = Field(..., alias="lockId")
     type: str = Field(..., alias="lockName")
     name: str = Field("Lock", alias="lockAlias")
     battery_level: int | None = Field(None, alias="electricQuantity")
-    featureValue: str | None = None
-    timezoneRawOffset: int = 0
-    model: str | None = Field(None, alias="modelNum")
-    hardwareRevision: str | None = None
-    firmwareRevision: str | None = None
-    autoLockTime: int | None = Field(None, alias="autoLockTime")
-    lockSound: OnOff = OnOff.unknown
     privacyLock: OnOff = OnOff.unknown
-    tamperAlert: OnOff = OnOff.unknown
     resetButton: OnOff = OnOff.unknown
     openDirection: OpenDirection = OpenDirection.unknown
     passageMode: OnOff = OnOff.unknown
-    passageModeAutoUnlock: OnOff = OnOff.unknown
     date: int
     # Protocol dialect every BLE frame echoes back, see ble_protocol.LockVersion.
     lockVersion: dict[str, int] | None = None
+    # The key's flag generation. CHECK_USER_TIME / CHECK_ADMIN must not send a
+    # lower value (the lock reads a lower one as a reset key and refuses it);
+    # 0 on a freshly paired key. Not sensitive.
+    lockFlagPos: int = 0
 
     # sensitive fields
     noKeyPwd: str = Field(alias="adminPwd")
     # Per-lock AES key BLE frames are encrypted with. Undocumented, redacted.
     aesKeyStr: str | None = None
+    # Per-key secret proving "this key" on every write, cloud-obfuscated;
+    # ble_protocol.decode_password recovers the numeric form. Redacted.
+    lockKey: str | None = None
 
 
 class LockSummary(LockMacModel):
@@ -160,7 +173,7 @@ class LockSummary(LockMacModel):
     # reads protocolType/protocolVersion; the server also carries strings
     # (`logoUrl`) and bools (`showAdminKbpwdFlag`), so the value type is Any.
     lockVersion: dict[str, Any] | None = None
-    timezoneRawOffset: int = 0
+    timezoneRawOffset: int | None = None
 
     # Ekey-local fields - drive AccessLevel, validity, and remote-unlock gating.
     userType: str | None = None
@@ -653,6 +666,7 @@ class Features(IntFlag):
     unlock_via_gateway = 2**10
     door_sensor = 2**13
     passage_mode = 2**22
+    tamper_alert = 2**28
     wifi = 2**56
 
     @classmethod

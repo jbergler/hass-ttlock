@@ -6,14 +6,16 @@ from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any
 
-from homeassistant.components.diagnostics import async_redact_data
+from homeassistant.components.diagnostics import REDACTED, async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
+from homeassistant.helpers.entity import Entity
 
 from .const import DOMAIN, TO_REDACT, TT_GATEWAYS, TT_LOCKS
 from .coordinator import LockUpdateCoordinator
 from .models import BaseModel
+from .sensor import LockCredentials, LockOperator
 
 
 def build_diagnostics_dict(d: dict) -> dict[str, Any]:
@@ -28,9 +30,24 @@ def build_diagnostics_dict(d: dict) -> dict[str, Any]:
     return d
 
 
+def _private_state(entity: Entity | None, state: dict[str, Any]) -> dict[str, Any]:
+    """An entity state with any person's or credential's name redacted."""
+    if isinstance(entity, LockOperator):
+        return {**state, "state": REDACTED}
+    if isinstance(entity, LockCredentials):
+        return {**state, "attributes": async_redact_data(state["attributes"], {"name"})}
+    return state
+
+
 def _lock_diagnostics(coordinator: LockUpdateCoordinator) -> dict[str, Any]:
     """Build the diagnostics dict for a single lock, shared by both dump surfaces."""
-    return build_diagnostics_dict(coordinator.as_dict())
+    data = build_diagnostics_dict(coordinator.as_dict())
+    entities = {entity.entity_id: entity for entity in coordinator.entities}
+    data["entities"] = [
+        _private_state(entities.get(state["entity_id"]), state)
+        for state in data["entities"]
+    ]
+    return data
 
 
 def _find_lock_coordinator(
@@ -58,7 +75,9 @@ async def async_get_config_entry_diagnostics(
                 _lock_diagnostics(coordinator)
                 for coordinator in hass.data[DOMAIN][config_entry.entry_id][TT_LOCKS]
             ],
-            "gateways": hass.data[DOMAIN][config_entry.entry_id][TT_GATEWAYS].as_dict(),
+            "gateways": gateways.as_dict()
+            if (gateways := hass.data[DOMAIN][config_entry.entry_id][TT_GATEWAYS])
+            else [],
         },
         TO_REDACT,
     )
