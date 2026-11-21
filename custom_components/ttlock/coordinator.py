@@ -729,6 +729,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         except Exception as err:
             raise UpdateFailed(err) from err
         else:
+            # new_data was copied before the awaits; keep the live in-progress flag
+            new_data.action_pending = self.data.action_pending
             return new_data
 
     def _slow_tier_due(self, last_fetched: datetime | None, now: datetime) -> bool:
