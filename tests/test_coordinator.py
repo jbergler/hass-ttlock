@@ -33,6 +33,7 @@ from custom_components.ttlock.coordinator import (
     SensorData,
     async_add_when_sensor_present,
     door_state_known,
+    lock_action,
 )
 from custom_components.ttlock.models import (
     Gateway,
@@ -382,6 +383,61 @@ class TestLockUpdateCoordinator:
 
             await coordinator.async_refresh()
             assert coordinator.data.locked is True
+
+        async def test_an_action_finishing_mid_poll_does_not_stay_pending(
+            self,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            """The poll copies state before its awaits; an action that ends
+            while they are in flight must not be resurrected by that copy.
+            """
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+
+            action = lock_action(coordinator)
+            action.__enter__()
+
+            async def mock_get_lock_state_finishing_action(*args, **kwargs):
+                action.__exit__(None, None, None)
+                return WireLockState.model_validate(LOCK_STATE_LOCKED)
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_lock_state",
+                mock_get_lock_state_finishing_action,
+            )
+
+            await coordinator.async_refresh()
+
+            assert coordinator.data.locked is True
+            assert coordinator.data.action_pending is False
+
+        async def test_an_action_starting_mid_poll_stays_pending(
+            self,
+            coordinator: LockUpdateCoordinator,
+            mock_api_responses,
+            monkeypatch,
+        ):
+            mock_api_responses("default")
+            await coordinator.async_refresh()
+
+            action = lock_action(coordinator)
+
+            async def mock_get_lock_state_starting_action(*args, **kwargs):
+                action.__enter__()
+                return WireLockState.model_validate(LOCK_STATE_LOCKED)
+
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_lock_state",
+                mock_get_lock_state_starting_action,
+            )
+
+            await coordinator.async_refresh()
+            assert coordinator.data.action_pending is True
+
+            action.__exit__(None, None, None)
+            assert coordinator.data.action_pending is False
 
         async def test_a_cloud_unknown_does_not_claim_the_lock_is_unlocked(
             self,
