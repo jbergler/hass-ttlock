@@ -112,7 +112,14 @@ class LockSummary(LockMacModel):
     id: int = Field(..., alias="lockId")
     name: str = Field("Lock", alias="lockAlias")
     featureValue: str | None = None
-    hasGateway: int = 0
+    # None when the endpoint doesn't say (key/list) - see remoteEnable.
+    hasGateway: int | None = None
+    # True for a lock shared to this account as an ekey rather than owned by
+    # it - set by TTLockApi.get_locks(), never present on the wire.
+    shared: bool = False
+    # Stand-in for hasGateway where key/list omits it: 1 when remote unlock
+    # is enabled on the ekey.
+    remoteEnable: int = 0
 
     # sensitive fields
     #
@@ -133,7 +140,11 @@ class LockSummary(LockMacModel):
     @property
     def connectable(self) -> bool:
         """True if the lock is reachable via a gateway or its own WiFi."""
-        return self.hasGateway != 0 or Features.wifi in self.features
+        if self.hasGateway is None:
+            reachable = self.remoteEnable == 1
+        else:
+            reachable = self.hasGateway != 0
+        return reachable or Features.wifi in self.features
 
 
 class Sensor(BaseModel):

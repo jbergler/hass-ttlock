@@ -252,6 +252,46 @@ async def test_setup_with_non_connectable_lock(
     assert "1 lock(s) have no gateway or WiFi" in caplog.text
 
 
+async def test_setup_with_owned_and_shared_ekey_locks(
+    hass, component_setup, mock_api_responses, monkeypatch
+):
+    """A lock shared to the account as an ekey is set up beside the owned one."""
+    mock_api_responses("default")
+
+    async def mock_get_locks(*args, **kwargs):
+        return [
+            LockSummary(
+                lockId=7252408,
+                lockAlias="Owned Lock",
+                lockMac="00:00:00:00:00:01",
+                hasGateway=1,
+            ),
+            LockSummary(
+                lockId=3,
+                lockAlias="Shared Lock",
+                lockMac="00:00:00:00:00:03",
+                shared=True,
+                remoteEnable=1,
+            ),
+        ]
+
+    monkeypatch.setattr(
+        "custom_components.ttlock.api.TTLockApi.get_locks", mock_get_locks
+    )
+
+    await component_setup()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert entry.state is ConfigEntryState.LOADED
+    coordinators = {
+        coordinator.lock_id: coordinator
+        for coordinator in hass.data[DOMAIN][entry.entry_id][TT_LOCKS]
+    }
+    assert set(coordinators) == {7252408, 3}
+    assert coordinators[7252408].connectable is True
+    assert coordinators[3].connectable is True
+
+
 async def test_setup_with_a_gatewayless_lock_in_bluetooth_range(
     hass,
     component_setup,

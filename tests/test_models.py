@@ -305,6 +305,13 @@ class TestLockSummary:
     def test_not_connectable_without_gateway_or_wifi(self):
         assert self._summary(hasGateway=0, featureValue="0").connectable is False
 
+    def test_remote_enable_stands_in_when_the_gateway_is_not_reported(self):
+        assert self._summary(hasGateway=None, remoteEnable=1).connectable is True
+        assert self._summary(hasGateway=None, remoteEnable=2).connectable is False
+
+    def test_reported_gateway_wins_over_remote_enable(self):
+        assert self._summary(hasGateway=0, remoteEnable=1).connectable is False
+
     def test_mac_is_upper_cased(self):
         """HA matches BLE on upper-case MACs; the cloud isn't consistent about case."""
         assert self._summary(lockMac="16:72:4c:cc:01:c4").mac == "16:72:4C:CC:01:C4"

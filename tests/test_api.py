@@ -210,6 +210,7 @@ class TestPerLockLogging:
         self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker, caplog
     ):
         mocker.get(f"{BASE}lock/list", json={"list": []})
+        mocker.get(f"{BASE}key/list", json={"list": []})
         caplog.set_level(logging.DEBUG, logger="custom_components.ttlock.api")
 
         await ttlock_api.get_locks()
@@ -248,6 +249,7 @@ class TestDebugCapture:
     ):
         """Account-wide (non-lock-scoped) calls have nothing to key a buffer on."""
         mocker.get(f"{BASE}lock/list", json={"list": []})
+        mocker.get(f"{BASE}key/list", json={"list": []})
 
         capture = LockTrafficCapture()
         session = mocker.create_session(None)
@@ -288,12 +290,68 @@ class TestGetLocks:
                 ]
             },
         )
+        mocker.get(f"{BASE}key/list", json={"list": []})
 
         locks = await ttlock_api.get_locks()
 
         assert [lock.id for lock in locks] == [1, 2]
         assert locks[0].connectable is True
         assert locks[1].connectable is False
+        assert not any(lock.shared for lock in locks)
+
+    async def test_appends_shared_ekey_locks_without_duplicating_owned(
+        self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker
+    ):
+        mocker.get(
+            f"{BASE}lock/list",
+            json={
+                "list": [
+                    {
+                        "lockId": 1,
+                        "lockAlias": "Front Door",
+                        "lockMac": "00:00:00:00:00:01",
+                        "hasGateway": 1,
+                    }
+                ]
+            },
+        )
+        mocker.get(
+            f"{BASE}key/list",
+            json={
+                "list": [
+                    # an owned lock, repeated by key/list as an admin ekey
+                    {
+                        "lockId": 1,
+                        "lockAlias": "Front Door",
+                        "lockMac": "00:00:00:00:00:01",
+                        "userType": "110301",
+                    },
+                    {
+                        "lockId": 3,
+                        "lockAlias": "Rental",
+                        "lockMac": "00:00:00:00:00:03",
+                        "userType": "110302",
+                        "remoteEnable": 1,
+                    },
+                    {
+                        "lockId": 4,
+                        "lockAlias": "No Remote",
+                        "lockMac": "00:00:00:00:00:04",
+                        "userType": "110302",
+                        "remoteEnable": 2,
+                    },
+                ]
+            },
+        )
+
+        locks = await ttlock_api.get_locks()
+
+        assert [(lock.id, lock.shared) for lock in locks] == [
+            (1, False),
+            (3, True),
+            (4, True),
+        ]
+        assert [lock.connectable for lock in locks] == [True, True, False]
 
 
 class TestGetSensor:

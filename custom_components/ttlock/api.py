@@ -242,9 +242,24 @@ class TTLockApi:
         return await self._parse_resp(resp, log_id, logger, lock_id)
 
     async def get_locks(self) -> list[LockSummary]:
-        """Enumerate all locks in the account (connectable and not)."""
+        """Enumerate all locks in the account (connectable and not).
+
+        lock/list only returns locks the account is top administrator of;
+        key/list also returns locks shared to it as an ekey. Those are
+        appended, tagged `shared`, and the owned locks key/list repeats are
+        left to lock/list's richer record.
+        """
         res = await self.get("lock/list", pageNo=1, pageSize=1000)
-        return [LockSummary.model_validate(lock) for lock in res["list"]]
+        locks = [LockSummary.model_validate(lock) for lock in res["list"]]
+        owned = {lock.id for lock in locks}
+
+        keys = await self.get("key/list", pageNo=1, pageSize=1000)
+        locks += [
+            LockSummary.model_validate({**key, "shared": True})
+            for key in keys["list"]
+            if key["lockId"] not in owned
+        ]
+        return locks
 
     async def get_gateways(self) -> list[Gateway]:
         """Enumerate all gateways in the account."""
