@@ -635,6 +635,32 @@ class TestGetLockAndGateways:
         assert lock.id == BASIC_LOCK_DETAILS["lockId"]
         assert lock.name == BASIC_LOCK_DETAILS["lockAlias"]
 
+    async def test_get_shared_lock_reads_key_get(
+        self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker
+    ):
+        # key/get as a non-admin ekey sees it: no adminPwd, no aesKeyStr.
+        mocker.get(
+            f"{BASE}key/get",
+            json={
+                "lockId": 3,
+                "lockName": "M301_abc123",
+                "lockAlias": "Rental",
+                "lockMac": "00:00:00:00:00:03",
+                "electricQuantity": 80,
+                "featureValue": "0",
+                "date": 1700000000000,
+                "userType": "110302",
+                "hasGateway": 1,
+                "remoteEnable": 1,
+            },
+        )
+
+        lock = await ttlock_api.get_shared_lock(3)
+
+        assert (lock.id, lock.name, lock.battery_level) == (3, "Rental", 80)
+        assert lock.noKeyPwd is None
+        assert lock.aesKeyStr is None
+
     async def test_get_gateways(
         self, ttlock_api: TTLockApi, mocker: AiohttpClientMocker
     ):

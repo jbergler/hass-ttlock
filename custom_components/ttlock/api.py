@@ -280,6 +280,16 @@ class TTLockApi:
         res = await self.get("lock/detail", lockId=lock_id)
         return Lock.model_validate(res)
 
+    async def get_shared_lock(self, lock_id: int) -> Lock:
+        """Get a lock shared to this account as an ekey.
+
+        lock/detail answers "not lock admin" (20002) to an ekey that isn't
+        the lock's administrator, so these locks are read from key/get -
+        which carries no adminPwd/aesKeyStr, hence no local BLE for them.
+        """
+        res = await self.get("key/get", lockId=lock_id)
+        return Lock.model_validate(res)
+
     async def get_sensor(self, lock_id: int) -> Sensor | None:
         """Get the Sensor."""
 

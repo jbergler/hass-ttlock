@@ -265,6 +265,7 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
         self.lock_id = summary.id
         self.cloud_connectable = summary.connectable
         self.has_gateway = summary.hasGateway
+        self.shared = summary.shared
         self.feature_value = summary.featureValue
         self._capture = capture
         self._store = store
@@ -533,7 +534,8 @@ class LockUpdateCoordinator(DataUpdateCoordinator[LockState]):
             # once per slow interval and otherwise carry the previous values
             # forward via the deepcopy above.
             if self._slow_tier_due(self._details_last_fetched, now):
-                details = await self.api.get_lock(self.lock_id)
+                fetch = self.api.get_shared_lock if self.shared else self.api.get_lock
+                details = await fetch(self.lock_id)
                 new_data.name = details.name
                 new_data.mac = details.mac
                 new_data.model = details.model

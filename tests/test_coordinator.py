@@ -1050,6 +1050,23 @@ class TestLockUpdateCoordinator:
             assert coordinator.update_interval == timedelta(minutes=45)
             assert coordinator._slow_interval == timedelta(hours=12)
 
+        async def test_shared_lock_detail_comes_from_key_get(
+            self, coordinator, mock_api_responses, monkeypatch
+        ):
+            mock_api_responses("with_sensor")
+            detail = TTLockApi.get_lock
+            get_lock = self._spy(monkeypatch, "get_lock")
+            get_shared = AsyncMock(side_effect=detail)
+            monkeypatch.setattr(
+                "custom_components.ttlock.api.TTLockApi.get_shared_lock", get_shared
+            )
+            coordinator.shared = True
+
+            await coordinator.async_refresh()
+
+            assert get_shared.call_count == 1
+            assert get_lock.call_count == 0
+
         async def test_state_reverified_every_poll_detail_fetched_once(
             self, coordinator, mock_api_responses, monkeypatch
         ):

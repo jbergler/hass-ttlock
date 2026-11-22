@@ -101,7 +101,8 @@ class Lock(LockMacModel):
     lockVersion: dict[str, int] | None = None
 
     # sensitive fields
-    noKeyPwd: str = Field(alias="adminPwd")
+    # Only the lock's administrator is told it; absent on a shared ekey.
+    noKeyPwd: str | None = Field(None, alias="adminPwd")
     # Per-lock AES key BLE frames are encrypted with. Undocumented, redacted.
     aesKeyStr: str | None = None
 
